@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use devd::config::{ConfigError, ConfigLoader, ConfigValidationError};
+use devd::core::dependency::DependencyError;
 
 #[tokio::test]
 async fn test_config_load_accepts_valid_fixture() {
@@ -18,10 +19,15 @@ async fn test_config_load_rejects_dependency_cycle_with_file_context() {
     match error {
         ConfigError::Validation {
             path: actual,
-            source: ConfigValidationError::CircularDependency { path: cycle },
+            source:
+                ConfigValidationError::Dependency(DependencyError::CircularDependency {
+                    path: cycle,
+                    remaining,
+                }),
         } => {
             assert_eq!(actual, path);
             assert_eq!(cycle, ["api", "worker", "api"]);
+            assert_eq!(remaining, ["api", "worker"]);
         }
         error => panic!("expected a validation error, got {error}"),
     }

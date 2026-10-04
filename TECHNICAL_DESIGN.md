@@ -221,6 +221,15 @@ enum DependencyCondition {
 - 拓扑排序失败 → 报错并列出循环路径
 - 示例：`backend → frontend → admin → backend`
 
+**当前实现**：`src/core/dependency.rs` 的 `DependencyGraph` 拥有不可变的依赖快照。
+- `from_config` 按服务名和依赖名排序建图，拒绝未知或重复依赖；配置字段和 probe 匹配仍由配置校验负责。
+- `dependencies` 保留直接依赖的 readiness condition；`dependents` 返回直接反向依赖；未知服务返回 `None`，无边服务返回空切片。
+- `edges` 的方向明确为 `(dependent, dependency, readiness_condition)`。
+- `startup_layers` 使用 Kahn 算法返回并行候选分层；层内按服务名排序。实际启动还必须等待每条依赖的 readiness condition。
+- `topological_order` 按层展开，保证依赖先于被依赖方，且结果不受 YAML 顺序和 HashMap 迭代顺序影响。
+- 排序失败同时返回实际闭环路径和全部未解锁服务；未解锁列表可能包含环外受阻服务。
+- 配置校验通过 `validate_acyclic` 复用图遍历，仅检测循环，不分配排序结果；排序和分层使用同一套 Kahn 遍历，复用层级缓冲区。
+
 #### 5.3 依赖条件检查
 
 **实现**：
