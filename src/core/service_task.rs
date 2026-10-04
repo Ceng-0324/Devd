@@ -3,20 +3,15 @@ use std::{
 };
 
 use chrono::Utc;
-use tokio::{
-    io::{AsyncRead, AsyncReadExt},
-    sync::{broadcast, watch},
-    task::JoinSet,
-};
+use tokio::{sync::watch, task::JoinSet};
 
 use crate::config::{DependencyCondition, RestartPolicyType, ServiceConfig};
+use crate::logging::{LogCollector, LogLevel};
 
 use super::{
     health_check::{HealthChecker, HealthMonitor, HealthState, ProbeResult},
     process_manager::ManagedProcess,
-    service_manager::{
-        ManagerOptions, OutputStream, ProcessOutput, RuntimeSnapshot, ServiceSnapshot, ServiceState,
-    },
+    service_manager::{ManagerOptions, RuntimeSnapshot, ServiceSnapshot, ServiceState},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,7 +28,7 @@ pub(super) struct ServiceTask {
     options: ManagerOptions,
     control: watch::Receiver<Control>,
     snapshots: watch::Sender<RuntimeSnapshot>,
-    output: broadcast::Sender<ProcessOutput>,
+    logs: LogCollector,
     state: ServiceSnapshot,
 }
 
@@ -52,7 +47,7 @@ impl ServiceTask {
         options: ManagerOptions,
         control: watch::Receiver<Control>,
         snapshots: watch::Sender<RuntimeSnapshot>,
-        output: broadcast::Sender<ProcessOutput>,
+        logs: LogCollector,
     ) -> Self {
         Self {
             name,
@@ -61,7 +56,7 @@ impl ServiceTask {
             options,
             control,
             snapshots,
-            output,
+            logs,
             state: ServiceSnapshot::default(),
         }
     }
@@ -327,22 +322,24 @@ impl ServiceTask {
     fn drain_output(&self, process: &mut ManagedProcess) -> OutputReaders {
         let mut tasks = JoinSet::new();
         if let Some(stdout) = process.take_stdout() {
-            tasks.spawn(read_output(
-                stdout,
+            let (logs, name, generation) = (
+                self.logs.clone(),
                 self.name.clone(),
                 self.state.restart_count,
-                OutputStream::Stdout,
-                self.output.clone(),
-            ));
+            );
+            tasks
+                .spawn(async move { logs.collect(stdout, name, generation, LogLevel::Info).await });
         }
         if let Some(stderr) = process.take_stderr() {
-            tasks.spawn(read_output(
-                stderr,
+            let (logs, name, generation) = (
+                self.logs.clone(),
                 self.name.clone(),
                 self.state.restart_count,
-                OutputStream::Stderr,
-                self.output.clone(),
-            ));
+            );
+            tasks.spawn(async move {
+                logs.collect(stderr, name, generation, LogLevel::Error)
+                    .await
+            });
         }
         OutputReaders(tasks)
     }
@@ -366,29 +363,7 @@ impl OutputReaders {
             while self.0.join_next().await.is_some() {}
         })
         .await;
-        self.0.abort_all();
-    }
-}
-
-async fn read_output(
-    mut reader: impl AsyncRead + Unpin,
-    service: String,
-    generation: u32,
-    stream: OutputStream,
-    sender: broadcast::Sender<ProcessOutput>,
-) -> io::Result<()> {
-    let mut buffer = [0; 8192];
-    loop {
-        let size = reader.read(&mut buffer).await?;
-        if size == 0 {
-            return Ok(());
-        }
-        let _ = sender.send(ProcessOutput {
-            service: service.clone(),
-            generation,
-            stream,
-            bytes: buffer[..size].into(),
-        });
+        self.0.shutdown().await;
     }
 }
 

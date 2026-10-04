@@ -307,40 +307,20 @@
 
 ### 4. 日志收集流程
 
+```mermaid
+flowchart TD
+    process[Service process generation] --> stdout[stdout: Info]
+    process --> stderr[stderr: Error]
+    stdout --> frame[Independent bounded line framing]
+    stderr --> frame
+    frame --> entry[LogEntry: UTC timestamp, service, generation, level, message]
+    entry --> history[Bounded ring buffer: default 1000 entries]
+    entry --> live[Broadcast: 256 complete entries]
+    history --> query[LogHistory.recent: optional service filter]
+    live --> writer[Single async writer: prefixes and colors]
 ```
-┌──────────────────┐
-│ Service Process  │
-└────┬────────┬────┘
-     │        │
-     │stdout  │stderr
-     │        │
-     ▼        ▼
-┌─────────────────────┐
-│ tokio::io::BufReader│
-└──────────┬──────────┘
-           │ Line-by-line
-           ▼
-    ┌──────────────┐
-    │ LogCollector │
-    └──────┬───────┘
-           │
-           ▼
-    ┌────────────────┐
-    │ Parse Timestamp│
-    │ + Level        │
-    └──────┬─────────┘
-           │
-           ▼
-    ┌────────────────┐
-    │ Ring Buffer    │ (Last 1000 entries)
-    │ (VecDeque)     │
-    └──────┬─────────┘
-           │
-           ├──> devd logs (Query)
-           │
-           └──> Disk Writer (Optional)
-                ~/.devd/logs/service/2024-01-03.log
-```
+
+完整条目在读取管道侧生成，历史插入与 live 分发顺序一致。单行默认最多保留 16 KiB，超长行标记截断；EOF、取消和读取错误记录尾部一次。慢终端只丢失完整 live 条目并报告 WARN，不阻塞采集或服务管理。磁盘日志持久化和轮转属于 v0.4，CLI 接入属于下一模块。
 
 ---
 
@@ -378,8 +358,12 @@ devd/
 │   │   ├── dependency.rs      # Dependency graph + topological sort
 │   │   ├── health_check.rs    # Health check implementations
 │   │   ├── restart_policy.rs  # Restart strategy
-│   │   ├── log_collector.rs   # Log streaming + buffering
 │   │   └── process_manager.rs # Process spawn/kill/signal
+│   │
+│   ├── logging/               # Implemented: log collection + output
+│   │   ├── mod.rs             # LogEntry, LogLevel, public interfaces
+│   │   ├── collector.rs       # Bounded line framing + ring history
+│   │   └── output.rs          # Serial async writer + colors
 │   │
 │   ├── config/                # Configuration
 │   │   ├── mod.rs
@@ -522,7 +506,9 @@ pub enum BackoffType {
 | 模块 | 所有权与接口 |
 | --- | --- |
 | `core/service_manager.rs` | 校验全栈、并发创建服务任务、状态订阅、SIGINT/SIGTERM、失败回滚和反向拓扑关闭；公开 `ServiceManager`、`ManagerOptions`、`RuntimeSnapshot` |
-| `core/service_task.rs` | 私有服务任务，独占 `ManagedProcess`，等待依赖、观察退出与健康、固定延时重启、持续排空 stdout/stderr |
+| `core/service_task.rs` | 私有服务任务，独占 `ManagedProcess`，等待依赖、观察退出与健康、固定延时重启、并发调用日志采集器排空 stdout/stderr |
+| `logging/collector.rs` | 独立流分行、有界行长、全栈环形历史和完整日志条目分发 |
+| `logging/output.rs` | 单个异步 writer 串行输出、稳定颜色、控制字符转义和 live 丢失诊断 |
 | `core/state_store.rs` | 独占状态锁和原子 JSON 替换；锁在未结束的状态写入与服务任务中保持有效 |
 | `core/health_check.rs` | 不可变探测配置和复用 HTTP client，串行周期探测与连续失败计数 |
 
@@ -533,7 +519,7 @@ Pending -> Starting -> Running -> Healthy / Unhealthy
 关闭 -> 全栈 Quiescing -> 反向分层 Stopping -> Stopped
 ```
 
-状态快照保存 PID、开始时间、累计重启次数、连续失败次数和退出/错误诊断。watch 状态只保留最新值，不是可靠的历史事件队列；原始输出使用有界 broadcast，消费者处理 Lagged。没有健康配置的存活服务为 Running。MVP 仅实现 fixed 重启，指数退避、Socket、依赖联动重启仍为后续设计；具体策略与状态持久化契约见 `TECHNICAL_DESIGN.md` 4.2、8、12 节。
+状态快照保存 PID、开始时间、累计重启次数、连续失败次数和退出/错误诊断。watch 状态只保留最新值，不是可靠的历史事件队列；管道读取侧先拼成完整 LogEntry，再写入有界历史和 broadcast，消费者处理 Lagged。没有健康配置的存活服务为 Running。MVP 仅实现 fixed 重启，指数退避、Socket、依赖联动重启仍为后续设计；具体策略与状态持久化契约见 `TECHNICAL_DESIGN.md` 4.2、7、8、12 节。
 
 ---
 
@@ -573,7 +559,7 @@ Pending -> Starting -> Running -> Healthy / Unhealthy
 - 服务任务支持单线程与多线程 Tokio 运行时；当前 CLI 使用 `#[tokio::main]` 多线程运行时
 - 每个服务是独立的异步任务（`tokio::spawn`）
 - 健康检查、日志收集、重启策略都是该任务内的 sub-task
-- 每个服务独占进程句柄；watch 传递最新状态和关闭阶段，broadcast 传递原始输出，不在共享锁内等待网络或进程 I/O
+- 每个服务独占进程句柄；watch 传递最新状态和关闭阶段，broadcast 传递完整日志条目，不在共享锁内等待网络、管道或终端 I/O
 
 ---
 

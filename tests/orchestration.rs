@@ -18,9 +18,9 @@ use devd::{
         ServiceConfig,
     },
     core::service_manager::{
-        ManagerOptions, OutputStream, ProcessOutput, RuntimeSnapshot, ServiceManager,
-        ServiceManagerError, ServiceState,
+        ManagerOptions, RuntimeSnapshot, ServiceManager, ServiceManagerError, ServiceState,
     },
+    logging::{LogEntry, LogLevel},
 };
 use nix::{
     errno::Errno,
@@ -83,13 +83,13 @@ struct RunningManager {
     task: Option<JoinHandle<Result<RuntimeSnapshot, ServiceManagerError>>>,
     stop: Option<oneshot::Sender<()>>,
     snapshots: watch::Receiver<RuntimeSnapshot>,
-    output: broadcast::Receiver<ProcessOutput>,
+    output: broadcast::Receiver<Arc<LogEntry>>,
 }
 
 impl RunningManager {
     fn start(manager: ServiceManager) -> Self {
         let snapshots = manager.subscribe();
-        let output = manager.subscribe_output();
+        let output = manager.subscribe_logs();
         let (stop, stopped) = oneshot::channel();
         let task = tokio::spawn(manager.run_until(async {
             let _ = stopped.await;
@@ -167,9 +167,9 @@ async fn test_orchestration_independent_services_start_concurrently() {
         {
             let output = run.output.recv().await.unwrap();
             outputs
-                .entry(output.service)
+                .entry(output.service.clone())
                 .or_default()
-                .extend(output.bytes);
+                .extend(output.message.bytes());
         }
     })
     .await;
@@ -576,11 +576,7 @@ async fn test_orchestration_shutdown_forces_stubborn_leader_and_descendants() {
         ServiceManager::new(config([("child", child)]), options(&directory)).unwrap(),
     );
     let output = bounded(run.output.recv()).await.unwrap();
-    let descendant: u32 = String::from_utf8(output.bytes)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
+    let descendant: u32 = output.message.trim().parse().unwrap();
     let initial = run.until(|s| s.services["child"].pid.is_some()).await;
     let final_state = run.shutdown().await.unwrap();
     assert_eq!(final_state.services["child"].status, ServiceState::Stopped);
@@ -631,7 +627,7 @@ async fn test_orchestration_shutdown_is_reverse_dependency_order() {
     bounded(async {
         while ready < 2 {
             let output = run.output.recv().await.unwrap();
-            if output.bytes.windows(5).any(|s| s == b"ready") {
+            if output.message == "ready" {
                 ready += 1;
             }
         }
@@ -700,10 +696,10 @@ async fn test_orchestration_output_drains_both_pipes_without_subscribers() {
 }
 
 #[tokio::test]
-async fn test_orchestration_output_preserves_raw_bytes_and_stream_identity() {
+async fn test_orchestration_output_preserves_lines_and_stream_levels() {
     let directory = tempdir().unwrap();
     let child = service(
-        "printf 'stdout-data'; printf 'stderr-data' >&2; sleep 60 & wait",
+        "printf 'stdout-data\\n'; printf 'stderr-data\\n' >&2; sleep 60 & wait",
         directory.path(),
     );
     let mut run = RunningManager::start(
@@ -715,9 +711,10 @@ async fn test_orchestration_output_preserves_raw_bytes_and_stream_identity() {
             let output = run.output.recv().await.unwrap();
             assert_eq!(output.service, "child");
             assert_eq!(output.generation, 0);
-            match output.stream {
-                OutputStream::Stdout => stdout.extend(output.bytes),
-                OutputStream::Stderr => stderr.extend(output.bytes),
+            match output.level {
+                LogLevel::Info => stdout.extend(output.message.bytes()),
+                LogLevel::Error => stderr.extend(output.message.bytes()),
+                LogLevel::Warn => panic!("unexpected stream warning"),
             }
         }
     })

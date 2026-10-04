@@ -184,7 +184,7 @@ Running / Healthy -> 连续失败达到阈值 -> Unhealthy
 - 没有健康检查时为 Running；探测失败未达阈值时也为 Running，保留失败计数与原因；成功时为 Healthy。`never` 的健康失败仅报告 Unhealthy，继续探测并允许恢复。
 - 不可恢复失败会关闭整个服务栈并返回包含服务名和失败原因的错误；状态文件故障和任务异常同样触发清理。
 - 关闭时先向全部任务发送 Quiescing，取消依赖等待、启动读取和重启延时，然后按反向拓扑层停止，层内并发。丢弃 run future 会中止服务任务并通过进程所有权清理进程组；正常关闭应使用 `run_until` 的关闭 future。
-- stdout/stderr 持续并发排空，以有界 broadcast 输出原始字节和进程代次；缓慢订阅方可能收到 Lagged，不能阻塞子进程。行解析、格式化和日志历史由下一日志模块负责。
+- stdout/stderr 持续并发排空，在管道读取侧拼成完整日志条目后写入有界历史和 broadcast；缓慢订阅方可能收到 Lagged，不能阻塞子进程。日志模块负责分行、格式化和历史查询。
 
 **调用入口**：
 ```rust
@@ -192,8 +192,8 @@ use devd::core::service_manager::{ManagerOptions, ServiceManager};
 
 let manager = ServiceManager::new(config, ManagerOptions::new(state_path))?;
 let states = manager.subscribe();
-let output = manager.subscribe_output();
-// 调用方可在独立任务中消费 states/output。
+let logs = manager.subscribe_logs();
+// 调用方可在独立任务中消费 states/logs。
 let final_snapshot = manager.run().await?;
 ```
 
@@ -329,45 +329,38 @@ match checker.probe().await {
 
 #### 7.1 日志收集
 
-**流式读取**：
-```rust
-use tokio::io::{AsyncBufReadExt, BufReader};
+**当前数据流**：`src/logging/collector.rs` 的 `LogCollector` 直接消费每一代子进程的 stdout/stderr，两条管道并发读取。
 
-async fn collect_logs(mut child: Child, service_name: String) {
-    let stdout = child.stdout.take().unwrap();
-    let stderr = child.stderr.take().unwrap();
-    
-    let stdout_reader = BufReader::new(stdout).lines();
-    let stderr_reader = BufReader::new(stderr).lines();
-    
-    tokio::spawn(async move {
-        while let Some(line) = stdout_reader.next_line().await.unwrap() {
-            log_event(service_name.clone(), LogLevel::Info, line);
-        }
-    });
-    
-    tokio::spawn(async move {
-        while let Some(line) = stderr_reader.next_line().await.unwrap() {
-            log_event(service_name.clone(), LogLevel::Error, line);
-        }
-    });
-}
+```text
+stdout / stderr -> 独立有界分行器 -> LogEntry -> 全栈环形缓冲 + 有界 broadcast
+                                                         -> 单个 write_logs writer
 ```
+
+- stdout 分类为 Info，stderr 分类为 Error；读管道错误产生 Warn 诊断，返回 I/O 错误，服务生命周期继续由编排层控制。
+- LF 分行，CRLF 去掉末尾 CR，空行保留；没有换行的尾部在 EOF、读取错误或取消时记录一次。每代进程的管道分别分行，重启前等待读取任务结束，尾部不会与新代拼接。
+- UTF-8 在完整行分帧之后解码，跨读取边界的字符保留；非法字节使用替换字符。每次读取后让出运行时，持续输出不会独占服务管理任务。
+- `max_line_bytes` 默认 16 KiB，可配置 1 字节至 1 MiB；超长行只保留前缀并标记 truncated，丢弃其余字节直到换行或 EOF。截断时移除边界上未完整的 UTF-8 字符，不把超长行拆成伪造的新行。
+- `timestamp` 为完整条目记录时的 UTC 时间，`generation` 是该服务的累计重启次数。跨管道/服务仅保证采集顺序，不推断服务真实写入的全局顺序。
 
 #### 7.2 日志存储
 
-**设计**：
-- **内存环形缓冲区**：最近 1000 条日志（`VecDeque<LogEntry>`）
-- **磁盘持久化**：可选，写入 `~/.devd/logs/<service>/<date>.log`
-- **日志轮转**：按天轮转，保留最近 7 天
+**MVP 当前实现**：
+
+- 全栈共享 `VecDeque<Arc<LogEntry>>`，默认保留最近 1000 条；`capacity` 可配置 1 至 65536。行长和条目数量分别受限，避免单行绕过缓冲上限。
+- `ManagerOptions.logging` 在启动前校验；`LogHistory::recent(service, limit)` 按可选服务过滤，返回最新 limit 条，结果由旧到新。
+- 历史插入和 live 分发使用同一个短锁建立一致顺序；锁内不等待网络、管道或终端 I/O。history 句柄不持有分发发送方，manager 退出后仍可查历史且不会阻止 writer 收尾。
+- live broadcast 保留最多 256 条；慢订阅方丢失完整条目并收到 Lagged，历史仍独立采集。查询返回共享条目，调用方自行控制历史快照的持有量。
+- 磁盘日志持久化与轮转留到 v0.4，本模块不写日志文件。
 
 **数据结构**：
 ```rust
 struct LogEntry {
     timestamp: DateTime<Utc>,
     service: String,
+    generation: u32,
     level: LogLevel,
     message: String,
+    truncated: bool,
 }
 
 enum LogLevel {
@@ -379,23 +372,28 @@ enum LogLevel {
 
 #### 7.3 日志输出（CLI）
 
-**彩色输出**：`colored` crate
+**串行输出**：`write_logs` 独占一个异步 writer，完整写入每行并 flush。输出示例：`[15:30:01.000Z] [backend] [INFO] Starting server...`。
+
+- 使用 `colored` 调色板，服务名颜色由稳定 hash 决定；Info 蓝色、Warn 黄色、Error 红色。`ColorMode::Auto` 遵循终端和环境设置，也支持 Always/Never，测试不修改全局颜色状态。
+- 非颜色模式不产生 ANSI；消息中的 ESC、CR、换行等控制字符转义，避免服务日志破坏前缀和串行布局。原始文本保存在 LogEntry 中，tab 和普通 Unicode 保留。
+- 截断行附加 `[truncated]`；慢输出产生 `[devd] [WARN] log output skipped N entries: subscriber lagged`，writer 返回实际输出/丢失计数。
+- writer 的 I/O 错误直接返回，不阻止管道采集。调用方在 manager 外处理终端输出；manager 不隐式打印。正常退出时发送方关闭后 writer 排空剩余条目，慢或卡住的外部输出由调用方决定取消时限。
 
 ```rust
-fn print_log(entry: &LogEntry) {
-    let service = entry.service.color(get_service_color(&entry.service));
-    let timestamp = entry.timestamp.format("%H:%M:%S").to_string().dimmed();
-    let level_icon = match entry.level {
-        LogLevel::Info => "ℹ".blue(),
-        LogLevel::Warn => "⚠".yellow(),
-        LogLevel::Error => "✖".red(),
-    };
-    
-    println!("{} [{}] {} {}", timestamp, service, level_icon, entry.message);
-}
+use devd::logging::{write_logs, LogFormatter};
+
+let logs = manager.subscribe_logs();
+let history = manager.log_history();
+let (run, output) = tokio::join!(
+    manager.run(),
+    write_logs(writer, logs, LogFormatter::default()),
+);
+let final_snapshot = run?;
+let output_summary = output?;
+let recent_backend = history.recent(Some("backend"), 100);
 ```
 
-**过滤**：
+**CLI 过滤规划**（CLI 模块接入；本模块提供服务历史过滤，额外查询选项后续实现）：
 ```bash
 devd logs backend              # 只看某服务
 devd logs --level error        # 只看错误

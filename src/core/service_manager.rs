@@ -11,6 +11,7 @@ use tokio::{
 };
 
 use crate::config::{BackoffType, ConfigValidationError, DevdConfig};
+use crate::logging::{LogCollector, LogEntry, LogHistory, LogOptions, LogOptionsError};
 
 use super::{
     dependency::DependencyGraph,
@@ -66,27 +67,12 @@ pub struct RuntimeSnapshot {
     pub services: BTreeMap<String, ServiceSnapshot>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OutputStream {
-    Stdout,
-    Stderr,
-}
-
-/// Raw bytes for the log module. Subscribers must handle broadcast lag; a slow
-/// subscriber never blocks a child process. Output is not retained on disk.
-#[derive(Debug, Clone)]
-pub struct ProcessOutput {
-    pub service: String,
-    pub generation: u32,
-    pub stream: OutputStream,
-    pub bytes: Vec<u8>,
-}
-
 #[derive(Debug, Clone)]
 pub struct ManagerOptions {
     pub state_path: PathBuf,
     pub grace_period: Duration,
     pub dependency_timeout: Duration,
+    pub logging: LogOptions,
 }
 
 impl ManagerOptions {
@@ -96,12 +82,15 @@ impl ManagerOptions {
             state_path: state_path.into(),
             grace_period: Duration::from_secs(5),
             dependency_timeout: Duration::from_secs(30),
+            logging: LogOptions::default(),
         }
     }
 }
 
 #[derive(Debug, Error)]
 pub enum ServiceManagerError {
+    #[error(transparent)]
+    LogOptions(#[from] LogOptionsError),
     #[error(transparent)]
     InvalidConfig(#[from] ConfigValidationError),
     #[error("service '{service}' health-check setup failed: {source}")]
@@ -138,7 +127,7 @@ pub struct ServiceManager {
     layers: Vec<Vec<String>>,
     checkers: BTreeMap<String, Option<HealthChecker>>,
     snapshots: watch::Sender<RuntimeSnapshot>,
-    output: broadcast::Sender<ProcessOutput>,
+    logs: LogCollector,
 }
 
 impl ServiceManager {
@@ -189,14 +178,14 @@ impl ServiceManager {
                 .collect(),
         };
         let (snapshots, _) = watch::channel(initial);
-        let (output, _) = broadcast::channel(256);
+        let logs = LogCollector::new(options.logging)?;
         Ok(Self {
             config,
             options,
             layers,
             checkers,
             snapshots,
-            output,
+            logs,
         })
     }
 
@@ -204,8 +193,12 @@ impl ServiceManager {
         self.snapshots.subscribe()
     }
 
-    pub fn subscribe_output(&self) -> broadcast::Receiver<ProcessOutput> {
-        self.output.subscribe()
+    pub fn subscribe_logs(&self) -> broadcast::Receiver<Arc<LogEntry>> {
+        self.logs.subscribe()
+    }
+
+    pub fn log_history(&self) -> LogHistory {
+        self.logs.history()
     }
 
     /// Install SIGINT (Ctrl+C) and SIGTERM handlers before spawning children.
@@ -255,7 +248,7 @@ impl ServiceManager {
                 self.options.clone(),
                 receiver,
                 self.snapshots.clone(),
-                self.output.clone(),
+                self.logs.clone(),
             );
             let lease = store.clone();
             let handle = tasks.spawn(async move {
