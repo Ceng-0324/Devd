@@ -5,6 +5,7 @@
 ### v0.2.0-alpha.1 development snapshot
 
 - Add `logs --follow` with an atomic buffered-tail to live-stream handoff.
+- Add `devd init` to create a validated starter config without overwriting files.
 
 ### v0.1.0 release candidate
 

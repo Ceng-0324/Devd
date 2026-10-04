@@ -15,7 +15,11 @@ fn test_cli_help_validation_graph_and_failures() {
     assert!(graph.contains("api -> worker (Started)"), "{graph}");
     assert!(graph.contains("1: worker\n  2: api"));
     assert!(!project.path().join(".devd").exists());
-    for command in ["init", "top", "wat"] {
+    failure(
+        project.invoke(&["init"]),
+        "existing configuration will not be replaced",
+    );
+    for command in ["top", "wat"] {
         failure(project.invoke(&[command]), "unrecognized subcommand");
     }
     for arguments in [
@@ -30,6 +34,39 @@ fn test_cli_help_validation_graph_and_failures() {
     for command in ["check", "graph", "start"] {
         failure(project.invoke(&[command]), "error:");
     }
+}
+
+#[test]
+fn test_cli_init_creates_valid_config_and_preserves_existing_file() {
+    let project = Project::new("services:\n  old:\n    command: sleep 60\n");
+    let path = project.path().join("starter.yml");
+    let filename = path.to_str().unwrap();
+    let output = success(project.invoke(&[
+        "init",
+        "--config",
+        filename,
+        "--service",
+        "api",
+        "--command",
+        "sleep 60",
+    ]));
+    assert!(output.contains("Created"));
+    let generated = fs::read_to_string(&path).unwrap();
+    assert!(generated.contains("api:"));
+    assert!(
+        success(project.invoke(&["check", "--config", filename])).contains("Configuration valid")
+    );
+    failure(
+        project.invoke(&["init", "--config", filename]),
+        "existing configuration will not be replaced",
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), generated);
+    failure(
+        project.invoke(&["init", "--config", filename, "--service", "bad name"]),
+        "service names",
+    );
+    assert_eq!(fs::read_to_string(&path).unwrap(), generated);
+    assert!(!project.path().join(".devd").exists());
 }
 
 #[test]

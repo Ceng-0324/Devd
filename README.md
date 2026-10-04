@@ -38,7 +38,7 @@ You'll need the Rust toolchain. Install from the repository root:
 cargo install --path . --locked
 ```
 
-Create a `devd.yml` in a project directory. Start with two demo processes that print a message and then wait, so you can try the whole flow:
+Run `devd init` in a project directory to create a runnable one-service starter configuration. Use `--service` and `--command` to set its service name and command; `--config` chooses the output path. The command refuses to replace an existing file. For a two-service example, use this configuration:
 
 ```yaml
 version: "1"
@@ -119,6 +119,7 @@ This assumes you already have `backend`, `frontend`, their `dev` scripts, and `b
 | `devd logs [service] [--tail N] [--follow]` | Query buffered logs (default 100, N from 1–1000); optionally stream new entries |
 | `devd check` | Validate configuration, command quoting, dependencies, and supported settings |
 | `devd graph` | Show dependency edges and parallel startup layers |
+| `devd init [--service NAME] [--command CMD]` | Create a checked starter configuration without overwriting an existing file |
 
 All commands accept `-c / --config <PATH>`, `--state-dir <PATH>`, and `--color auto|always|never`. Options work before or after the subcommand:
 
@@ -137,7 +138,7 @@ devd --config ./devd.local.yml status --json
 
 **Diagnostics describe the running instance.** `status` returns an error when the supervisor is offline; leftover state files are for diagnosis. If you break the configuration file while devd is running, you can still use `stop`, `status`, `logs`, and `restart`. `check` performs static validation; executable availability, environment files, and probe endpoints are checked at runtime. Failed commands return a nonzero exit code.
 
-The current scope is local process management. Configuration generation, resource monitoring, hot reload, exponential backoff, disk logs, and a TUI are planned for later versions.
+The current scope is local process management. `init` creates a starter file; project scanning and interactive templates are planned. Resource monitoring, hot reload, exponential backoff, disk logs, and a TUI are also planned for later versions.
 
 Configuration rejects unknown fields and unsupported `limits` settings. YAML values are literal; `${VAR}` expansion is not implemented. Under fixed backoff, `max-delay` is reserved and does not change the retry delay.
 

@@ -117,6 +117,7 @@ services:
 | `devd logs [service] [--tail N] [--follow]` | 查询内存日志（默认 100 条，N 为 1–1000），可持续接收新日志 |
 | `devd check` | 校验配置、命令引号、依赖关系及当前支持的设置 |
 | `devd graph` | 显示依赖边和并行启动层 |
+| `devd init [--service NAME] [--command CMD]` | 创建通过校验的初始配置，不覆盖现有文件 |
 
 所有命令共用 `-c / --config <PATH>`、`--state-dir <PATH>` 和 `--color auto|always|never`，选项可以放在子命令前后：
 
@@ -135,7 +136,7 @@ devd --config ./devd.local.yml status --json
 
 **诊断反映当前实例。** `status` 离线时返回错误，遗留状态文件仅用于诊断。配置内容被改坏后，仍可通过活实例执行 `stop`、`status`、`logs` 和 `restart`。`check` 做静态校验，可执行文件、环境文件和探测端点是否可用，要到运行时确认。命令失败返回非零退出码。
 
-当前范围是本地进程管理。配置生成、资源监控、热重载、指数退避、磁盘日志和 TUI 还在后续规划里。
+当前范围是本地进程管理。`init` 可生成初始配置；项目扫描和交互式模板仍在规划。资源监控、热重载、指数退避、磁盘日志和 TUI 也在后续规划里。
 
 配置会拒绝未知字段和未实现的 `limits`。YAML 值按字面使用，尚未实现 `${VAR}` 替换。fixed 策略下的 `max-delay` 为预留字段，不改变重试延时。
 
