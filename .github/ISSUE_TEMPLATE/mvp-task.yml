@@ -1,0 +1,69 @@
+name: MVP Task
+description: Track a scoped implementation or validation task for the devd MVP.
+title: "[MVP] "
+labels:
+  - "stage:mvp"
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Keep this issue focused on one independently deliverable task.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user or system problem does this task solve?
+      placeholder: Describe the observable problem and why it matters.
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: Define the implementation boundary for this issue.
+      placeholder: List the modules, interfaces, and behavior included in this task.
+    validations:
+      required: true
+
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: Dependencies
+      description: List prerequisite issues, decisions, or external constraints.
+      placeholder: Use issue references such as #123. Write "None" when there are no prerequisites.
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance Criteria
+      description: State testable conditions that prove the task is complete.
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation
+      description: List the commands or tests that must pass.
+      placeholder: |
+        cargo fmt -- --check
+        cargo test
+    validations:
+      required: true
+
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Add design references, risks, or implementation notes.
+      placeholder: Optional context for implementers and reviewers.
+    validations:
+      required: false
