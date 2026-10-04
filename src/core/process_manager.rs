@@ -149,7 +149,7 @@ impl ManagedProcess {
                 service: self.service.clone(),
                 source,
             })?;
-        self.cleanup_group()?;
+        self.cleanup_group_async().await?;
         Ok(status)
     }
 
@@ -157,8 +157,16 @@ impl ManagedProcess {
     /// then use SIGKILL if necessary. Any descendants left after the leader exits
     /// are killed as well. Repeated stops return the same collected exit status.
     pub async fn stop(&mut self, grace_period: Duration) -> Result<ExitStatus, ProcessError> {
-        if let Some(status) = self.try_wait()? {
-            return Ok(status);
+        match self.try_wait() {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => {}
+            Err(ProcessError::Signal {
+                source: Errno::EPERM,
+                ..
+            }) if cfg!(target_os = "macos") => {
+                return self.wait().await;
+            }
+            Err(error) => return Err(error),
         }
         let deadline = tokio::time::Instant::now()
             .checked_add(grace_period)
@@ -172,7 +180,7 @@ impl ManagedProcess {
             Err(_) => {
                 // Once the whole group is killed, do not signal it again after
                 // reaping the leader: macOS may reject a zombie-only group.
-                self.cleanup_group()?;
+                self.cleanup_group_async().await?;
                 self.wait().await
             }
         }
@@ -209,6 +217,24 @@ impl ManagedProcess {
         self.signal_group(Signal::SIGKILL)?;
         self.group = None;
         Ok(())
+    }
+
+    async fn cleanup_group_async(&mut self) -> Result<(), ProcessError> {
+        // macOS can temporarily return EPERM for a group containing only exiting
+        // zombies. Allow reaping to finish; persistent permission errors survive.
+        let mut attempt = 0;
+        loop {
+            match self.cleanup_group() {
+                Err(ProcessError::Signal {
+                    source: Errno::EPERM,
+                    ..
+                }) if cfg!(target_os = "macos") && attempt < 10 => {
+                    attempt += 1;
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+                result => return result,
+            }
+        }
     }
 }
 

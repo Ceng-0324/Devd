@@ -213,6 +213,21 @@ async fn test_process_graceful_stop_uses_an_isolated_process_group() {
 }
 
 #[tokio::test]
+async fn test_process_stop_handles_rapidly_exiting_descendant_groups() {
+    for _ in 0..32 {
+        let mut process = ManagedProcess::spawn("rapid-group", &fixture_config("graceful"))
+            .await
+            .unwrap();
+        let _reader = ready(&mut process).await;
+        let pid = process.pid().unwrap();
+        let status = bounded(process.stop(Duration::from_secs(1))).await.unwrap();
+        assert!(status.success());
+        assert_eq!(bounded(process.stop(Duration::ZERO)).await.unwrap(), status);
+        assert_reaped(pid).await;
+    }
+}
+
+#[tokio::test]
 async fn test_process_forces_non_cooperative_child_after_grace_period() {
     let mut process = ManagedProcess::spawn("stubborn", &fixture_config("stubborn"))
         .await
