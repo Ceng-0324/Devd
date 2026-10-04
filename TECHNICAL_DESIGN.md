@@ -393,9 +393,10 @@ let output_summary = output?;
 let recent_backend = history.recent(Some("backend"), 100);
 ```
 
-**CLI 过滤规划**（CLI 模块接入；本模块提供服务历史过滤，额外查询选项后续实现）：
+**CLI 历史查询与过滤规划**（服务选择与 `--tail` 已实现，其余选项为后续规划）：
 ```bash
 devd logs backend              # 只看某服务
+devd logs backend --tail 50    # 最近 50 条，已实现
 devd logs --level error        # 只看错误
 devd logs --since 5m           # 最近 5 分钟
 devd logs --grep "database"    # 关键词过滤
@@ -482,18 +483,28 @@ services:
 
 #### 9.1 CLI 框架：`clap`
 
-**子命令设计**：
+**MVP 已实现命令**（Linux/macOS）：
 ```bash
-devd init                      # 初始化配置
-devd start [--profile <name>]  # 启动所有服务
-devd stop                      # 停止所有服务
-devd restart <service>         # 重启某服务
-devd status                    # 查看状态
-devd logs [service] [--follow] # 查看日志
-devd top                       # 资源监控
-devd check                     # 检查配置
-devd graph                     # 显示依赖图
+devd start                       # 前台管理全栈，实时输出日志
+devd stop                        # 接受关闭请求后返回；前台完成清理后退出
+devd restart <service>           # 重启指定服务，重新检查依赖
+devd status [--json]             # 实时状态与 PID
+devd logs [service] [--tail N]   # 内存历史快照，默认 100，范围 1–1000
+devd check                       # 静态配置和 MVP 能力校验
+devd graph                       # 依赖边与并行启动层
 ```
+
+统一全局选项为 `-c/--config`（默认 `devd.yml`）、`--state-dir` 和 `--color auto|always|never`，可位于子命令前后。服务 cwd 在 CLI 边界解析为配置目录相对路径；env-file 相对服务 cwd。check/graph 复用编排入口校验，包括命令引号、Socket/exponential 等不支持设置，不启动服务或创建状态文件。文件存在性和网络可用性仍由运行时检查。
+
+`cli/mod.rs` 负责参数、路径和展示；`cli/server.rs` 协调前台 manager、控制连接与日志 writer；`cli/protocol.rs` 使用长度前缀 JSON；`cli/stdout.rs` 对终端和管道采用可取消的非阻塞写，兼容文件及 `/dev/null`。配置默认运行目录为 `<config-dir>/.devd/<config-name>/`，状态为 services.json，端点为 control.sock；socket 路径过长时报错提示使用较短的 --state-dir。
+
+start 先获取 StateStore 的同一把锁，再清理遗留 socket 和 bind；持锁到 socket 清理完成。不会替换非 socket 文件。socket 权限 0600；同时最多 32 个客户端，请求上限 4 KiB，响应上限 128 MiB（覆盖有界历史的 JSON 转义），读取和写入超时 5 秒。重启响应最多等待 55 秒，超时明确提示操作仍可能继续，需检查 status 后再重试。客户端整体响应等待最多 60 秒。
+
+stop/status/logs/restart 通过活实例操作，不解析可能已改坏的 YAML，不向遗留 PID 发送信号。status 离线时报错，持久化快照仅用于诊断。stop 返回“请求已接受”；最终退出由前台命令体现。错误返回非零退出码。
+
+手动 restart 经有界 channel 进入 manager，旧服务 actor 完成停止和日志收尾后重建 actor；保留累计重启次数与日志代次，允许重启仍有其他服务在运行时已正常退出的服务。手动操作绕过自动策略限制，但不重置自动重试的累计预算。等待健康依赖时可以被全栈停止打断；同一服务的并发重启明确拒绝。成功响应表示新代已启动，而非已经健康；服务终止失败仍触发全栈清理。
+
+start 输出断开触发有序停止，卡住的终端不会阻止采集；退出时日志排空最多等待 1 秒。日志历史仅存活于 supervisor，logs 不支持离线查询。`init`、`top`、`--profile`、`logs --follow` 和高级过滤留待后续版本。
 
 #### 9.2 交互式 TUI（可选）
 
@@ -625,7 +636,7 @@ fn get_process_stats(pid: Pid) -> ProcessStats {
 ```
 
 **用途**：
-- 为后续 `devd status` 提供运行时快照，不恢复或接管旧进程。退出后保留最终状态与失败诊断。
+- 提供持久化诊断快照，不恢复或接管旧进程。退出后保留最终状态与失败诊断；`devd status` 通过控制 socket 查询实时状态。
 - 状态路径由调用方选择，同一项目必须使用同一路径。`<path>.lock` 持有非阻塞独占 flock，第二个 manager 在启动任何子进程前失败。
 - 使用 `<path>.tmp` + rename 原子替换，读者不会读到半截 JSON。写入任务和服务任务保留锁所有权，防止取消时旧写入与新 manager 竞争；不要求磁盘掉电持久性。
 - 强杀或取消可能留下旧快照；快照 PID 本身不证明服务仍受管理，调用方必须结合锁和 supervisor 存活判断，不能直接向缓存 PID 发信号。
@@ -680,9 +691,11 @@ services:
 **手动测试清单**：
 1. `devd start` → 验证所有服务按顺序启动
 2. 杀掉某个进程 → 验证自动重启
-3. 修改 `devd.yml` → `devd reload` 验证热重载
-4. `devd logs --follow` → 验证实时日志
+3. `devd restart <service>` → 验证 PID 更换和依赖重新检查
+4. `devd logs [service] --tail 50` → 验证内存历史；前台 start 验证实时输出
 5. `devd stop` → 验证优雅关闭
+
+自动化真实命令测试入口为 `cargo test --locked --test cli`，包含配置错误、命令失败、信号、重复启动、配置删除、控制协议异常及终端输出故障。热重载不在 MVP 范围。
 
 ---
 

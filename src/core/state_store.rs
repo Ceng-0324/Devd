@@ -8,7 +8,7 @@ use nix::fcntl::{Flock, FlockArg};
 
 use super::service_manager::{RuntimeSnapshot, ServiceManagerError};
 
-pub(super) struct StateStore {
+pub(crate) struct StateStore {
     path: PathBuf,
     temporary: PathBuf,
     lock: Arc<Flock<std::fs::File>>,

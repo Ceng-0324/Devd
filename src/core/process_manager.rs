@@ -246,17 +246,8 @@ impl Drop for ManagedProcess {
 }
 
 async fn spawn_child(service: &str, config: &ServiceConfig) -> Result<(Child, Pid), ProcessError> {
-    let arguments =
-        shell_words::split(&config.command).map_err(|source| ProcessError::CommandParse {
-            service: service.to_owned(),
-            source,
-        })?;
-    let Some(program) = arguments.first().filter(|program| !program.is_empty()) else {
-        return Err(ProcessError::EmptyCommand {
-            service: service.to_owned(),
-        });
-    };
-    let mut command = Command::new(program);
+    let arguments = parse_command(service, &config.command)?;
+    let mut command = Command::new(&arguments[0]);
     command
         .args(&arguments[1..])
         .stdin(Stdio::null())
@@ -298,6 +289,19 @@ async fn spawn_child(service: &str, config: &ServiceConfig) -> Result<(Child, Pi
     })?;
     let group = Pid::from_raw(child.id().expect("newly spawned child has a PID") as i32);
     Ok((child, group))
+}
+
+pub(super) fn parse_command(service: &str, command: &str) -> Result<Vec<String>, ProcessError> {
+    let arguments = shell_words::split(command).map_err(|source| ProcessError::CommandParse {
+        service: service.to_owned(),
+        source,
+    })?;
+    if arguments.first().is_none_or(|program| program.is_empty()) {
+        return Err(ProcessError::EmptyCommand {
+            service: service.to_owned(),
+        });
+    }
+    Ok(arguments)
 }
 
 #[cfg(test)]

@@ -7,4 +7,4 @@ pub mod service_manager;
 #[cfg(unix)]
 mod service_task;
 #[cfg(unix)]
-mod state_store;
+pub(crate) mod state_store;

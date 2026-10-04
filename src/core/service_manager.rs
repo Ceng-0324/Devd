@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{
     signal::unix::{signal, SignalKind},
-    sync::{broadcast, watch},
+    sync::{broadcast, mpsc, oneshot, watch},
     task::{Id, JoinError, JoinSet},
     time::Instant,
 };
@@ -16,6 +16,7 @@ use crate::logging::{LogCollector, LogEntry, LogHistory, LogOptions, LogOptionsE
 use super::{
     dependency::DependencyGraph,
     health_check::{HealthCheckError, HealthChecker},
+    process_manager::{parse_command, ProcessError},
     service_task::{Control, ServiceTask},
     state_store::StateStore,
 };
@@ -90,6 +91,8 @@ impl ManagerOptions {
 #[derive(Debug, Error)]
 pub enum ServiceManagerError {
     #[error(transparent)]
+    Command(#[from] ProcessError),
+    #[error(transparent)]
     LogOptions(#[from] LogOptionsError),
     #[error(transparent)]
     InvalidConfig(#[from] ConfigValidationError),
@@ -128,6 +131,30 @@ pub struct ServiceManager {
     checkers: BTreeMap<String, Option<HealthChecker>>,
     snapshots: watch::Sender<RuntimeSnapshot>,
     logs: LogCollector,
+    commands: mpsc::Receiver<RestartRequest>,
+    controller: ServiceController,
+}
+
+struct RestartRequest {
+    service: String,
+    reply: oneshot::Sender<Result<ServiceSnapshot, String>>,
+}
+
+/// Requests are serialized by the manager; actors retain process ownership.
+#[derive(Clone)]
+pub struct ServiceController(mpsc::Sender<RestartRequest>);
+
+impl ServiceController {
+    pub async fn restart(&self, service: String) -> Result<ServiceSnapshot, String> {
+        let (reply, response) = oneshot::channel();
+        self.0
+            .send(RestartRequest { service, reply })
+            .await
+            .map_err(|_| "supervisor is stopping".to_string())?;
+        response
+            .await
+            .map_err(|_| "supervisor stopped before restart completed".to_string())?
+    }
 }
 
 impl ServiceManager {
@@ -150,6 +177,7 @@ impl ServiceManager {
         let mut checkers = BTreeMap::new();
         for name in graph.service_names() {
             let service = &config.services[name];
+            parse_command(name, &service.command)?;
             if service.restart.backoff == BackoffType::Exponential {
                 return Err(ServiceManagerError::UnsupportedBackoff {
                     service: name.into(),
@@ -179,6 +207,7 @@ impl ServiceManager {
         };
         let (snapshots, _) = watch::channel(initial);
         let logs = LogCollector::new(options.logging)?;
+        let (sender, commands) = mpsc::channel(32);
         Ok(Self {
             config,
             options,
@@ -186,6 +215,8 @@ impl ServiceManager {
             checkers,
             snapshots,
             logs,
+            commands,
+            controller: ServiceController(sender),
         })
     }
 
@@ -199,6 +230,10 @@ impl ServiceManager {
 
     pub fn log_history(&self) -> LogHistory {
         self.logs.history()
+    }
+
+    pub fn controller(&self) -> ServiceController {
+        self.controller.clone()
     }
 
     /// Install SIGINT (Ctrl+C) and SIGTERM handlers before spawning children.
@@ -222,6 +257,14 @@ impl ServiceManager {
         shutdown: impl Future<Output = ()>,
     ) -> Result<RuntimeSnapshot, ServiceManagerError> {
         let store = Arc::new(StateStore::open(&self.options.state_path).await?);
+        self.run_with_store(shutdown, store).await
+    }
+
+    pub(crate) async fn run_with_store(
+        mut self,
+        shutdown: impl Future<Output = ()>,
+        store: Arc<StateStore>,
+    ) -> Result<RuntimeSnapshot, ServiceManagerError> {
         let initial = self.snapshots.borrow().clone();
         store.write(&initial).await?;
         tokio::pin!(shutdown);
@@ -234,36 +277,51 @@ impl ServiceManager {
         let mut tasks = JoinSet::new();
         let mut names = BTreeMap::new();
         let mut controls = BTreeMap::new();
-        for (name, checker) in self.checkers {
+        for name in self.checkers.keys() {
             let (control, receiver) = watch::channel(if shutdown_requested {
                 Control::Quiescing
             } else {
                 Control::Running
             });
             controls.insert(name.clone(), control);
-            let actor = ServiceTask::new(
-                name.clone(),
-                self.config.services[&name].clone(),
-                checker,
-                self.options.clone(),
-                receiver,
-                self.snapshots.clone(),
-                self.logs.clone(),
-            );
-            let lease = store.clone();
-            let handle = tasks.spawn(async move {
-                let _lease = lease;
-                actor.run().await
-            });
-            names.insert(handle.id(), name);
+            let id = self.spawn_actor(name, receiver, &store, &mut tasks);
+            names.insert(id, name.clone());
         }
+        let mut restarting: BTreeMap<String, oneshot::Sender<Result<ServiceSnapshot, String>>> =
+            BTreeMap::new();
+        let mut starting: BTreeMap<String, oneshot::Sender<Result<ServiceSnapshot, String>>> =
+            BTreeMap::new();
         let mut error = None;
         while !shutdown_requested && !tasks.is_empty() {
             tokio::select! {
                 biased;
                 _ = &mut shutdown => break,
+                Some(request) = self.commands.recv() => {
+                    let name = request.service;
+                    let rejection = if !controls.contains_key(&name) {
+                        Some(format!("unknown service '{name}'"))
+                    } else if restarting.contains_key(&name) || starting.contains_key(&name) {
+                        Some(format!("service '{name}' is already restarting"))
+                    } else { None };
+                    if let Some(error) = rejection {
+                        let _ = request.reply.send(Err(error));
+                    } else {
+                        controls[&name].send_replace(Control::Restarting);
+                        restarting.insert(name, request.reply);
+                    }
+                },
                 _ = updates.changed() => {
                     let snapshot = updates.borrow_and_update().clone();
+                    let completed: Vec<_> = starting.keys().filter(|name| {
+                        matches!(snapshot.services[*name].status, ServiceState::Running | ServiceState::Healthy | ServiceState::Unhealthy | ServiceState::Stopped | ServiceState::Failed)
+                    }).cloned().collect();
+                    for name in completed {
+                        let state = snapshot.services[&name].clone();
+                        let result = if state.pid.is_some() { Ok(state) } else {
+                            Err(state.last_error.unwrap_or_else(|| format!("service '{name}' exited before restart completed")))
+                        };
+                        let _ = starting.remove(&name).unwrap().send(result);
+                    }
                     if let Err(failure) = store.write(&snapshot).await {
                         error = Some(failure);
                         break;
@@ -278,6 +336,23 @@ impl ServiceManager {
                         break;
                     }
                 },
+            }
+            let ready: Vec<_> = restarting
+                .keys()
+                .filter(|name| !names.values().any(|active| active == *name))
+                .cloned()
+                .collect();
+            for name in ready {
+                self.snapshots.send_modify(|snapshot| {
+                    let state = snapshot.services.get_mut(&name).unwrap();
+                    state.status = ServiceState::Restarting;
+                    state.restart_count = state.restart_count.saturating_add(1);
+                });
+                let (control, receiver) = watch::channel(Control::Running);
+                controls.insert(name.clone(), control);
+                let id = self.spawn_actor(&name, receiver, &store, &mut tasks);
+                names.insert(id, name.clone());
+                starting.insert(name.clone(), restarting.remove(&name).unwrap());
             }
         }
         for control in controls.values() {
@@ -300,6 +375,13 @@ impl ServiceManager {
             }
         }
         let snapshot = self.snapshots.borrow().clone();
+        for (name, reply) in restarting.into_iter().chain(starting) {
+            let message = snapshot.services[&name]
+                .last_error
+                .clone()
+                .unwrap_or_else(|| "supervisor stopped before restart completed".into());
+            let _ = reply.send(Err(message));
+        }
         if let Some(error) = error {
             return Err(error);
         }
@@ -321,6 +403,31 @@ impl ServiceManager {
             return Err(ServiceManagerError::FailedServices { failures });
         }
         Ok(snapshot)
+    }
+
+    fn spawn_actor(
+        &self,
+        name: &str,
+        receiver: watch::Receiver<Control>,
+        store: &Arc<StateStore>,
+        tasks: &mut JoinSet<()>,
+    ) -> Id {
+        let actor = ServiceTask::new(
+            name.into(),
+            self.config.services[name].clone(),
+            self.checkers[name].clone(),
+            self.options.clone(),
+            receiver,
+            self.snapshots.clone(),
+            self.logs.clone(),
+        );
+        let lease = store.clone();
+        tasks
+            .spawn(async move {
+                let _lease = lease;
+                actor.run().await
+            })
+            .id()
     }
 }
 

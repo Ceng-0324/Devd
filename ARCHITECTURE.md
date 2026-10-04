@@ -1,5 +1,27 @@
 # devd - 架构设计文档
 
+## 当前 MVP 控制链路
+
+```mermaid
+flowchart LR
+    start[devd start: foreground] --> lock[Project state lock]
+    lock --> server[Unix socket control server]
+    server --> manager[ServiceManager]
+    clients[stop / restart / status / logs] --> server
+    manager --> actors[Service actors and process groups]
+    actors --> logs[Bounded in-memory logs]
+    logs --> terminal[Serialized live stdout]
+    logs --> server
+    manager --> state[Atomic services.json]
+    check[check / graph] --> config[Configuration validation and DAG]
+```
+
+`cli/mod.rs` 负责 clap 参数、配置路径和命令输出；`cli/protocol.rs` 提供有界长度前缀 JSON；`cli/server.rs` 在同一状态锁下管理 socket、编排器与客户端；`cli/stdout.rs` 支持可取消的终端/管道写入。命令通过活实例操作，离线 status 报错，不信任旧快照 PID。
+
+默认状态目录为 `<config-dir>/.devd/<config-name>/`，可用 `--state-dir` 覆盖。服务 cwd 相对配置目录；环境文件相对服务 cwd。stop 的响应表示请求已接受，前台 supervisor 负责完成反向依赖关闭。手动 restart 通过 manager channel 停止旧 actor 并重建，保留计数/日志代次、重新检查依赖，不联动重启其他服务。
+
+当前可用命令为 start、stop、restart、status、logs、check、graph。下方总体蓝图仍包含未来的 init、资源监控、Socket/Script 健康检查、指数退避、配置监听等扩展，不能视为当前实现。
+
 ## 系统架构图
 
 ```
@@ -320,7 +342,7 @@ flowchart TD
     live --> writer[Single async writer: prefixes and colors]
 ```
 
-完整条目在读取管道侧生成，历史插入与 live 分发顺序一致。单行默认最多保留 16 KiB，超长行标记截断；EOF、取消和读取错误记录尾部一次。慢终端只丢失完整 live 条目并报告 WARN，不阻塞采集或服务管理。磁盘日志持久化和轮转属于 v0.4，CLI 接入属于下一模块。
+完整条目在读取管道侧生成，历史插入与 live 分发顺序一致。单行默认最多保留 16 KiB，超长行标记截断；EOF、取消和读取错误记录尾部一次。慢终端只丢失完整 live 条目并报告 WARN，不阻塞采集或服务管理。CLI start 输出实时日志，logs 查询内存快照；磁盘日志持久化和轮转属于 v0.4。
 
 ---
 
@@ -338,18 +360,11 @@ devd/
 ├── src/
 │   ├── main.rs                # Entry point
 │   │
-│   ├── cli/                   # CLI layer
-│   │   ├── mod.rs
-│   │   ├── commands/
-│   │   │   ├── init.rs        # devd init
-│   │   │   ├── start.rs       # devd start
-│   │   │   ├── stop.rs        # devd stop
-│   │   │   ├── restart.rs     # devd restart
-│   │   │   ├── logs.rs        # devd logs
-│   │   │   ├── status.rs      # devd status
-│   │   │   ├── graph.rs       # devd graph
-│   │   │   └── check.rs       # devd check
-│   │   └── output.rs          # Colored output formatting
+│   ├── cli/                   # Implemented CLI layer
+│   │   ├── mod.rs             # clap, paths, commands and presentation
+│   │   ├── protocol.rs        # Bounded local request/response transport
+│   │   ├── server.rs          # Foreground runtime and client lifecycle
+│   │   └── stdout.rs          # Cancellable terminal and pipe writes
 │   │
 │   ├── core/                  # Domain layer
 │   │   ├── mod.rs
@@ -383,6 +398,7 @@ devd/
 │       └── signal_handler.rs  # SIGTERM/SIGINT handling
 │
 ├── tests/
+│   ├── cli.rs                 # Real binary lifecycle and failure tests
 │   ├── integration/           # Integration tests
 │   │   ├── basic_start_stop.rs
 │   │   ├── dependency_order.rs
@@ -505,7 +521,7 @@ pub enum BackoffType {
 
 | 模块 | 所有权与接口 |
 | --- | --- |
-| `core/service_manager.rs` | 校验全栈、并发创建服务任务、状态订阅、SIGINT/SIGTERM、失败回滚和反向拓扑关闭；公开 `ServiceManager`、`ManagerOptions`、`RuntimeSnapshot` |
+| `core/service_manager.rs` | 校验全栈、并发创建服务任务、状态订阅、SIGINT/SIGTERM、失败回滚和反向拓扑关闭；`ServiceController` 传递手动重启请求并返回启动结果 |
 | `core/service_task.rs` | 私有服务任务，独占 `ManagedProcess`，等待依赖、观察退出与健康、固定延时重启、并发调用日志采集器排空 stdout/stderr |
 | `logging/collector.rs` | 独立流分行、有界行长、全栈环形历史和完整日志条目分发 |
 | `logging/output.rs` | 单个异步 writer 串行输出、稳定颜色、控制字符转义和 live 丢失诊断 |
@@ -598,7 +614,7 @@ Pending -> Starting -> Running -> Healthy / Unhealthy
 **说明**：
 - devd 是前台进程（不是 daemon），用户 Ctrl+C 即退出
 - 所有子服务是 devd 的子进程（`kill_on_drop` 保证清理）
-- 状态文件持久化，下次启动可恢复（可选）
+- 状态文件持久化用于诊断；不恢复或接管旧进程，不对遗留 PID 发信号
 
 ---
 

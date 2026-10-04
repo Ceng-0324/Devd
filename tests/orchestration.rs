@@ -569,6 +569,74 @@ async fn test_orchestration_health_failure_exhaustion_stops_process() {
 }
 
 #[tokio::test]
+async fn test_orchestration_manual_restart_keeps_waiting_dependents_alive() {
+    let directory = tempdir().unwrap();
+    let server = HttpServer::start(503).await;
+    let mut root = sleeper(directory.path());
+    root.healthcheck = Some(server.healthcheck());
+    let mut child = sleeper(directory.path());
+    child
+        .depends_on
+        .push(dependency("root", DependencyCondition::HttpReady));
+    let manager = ServiceManager::new(
+        config([("root", root), ("child", child)]),
+        options(&directory),
+    )
+    .unwrap();
+    let controller = manager.controller();
+    let mut run = RunningManager::start(manager);
+    let first = run
+        .until(|s| s.services["root"].status == ServiceState::Unhealthy)
+        .await;
+    let restarted = bounded(controller.restart("root".into())).await.unwrap();
+    assert_ne!(restarted.pid, first.services["root"].pid);
+    assert_eq!(restarted.restart_count, 1);
+    assert_eq!(
+        run.snapshots.borrow().services["child"].status,
+        ServiceState::Pending
+    );
+    server.status.store(200, Ordering::SeqCst);
+    run.until(|s| s.services["child"].pid.is_some()).await;
+    run.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_orchestration_manual_restart_rechecks_dependencies_and_shutdown_wins() {
+    let directory = tempdir().unwrap();
+    let server = HttpServer::start(200).await;
+    let mut root = sleeper(directory.path());
+    root.healthcheck = Some(server.healthcheck());
+    let mut child = sleeper(directory.path());
+    child
+        .depends_on
+        .push(dependency("root", DependencyCondition::HttpReady));
+    let manager = ServiceManager::new(
+        config([("root", root), ("child", child)]),
+        options(&directory),
+    )
+    .unwrap();
+    let controller = manager.controller();
+    let mut run = RunningManager::start(manager);
+    let first = run.until(|s| s.services["child"].pid.is_some()).await;
+    server.status.store(503, Ordering::SeqCst);
+    run.until(|s| s.services["root"].status == ServiceState::Unhealthy)
+        .await;
+    let requester = controller.clone();
+    let restart = tokio::spawn(async move { requester.restart("child".into()).await });
+    run.until(|s| s.services["child"].restart_count == 1 && s.services["child"].pid.is_none())
+        .await;
+    assert!(!restart.is_finished());
+    assert!(bounded(controller.restart("child".into()))
+        .await
+        .unwrap_err()
+        .contains("already restarting"));
+    run.shutdown().await.unwrap();
+    assert!(bounded(restart).await.unwrap().is_err());
+    reaped(first.services["child"].pid.unwrap()).await;
+    assert!(controller.restart("child".into()).await.is_err());
+}
+
+#[tokio::test]
 async fn test_orchestration_shutdown_forces_stubborn_leader_and_descendants() {
     let directory = tempdir().unwrap();
     let child = service("trap '' TERM; sleep 60 & echo $!; wait", directory.path());
@@ -836,14 +904,27 @@ async fn test_orchestration_cancelling_run_kills_owned_process_groups() {
     task.abort();
     assert!(bounded(task).await.unwrap_err().is_cancelled());
     reaped(initial.services["child"].pid.unwrap()).await;
-    bounded(
-        ServiceManager::new(
-            config([("child", service("exit 0", directory.path()))]),
-            options(&directory),
-        )
-        .unwrap()
-        .run_until(std::future::pending()),
-    )
+    bounded(async {
+        // Child reaping does not imply that a cancelled blocking state write
+        // has completed. Its lease must remain locked until atomic rename ends.
+        loop {
+            let result = ServiceManager::new(
+                config([("child", service("exit 0", directory.path()))]),
+                options(&directory),
+            )
+            .unwrap()
+            .run_until(std::future::pending())
+            .await;
+            match result {
+                Err(ServiceManagerError::StateIo { source, .. })
+                    if source.kind() == std::io::ErrorKind::WouldBlock =>
+                {
+                    tokio::task::yield_now().await;
+                }
+                other => break other,
+            }
+        }
+    })
     .await
     .unwrap();
 }

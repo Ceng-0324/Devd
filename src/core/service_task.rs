@@ -19,6 +19,7 @@ pub(super) enum Control {
     Running,
     Quiescing,
     Stopping,
+    Restarting,
 }
 
 pub(super) struct ServiceTask {
@@ -49,6 +50,7 @@ impl ServiceTask {
         snapshots: watch::Sender<RuntimeSnapshot>,
         logs: LogCollector,
     ) -> Self {
+        let state = snapshots.borrow().services[&name].clone();
         Self {
             name,
             config,
@@ -57,7 +59,7 @@ impl ServiceTask {
             control,
             snapshots,
             logs,
-            state: ServiceSnapshot::default(),
+            state,
         }
     }
 
@@ -68,7 +70,7 @@ impl ServiceTask {
                 Ok(true) => {}
                 Ok(false) => {
                     self.wait_stop().await;
-                    self.transition(ServiceState::Stopped);
+                    self.mark_stopped();
                     break;
                 }
                 Err(error) => {
@@ -77,7 +79,7 @@ impl ServiceTask {
                 }
             }
             if restarting {
-                self.state.restart_count += 1;
+                self.state.restart_count = self.state.restart_count.saturating_add(1);
             }
             self.transition(ServiceState::Starting);
             // A stop request must also be able to interrupt async env-file reads.
@@ -89,7 +91,7 @@ impl ServiceTask {
             let mut process = match spawn {
                 None => {
                     self.wait_stop().await;
-                    self.transition(ServiceState::Stopped);
+                    self.mark_stopped();
                     break;
                 }
                 Some(Ok(process)) => process,
@@ -118,7 +120,7 @@ impl ServiceTask {
                     match stopped {
                         Ok(status) => {
                             self.record_exit(status);
-                            self.transition(ServiceState::Stopped);
+                            self.mark_stopped();
                         }
                         Err(error) => self.fail(error.to_string()),
                     }
@@ -194,8 +196,19 @@ impl ServiceTask {
         *self.control.borrow() == Control::Running
     }
 
+    fn mark_stopped(&mut self) {
+        self.transition(if *self.control.borrow() == Control::Restarting {
+            ServiceState::Restarting
+        } else {
+            ServiceState::Stopped
+        });
+    }
+
     async fn wait_stop(&mut self) {
-        while *self.control.borrow_and_update() != Control::Stopping {
+        while !matches!(
+            *self.control.borrow_and_update(),
+            Control::Stopping | Control::Restarting
+        ) {
             if self.control.changed().await.is_err() {
                 break;
             }
@@ -295,7 +308,7 @@ impl ServiceTask {
     async fn schedule_restart(&mut self, failed: bool) -> bool {
         if !self.running() {
             self.wait_stop().await;
-            self.transition(ServiceState::Stopped);
+            self.mark_stopped();
             return false;
         }
         let retry = should_restart(&self.config, failed, self.state.restart_count);
@@ -312,7 +325,7 @@ impl ServiceTask {
             biased;
             _ = self.control.changed() => {
                 self.wait_stop().await;
-                self.transition(ServiceState::Stopped);
+                self.mark_stopped();
                 false
             },
             _ = tokio::time::sleep(self.config.restart.initial_delay) => true,
