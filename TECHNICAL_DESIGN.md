@@ -96,6 +96,19 @@ services:
 - 手动校验依赖图（检测循环依赖）
 - `devd check` 命令提前发现配置错误
 
+**当前配置入口**：`ConfigLoader::load` 读取 YAML 后自动执行语义校验；
+`ConfigLoader::from_str` 只解析 YAML，调用方启动服务前必须调用 `DevdConfig::validate`。
+校验不访问文件系统或网络，不启动子进程。
+
+**校验规则**：
+- 配置版本必须为 `"1"`，且至少定义一个服务。
+- 服务名以 ASCII 字母、数字或下划线开头，其余字符允许 ASCII 字母、数字、`_`、`-`、`.`。
+- 命令不能为空或包含 NUL；依赖必须存在且不能重复，循环依赖报告完整闭环路径。
+- HTTP 检查要求带主机的 HTTP/HTTPS URL；TCP 主机不能为空或包含空白、控制字符，端口范围为 1–65535；Socket 路径不能为空。
+- 健康检查 interval、timeout、retries 必须大于零。
+- `http-ready`、`tcp-ready`、`socket-ready` 要求被依赖服务配置对应类型的健康检查；`started` 不要求健康检查。
+- 按服务名和依赖名排序校验，保证错误输出确定。
+
 #### 3.3 环境变量替换
 
 **支持语法**：

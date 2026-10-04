@@ -1,0 +1,12 @@
+version: "1"
+services:
+  db:
+    command: db
+    healthcheck:
+      type: tcp
+      port: 5432
+  api:
+    command: api
+    depends-on:
+      - service: db
+        condition: tcp-ready

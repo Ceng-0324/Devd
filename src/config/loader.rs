@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 use super::schema::DevdConfig;
+use super::validation::ConfigValidationError;
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
@@ -18,6 +19,12 @@ pub enum ConfigError {
         #[source]
         source: serde_yaml::Error,
     },
+    #[error("invalid configuration file {path}: {source}")]
+    Validation {
+        path: PathBuf,
+        #[source]
+        source: ConfigValidationError,
+    },
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -28,7 +35,7 @@ impl ConfigLoader {
         Self
     }
 
-    /// Load and deserialize a YAML configuration file.
+    /// Load, deserialize, and validate a YAML configuration file.
     pub async fn load<P>(&self, path: P) -> Result<DevdConfig, ConfigError>
     where
         P: AsRef<Path>,
@@ -42,10 +49,15 @@ impl ConfigLoader {
                     source,
                 })?;
 
-        Self::from_str(&contents, &path)
+        let config = Self::from_str(&contents, &path)?;
+        config
+            .validate()
+            .map_err(|source| ConfigError::Validation { path, source })?;
+        Ok(config)
     }
 
-    /// Deserialize a YAML configuration string.
+    /// Deserialize YAML without semantic validation. Call `DevdConfig::validate`
+    /// before using the configuration to start services.
     pub fn from_str(contents: &str, path: impl Into<PathBuf>) -> Result<DevdConfig, ConfigError> {
         let path = path.into();
         serde_yaml::from_str(contents).map_err(|source| ConfigError::Parse { path, source })
