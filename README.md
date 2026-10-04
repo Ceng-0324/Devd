@@ -1,40 +1,44 @@
 # Devd
 
-把本地开发的一组进程管起来：按依赖启动，看得见状态，找得到日志，退出时一起收好。
+**English** · [简体中文](README.zh-CN.md)
 
-这个东西的灵感，因为一个 **fucking event** 而产生。
+***This thing*** keeps your local dev processes in order: start them by dependency, see what's running, find the logs, and shut the whole lot down when you're done.
 
-我误清了 `tmp` 目录里的文件，Codex 的 `app-server` 随后遇到了 dangling symlink——软链接还在，指向的文件没了。然后，所有会话直接崩掉。
+Honestly, the inspiration came from one **fucking event**.
 
-清个临时目录，把整个工作现场清下线了。行。
+I accidentally deleted files from a `tmp` directory. Codex's `app-server` then ran into a dangling symlink: the link was still there, but its target was gone. Every session crashed.
 
-这次事故让我开始在意开发环境里那些平时没人在意的关系：哪个进程依赖谁，启动了是不是就算能用，出了问题去哪里看，重启之后又该按什么顺序恢复。于是有了 devd：把启动顺序、健康状态和进程生命周期，写进一份能执行的配置里。
+Went in to clean up temporary files. Took every session down with them. Great.
 
-修复断掉的文件依赖仍然需要人来处理。devd 负责的是配置中交给它管理的服务：让日常的启动、观察、重启和收尾有个着落。
+That got me thinking about the relationships in a development environment that are easy to ignore until something breaks. Which process depends on which? Does “started” actually mean “ready”? Where do you look when something fails? What needs to come back first?
 
-## 它能做什么
+So I built devd: startup order, health checks, and process lifecycles in a configuration you can actually run.
 
-devd 是用 Rust 编写的本地开发服务管理器，当前为 **v0.1 MVP，支持 Linux 和 macOS**。
+Broken file dependencies still need fixing. devd takes care of the services you put under its supervision, giving the everyday business of starting, inspecting, restarting, and stopping them a home.
 
-一份 `devd.yml` 描述服务和依赖，`devd start` 在前台管理它们。你可以继续在另一个终端查状态、翻日志或重启某个服务。
+## What it does
 
-- **按依赖启动**：独立服务并发启动；依赖可以等待进程启动，也可以等待 TCP / HTTP 健康检查通过。
-- **观察健康状态**：TCP 连接与 HTTP 2xx 探测，记录连续失败和错误原因。
-- **处理异常退出**：支持 `always`、`on-failure`、`never`，使用固定延时和有限的自动重试次数。
-- **把日志放到一起**：收集 stdout / stderr，添加时间、服务名和颜色，按服务查询最近的输出。
-- **有序收尾**：Ctrl+C、SIGTERM 或 `devd stop` 触发反向依赖关闭，并清理受管进程组里的后代。
+devd is a local development service manager written in Rust. It's currently a **v0.1 MVP for Linux and macOS**.
 
-适合 API、前端、worker 等需要一起运行的本地项目。服务继续使用自己的启动命令，devd 负责把它们组织起来。
+Describe your services and their dependencies in `devd.yml`, then run `devd start` in the foreground. Use another terminal to check status, read logs, or restart a service.
 
-## 先跑起来
+- **Start in dependency order.** Independent services start concurrently. Dependencies can wait for a process to start or for a TCP / HTTP health check to pass.
+- **Watch service health.** TCP connection checks and HTTP 2xx probes track consecutive failures and report what went wrong.
+- **Handle unexpected exits.** Choose `always`, `on-failure`, or `never`, with a fixed retry delay and a limit on automatic restarts.
+- **Bring the logs together.** Collect stdout / stderr with timestamps, service names, and colors. Query recent output for a specific service.
+- **Clean up on the way out.** Ctrl+C, SIGTERM, or `devd stop` shuts services down in reverse dependency order and cleans up descendants in their process groups.
 
-需要 Rust 工具链。在仓库根目录安装：
+It's for local projects with an API, a frontend, workers, or other processes that need to run together. Your services keep their existing startup commands; devd coordinates them.
+
+## Get it running
+
+You'll need the Rust toolchain. Install from the repository root:
 
 ```bash
 cargo install --path . --locked
 ```
 
-找一个项目目录，创建 `devd.yml`。先用两个只打印消息、然后等待的演示进程，看看完整流程：
+Create a `devd.yml` in a project directory. Start with two demo processes that print a message and then wait, so you can try the whole flow:
 
 ```yaml
 version: "1"
@@ -53,12 +57,12 @@ services:
 ```
 
 ```bash
-devd check       # 先检查配置
-devd graph       # 看依赖关系和启动层次
-devd start       # 前台启动，实时输出日志
+devd check       # Validate the configuration
+devd graph       # Inspect dependencies and startup layers
+devd start       # Run in the foreground with live logs
 ```
 
-保持这个终端运行，在另一个终端进入同一目录：
+Leave that terminal running. Open another terminal in the same directory:
 
 ```bash
 devd status
@@ -67,11 +71,11 @@ devd restart worker
 devd stop
 ```
 
-也可以直接在运行 `start` 的终端按 Ctrl+C。等它退出，这组服务就收尾了。
+You can also press Ctrl+C in the terminal running `start`. Once it exits, the services have been cleaned up.
 
-## 换成你的服务
+## Use your own services
 
-把 `command` 换成项目本来的启动命令即可。比如，一个提供 `/health` 接口的 Node.js API 和依赖它的前端：
+Replace `command` with whatever you already use to start your service. Here's a Node.js API with a `/health` endpoint and a frontend that waits for it:
 
 ```yaml
 version: "1"
@@ -100,42 +104,42 @@ services:
       policy: never
 ```
 
-这个例子需要你已有 `backend`、`frontend`、对应的 `dev` 脚本和 `backend/.env.local`。API 的健康接口返回 2xx 后，前端才会启动；依赖等待默认最多 30 秒。
+This assumes you already have `backend`, `frontend`, their `dev` scripts, and `backend/.env.local`. The frontend starts after the API's health endpoint returns 2xx. The default dependency readiness timeout is 30 seconds.
 
-`cwd` 相对配置文件所在目录，`env-file` 相对服务的 `cwd`。显式配置的 `env` 会覆盖环境文件里的同名值。命令支持带引号的参数；需要管道、重定向或 shell 展开时，显式使用 `sh -c '...'`。
+`cwd` is relative to the configuration file's directory. `env-file` is relative to the service's `cwd`, and explicit `env` values override entries from that file. Commands support quoted arguments. For pipes, redirection, or shell expansion, use `sh -c '...'` explicitly.
 
-## 常用命令
+## Commands
 
-| 命令 | 用途 |
+| Command | Purpose |
 | --- | --- |
-| `devd start` | 前台启动全栈并实时输出日志 |
-| `devd stop` | 请求有序关闭，前台进程完成清理后退出 |
-| `devd restart <service>` | 用启动时的配置重启一个服务，重新检查依赖 |
-| `devd status [--json]` | 查看实时状态、PID、重启次数和诊断信息 |
-| `devd logs [service] [--tail N]` | 查询内存日志，默认 100 条，N 为 1–1000 |
-| `devd check` | 校验配置、命令引号、依赖关系及当前支持的设置 |
-| `devd graph` | 显示依赖边和并行启动层 |
+| `devd start` | Start the stack in the foreground and stream logs |
+| `devd stop` | Request ordered shutdown; the foreground process exits after cleanup |
+| `devd restart <service>` | Restart one service using the configuration loaded at startup, rechecking dependencies |
+| `devd status [--json]` | Show live state, PIDs, restart counts, and diagnostics |
+| `devd logs [service] [--tail N]` | Query buffered logs; defaults to 100 entries, with N from 1–1000 |
+| `devd check` | Validate configuration, command quoting, dependencies, and supported settings |
+| `devd graph` | Show dependency edges and parallel startup layers |
 
-所有命令共用 `-c / --config <PATH>`、`--state-dir <PATH>` 和 `--color auto|always|never`，选项可以放在子命令前后：
+All commands accept `-c / --config <PATH>`, `--state-dir <PATH>`, and `--color auto|always|never`. Options work before or after the subcommand:
 
 ```bash
 devd start --config ./devd.local.yml
 devd --config ./devd.local.yml status --json
 ```
 
-## 用之前知道这几件事
+## A few things to know
 
-**前台运行，项目内通信。** devd 使用 Tokio 管理服务任务，其他终端通过 Unix socket 访问正在运行的实例。默认运行目录是配置目录下的 `.devd/<配置文件名>/`，建议把 `.devd/` 加进项目的 `.gitignore`。socket 路径过长时，可以用较短的 `--state-dir`；同一实例的命令要使用相同参数。
+**It runs in the foreground.** devd manages service tasks with Tokio. Commands in other terminals reach the running instance through a Unix socket. Runtime files default to `.devd/<config-filename>/` inside the configuration directory; add `.devd/` to your project's `.gitignore`. If the socket path is too long, choose a shorter `--state-dir`. Use the same configuration and state directory when addressing the same instance.
 
-**重启有明确边界。** 手动重启只作用于指定服务，使用本次启动时的配置；成功表示新进程已启动，健康检查可能还在进行。手动操作可以绕过 `never` 和自动重试上限，但累计重启次数不会重置。启动失败或自动重试耗尽等终止性错误会触发全栈清理。
+**Restarts have a defined scope.** A manual restart affects only the named service and uses the configuration loaded at startup. Success means the new process has started; it may still be waiting to pass its health check. Manual restarts can bypass `never` and the automatic retry limit, but don't reset the cumulative restart count. Terminal failures, such as a startup failure with no retries remaining or an exhausted retry budget, trigger cleanup of the whole stack.
 
-**日志保存在内存里。** 默认保留全栈最近 1000 条，单行最多 16 KiB，停止后不能再通过 `logs` 查询。前台输出过慢时会丢弃部分实时条目并告警；输出管道断开会触发服务清理。
+**Logs live in memory.** By default, devd retains the latest 1000 entries across the stack, with a 16 KiB limit per line. They can't be queried through `logs` after shutdown. Slow foreground output can lose live entries, with a warning; a broken output pipe triggers service cleanup.
 
-**诊断反映当前实例。** `status` 离线时返回错误，遗留状态文件仅用于诊断。配置内容被改坏后，仍可通过活实例执行 `stop`、`status`、`logs` 和 `restart`。`check` 做静态校验，可执行文件、环境文件和探测端点是否可用，要到运行时确认。命令失败返回非零退出码。
+**Diagnostics describe the running instance.** `status` returns an error when the supervisor is offline; leftover state files are for diagnosis. If you break the configuration file while devd is running, you can still use `stop`, `status`, `logs`, and `restart`. `check` performs static validation; executable availability, environment files, and probe endpoints are checked at runtime. Failed commands return a nonzero exit code.
 
-当前范围是本地进程管理。配置生成、资源监控、热重载、指数退避、`logs --follow`、磁盘日志和 TUI 都还在后续规划里。
+The current scope is local process management. Configuration generation, resource monitoring, hot reload, exponential backoff, `logs --follow`, disk logs, and a TUI are planned for later versions.
 
-## 开发与验证
+## Development and validation
 
 ```bash
 cargo fmt --all -- --check
@@ -144,10 +148,10 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo build --locked
 ```
 
-端到端测试会启动真实子进程，验证依赖就绪、故障恢复、日志、状态和关闭后的进程清理：
+End-to-end tests launch real child processes and verify dependency readiness, failure recovery, logs, status, and process cleanup after shutdown:
 
 ```bash
 cargo test --locked --test integration
 ```
 
-[测试与手动验证](tests/README.md) · [技术方案](TECHNICAL_DESIGN.md) · [架构设计](ARCHITECTURE.md)
+[Tests and manual validation](tests/README.md) · [Technical design (中文)](TECHNICAL_DESIGN.md) · [Architecture (中文)](ARCHITECTURE.md)
