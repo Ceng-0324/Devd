@@ -137,6 +137,8 @@ devd --config ./devd.local.yml status --json
 
 当前范围是本地进程管理。配置生成、资源监控、热重载、指数退避、`logs --follow`、磁盘日志和 TUI 都还在后续规划里。
 
+配置会拒绝未知字段和未实现的 `limits`。YAML 值按字面使用，尚未实现 `${VAR}` 替换。fixed 策略下的 `max-delay` 为预留字段，不改变重试延时。
+
 ## 开发与验证
 
 ```bash

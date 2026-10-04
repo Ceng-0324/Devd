@@ -1020,18 +1020,25 @@ async fn test_orchestration_sigint_and_sigterm_trigger_graceful_shutdown() {
             .kill_on_drop(true)
             .spawn()
             .unwrap();
-        bounded(async {
-            while !directory.path().join("ready").exists() {
+        let initial = bounded(async {
+            loop {
+                // The child can publish readiness before the manager persists
+                // its PID. Wait for both independent events before signalling.
+                if directory.path().join("ready").exists() {
+                    let snapshot: RuntimeSnapshot = serde_json::from_slice(
+                        &tokio::fs::read(directory.path().join("services.json"))
+                            .await
+                            .unwrap(),
+                    )
+                    .unwrap();
+                    if snapshot.services["child"].pid.is_some() {
+                        break snapshot;
+                    }
+                }
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
         .await;
-        let initial: RuntimeSnapshot = serde_json::from_slice(
-            &tokio::fs::read(directory.path().join("services.json"))
-                .await
-                .unwrap(),
-        )
-        .unwrap();
         kill(Pid::from_raw(supervisor.id().unwrap() as i32), signal).unwrap();
         assert!(bounded(supervisor.wait()).await.unwrap().success());
         let saved: RuntimeSnapshot = serde_json::from_slice(

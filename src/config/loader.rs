@@ -169,6 +169,21 @@ services:
     }
 
     #[test]
+    fn test_config_loader_rejects_unknown_fields_at_every_level() {
+        for contents in [
+            "version: '1'\nservices: {}\nprofiles: {}",
+            "version: '1'\nservices:\n  api: {command: api, health-check: {type: tcp, port: 80}}",
+            "version: '1'\nservices:\n  api: {command: api, restart: {max-attempt: 2}}",
+            "version: '1'\nservices:\n  api: {command: api, healthcheck: {type: tcp, port: 80, retry: 3}}",
+            "version: '1'\nservices:\n  api: {command: api, depends-on: [{service: db, timeout: 60s}]}",
+            "version: '1'\nservices:\n  api: {command: api, limits: {memroy: 1GB}}",
+        ] {
+            assert!(ConfigLoader::from_str(contents, "test.yml").is_err(), "accepted: {contents}");
+        }
+        ConfigLoader::from_str("version: '1'\nservices:\n  api: {command: api, env_file: .env, depends_on: [db], env: {CUSTOM_KEY: yes}, restart: {initial_delay: 1s, max_attempts: 2}}", "test.yml").unwrap();
+    }
+
+    #[test]
     fn test_config_loader_rejects_service_without_command() {
         let error = ConfigLoader::from_str(
             "version: \"1\"\nservices:\n  api: {}\n",

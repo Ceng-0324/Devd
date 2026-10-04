@@ -139,6 +139,8 @@ devd --config ./devd.local.yml status --json
 
 The current scope is local process management. Configuration generation, resource monitoring, hot reload, exponential backoff, `logs --follow`, disk logs, and a TUI are planned for later versions.
 
+Configuration rejects unknown fields and unsupported `limits` settings. YAML values are literal; `${VAR}` expansion is not implemented. Under fixed backoff, `max-delay` is reserved and does not change the retry delay.
+
 ## Development and validation
 
 ```bash

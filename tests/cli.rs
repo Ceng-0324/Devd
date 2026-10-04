@@ -118,6 +118,35 @@ fn test_cli_spawn_failure_and_unsupported_config() {
 }
 
 #[test]
+fn test_cli_rejects_ignored_settings_before_creating_runtime_state() {
+    for (service, message) in [
+        (
+            "command: touch should-not-exist\n    limits: {memory: 1GB}",
+            "resource limits are not implemented",
+        ),
+        (
+            "command: touch should-not-exist\n    limits: {}",
+            "resource limits are not implemented",
+        ),
+        (
+            "command: touch should-not-exist\n    restart: {max-attempt: 5}",
+            "unknown field",
+        ),
+        (
+            "command: touch should-not-exist\n    depends-on: [{service: db, timeout: 1s}]",
+            "did not match any variant",
+        ),
+    ] {
+        let project = Project::new(&format!("services:\n  api:\n    {service}\n"));
+        for command in ["check", "graph", "start"] {
+            failure(project.invoke(&[command]), message);
+        }
+        assert!(!project.path().join(".devd").exists());
+        assert!(!project.path().join("should-not-exist").exists());
+    }
+}
+
+#[test]
 fn test_cli_restart_stopped_service_and_failure() {
     let project = Project::new("services:\n  worker:\n    command: sleep 60\n    restart: {policy: never}\n  once:\n    command: sh -c 'echo once; exit 0'\n    restart: {policy: never}\n");
     let mut supervisor = project.start();

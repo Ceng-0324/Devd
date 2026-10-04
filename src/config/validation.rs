@@ -55,6 +55,12 @@ impl DevdConfig {
                     "command must be non-empty and contain no NUL bytes",
                 ));
             }
+            if service.limits.is_some() {
+                return Err(invalid(
+                    format!("{prefix}.limits"),
+                    "resource limits are not implemented; remove 'limits' before starting services",
+                ));
+            }
             if let Some(check) = &service.healthcheck {
                 check.validate().map_err(|error| match error {
                     ConfigValidationError::InvalidField { field, reason } => {

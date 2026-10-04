@@ -3,6 +3,7 @@ use std::{collections::HashMap, path::PathBuf, time::Duration};
 use serde::{de::Deserializer, Deserialize};
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct DevdConfig {
     pub version: String,
     #[serde(default)]
@@ -10,6 +11,7 @@ pub struct DevdConfig {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ServiceConfig {
     pub command: String,
     #[serde(default)]
@@ -40,7 +42,7 @@ impl<'de> Deserialize<'de> for Dependency {
         D: Deserializer<'de>,
     {
         #[derive(Deserialize)]
-        #[serde(untagged)]
+        #[serde(untagged, deny_unknown_fields)]
         enum DependencyInput {
             Name(String),
             Detailed {
@@ -71,7 +73,7 @@ pub enum DependencyCondition {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type")]
+#[serde(tag = "type", deny_unknown_fields)]
 pub enum HealthCheck {
     #[serde(rename = "http")]
     Http {
@@ -126,6 +128,7 @@ pub enum HealthCheck {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct RestartPolicy {
     #[serde(default)]
     pub policy: RestartPolicyType,
@@ -183,6 +186,7 @@ pub enum BackoffType {
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
 pub struct ResourceLimits {
     #[serde(default)]
     pub cpu: Option<String>,
