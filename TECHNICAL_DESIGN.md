@@ -281,60 +281,62 @@ async fn check_dependency_ready(dep: &Dependency) -> Result<bool> {
 
 ### 6. 健康检查
 
+**当前实现**：`src/core/health_check.rs` 提供以下独立接口。
+
+- `HealthChecker::new` 复用 `HealthCheck::validate` 校验配置并创建不可变探测快照；超大计时参数返回结构化错误，HTTP 客户端和 URL 在初始化后复用。
+- `probe` 只做一次探测。TCP 建连成功为健康；HTTP 使用 GET，仅 2xx 为健康，不跟随重定向、不使用系统代理、不读取响应体。
+- 每次探测的超时涵盖等待 DNS、建连及 HTTP/TLS 响应头的全过程；失败通过 `ProbeResult::Unhealthy` 报告连接错误、HTTP 状态或超时，不 panic。
+- `wait_ready(overall_timeout)` 首次立即探测，失败后按 interval 重试到第一次成功；总就绪时限独立于单次 timeout 和 retries，可中断正在执行的探测，超时错误保留最后一次完成的失败。
+- `HealthMonitor::next_check` 串行定期探测，首次立即执行，跳过错过的时间点；完成失败后递增计数，达到 retries 才报告 Unhealthy，成功重置计数。计数饱和而不溢出。
+- 取消未完成探测不增加失败次数；监控状态只描述健康，不直接重启进程，调用方负责停止监控、就绪条件和重启策略。`HealthMonitor` 的创建和轮询在 Tokio 运行时内进行。
+- MVP 只执行 TCP/HTTP。现有 Socket schema 保留，但 `HealthChecker::new` 明确返回 UnsupportedProbe，实际 Socket 和 Script 探测仍留到后续版本。
+
 #### 6.1 健康检查类型
 
-**支持的 probe 类型**：
-1. **Process Probe**：进程存活检查（`kill(pid, 0)`）
-2. **TCP Probe**：TCP 连接检查
-3. **HTTP Probe**：HTTP GET 请求 + 状态码校验
-4. **Socket Probe**：Unix socket 连接检查
-5. **Script Probe**：自定义脚本，退出码 0 为健康
+**探测类型与实现范围**：
+1. **Process Probe**：由进程管理模块观察子进程退出，不属于健康探测器
+2. **TCP Probe**：MVP 已实现，TCP 连接检查
+3. **HTTP Probe**：MVP 已实现，HTTP GET 请求 + 2xx 状态码校验
+4. **Socket Probe**：后续版本实现 Unix socket 连接检查
+5. **Script Probe**：后续版本实现自定义脚本检查，退出码 0 为健康
 
 #### 6.2 健康检查调度
 
-**Tokio 定时器**：
+**调度接口**：调用方使用 `tokio::select!` 协调取消或服务退出，不在监控器内启动隐藏任务。
 ```rust
-use tokio::time::{interval, Duration};
+use devd::core::health_check::{HealthChecker, HealthMonitor, HealthState};
 
-async fn health_check_loop(service: &Service) {
-    let mut ticker = interval(Duration::from_secs(service.healthcheck.interval));
-    
-    loop {
-        ticker.tick().await;
-        
-        let result = perform_health_check(service).await;
-        
-        match result {
-            Ok(true) => {
-                // 健康，重置失败计数
-                service.consecutive_failures = 0;
-            }
-            Ok(false) | Err(_) => {
-                service.consecutive_failures += 1;
-                
-                if service.consecutive_failures >= service.healthcheck.retries {
-                    // 触发重启
-                    restart_service(service).await;
-                }
-            }
-        }
+let checker = HealthChecker::new(&healthcheck_config)?;
+let mut monitor = HealthMonitor::new(checker);
+loop {
+    let observation = monitor.next_check().await;
+    if observation.state == HealthState::Unhealthy {
+        // 交给服务编排层处理，不在探测器中直接重启。
+        report_unhealthy(observation);
     }
 }
 ```
 
+**状态计数**：
+```text
+成功 -> Healthy，连续失败计数归零
+失败次数 < retries -> Retrying
+失败次数 >= retries -> Unhealthy
+取消未完成探测 -> 不改变计数
+```
+
 #### 6.3 HTTP 健康检查实现
 
-**库**：`reqwest`（异步 HTTP 客户端）
+**库**：`reqwest`（异步 HTTP 客户端），TCP 使用 `tokio::net::TcpStream`。
 
 ```rust
-async fn http_health_check(config: &HttpHealthCheck) -> Result<bool> {
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(config.timeout))
-        .build()?;
-    
-    let resp = client.get(&config.url).send().await?;
-    
-    Ok(resp.status().is_success())
+use devd::core::health_check::{HealthChecker, ProbeResult};
+
+let checker = HealthChecker::new(&healthcheck_config)?;
+// 保留 checker 供后续轮询复用。
+match checker.probe().await {
+    ProbeResult::Healthy => report_healthy(),
+    ProbeResult::Unhealthy(failure) => report_failure(failure),
 }
 ```
 

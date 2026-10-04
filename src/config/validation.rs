@@ -56,7 +56,12 @@ impl DevdConfig {
                 ));
             }
             if let Some(check) = &service.healthcheck {
-                validate_healthcheck(&prefix, check)?;
+                check.validate().map_err(|error| match error {
+                    ConfigValidationError::InvalidField { field, reason } => {
+                        invalid(format!("{prefix}.{field}"), reason)
+                    }
+                    error => error,
+                })?;
             }
         }
 
@@ -88,85 +93,88 @@ impl DevdConfig {
     }
 }
 
-fn validate_healthcheck(prefix: &str, check: &HealthCheck) -> Result<(), ConfigValidationError> {
-    let prefix = format!("{prefix}.healthcheck");
-    let (interval, timeout, retries) = match check {
-        HealthCheck::Http {
-            url,
-            interval,
-            timeout,
-            retries,
-        } => {
-            let valid = reqwest::Url::parse(url).is_ok_and(|url| {
-                matches!(url.scheme(), "http" | "https") && url.host_str().is_some()
-            });
-            if !valid {
-                return Err(invalid(
-                    format!("{prefix}.url"),
-                    "expected an absolute HTTP or HTTPS URL with a host",
-                ));
+impl HealthCheck {
+    /// Check probe fields without accessing the network or filesystem.
+    pub fn validate(&self) -> Result<(), ConfigValidationError> {
+        let prefix = "healthcheck";
+        let (interval, timeout, retries) = match self {
+            HealthCheck::Http {
+                url,
+                interval,
+                timeout,
+                retries,
+            } => {
+                let valid = reqwest::Url::parse(url).is_ok_and(|url| {
+                    matches!(url.scheme(), "http" | "https") && url.host_str().is_some()
+                });
+                if !valid {
+                    return Err(invalid(
+                        format!("{prefix}.url"),
+                        "expected an absolute HTTP or HTTPS URL with a host",
+                    ));
+                }
+                (interval, timeout, retries)
             }
-            (interval, timeout, retries)
+            HealthCheck::Tcp {
+                host,
+                port,
+                interval,
+                timeout,
+                retries,
+            } => {
+                if host.trim().is_empty()
+                    || host
+                        .chars()
+                        .any(|character| character.is_whitespace() || character.is_control())
+                {
+                    return Err(invalid(
+                        format!("{prefix}.host"),
+                        "host must be non-empty and contain no whitespace or control characters",
+                    ));
+                }
+                if *port == 0 {
+                    return Err(invalid(
+                        format!("{prefix}.port"),
+                        "port must be between 1 and 65535",
+                    ));
+                }
+                (interval, timeout, retries)
+            }
+            HealthCheck::Socket {
+                path,
+                interval,
+                timeout,
+                retries,
+            } => {
+                if path.as_os_str().is_empty() {
+                    return Err(invalid(
+                        format!("{prefix}.path"),
+                        "socket path must be non-empty",
+                    ));
+                }
+                (interval, timeout, retries)
+            }
+        };
+        if interval.is_zero() {
+            return Err(invalid(
+                format!("{prefix}.interval"),
+                "interval must be greater than zero",
+            ));
         }
-        HealthCheck::Tcp {
-            host,
-            port,
-            interval,
-            timeout,
-            retries,
-        } => {
-            if host.trim().is_empty()
-                || host
-                    .chars()
-                    .any(|character| character.is_whitespace() || character.is_control())
-            {
-                return Err(invalid(
-                    format!("{prefix}.host"),
-                    "host must be non-empty and contain no whitespace or control characters",
-                ));
-            }
-            if *port == 0 {
-                return Err(invalid(
-                    format!("{prefix}.port"),
-                    "port must be between 1 and 65535",
-                ));
-            }
-            (interval, timeout, retries)
+        if timeout.is_zero() {
+            return Err(invalid(
+                format!("{prefix}.timeout"),
+                "timeout must be greater than zero",
+            ));
         }
-        HealthCheck::Socket {
-            path,
-            interval,
-            timeout,
-            retries,
-        } => {
-            if path.as_os_str().is_empty() {
-                return Err(invalid(
-                    format!("{prefix}.path"),
-                    "socket path must be non-empty",
-                ));
-            }
-            (interval, timeout, retries)
+        if *retries == 0 {
+            return Err(invalid(
+                format!("{prefix}.retries"),
+                "retries must be greater than zero",
+            ));
         }
-    };
-    if interval.is_zero() {
-        return Err(invalid(
-            format!("{prefix}.interval"),
-            "interval must be greater than zero",
-        ));
+        Ok(())
     }
-    if timeout.is_zero() {
-        return Err(invalid(
-            format!("{prefix}.timeout"),
-            "timeout must be greater than zero",
-        ));
-    }
-    if *retries == 0 {
-        return Err(invalid(
-            format!("{prefix}.retries"),
-            "retries must be greater than zero",
-        ));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
