@@ -130,16 +130,37 @@ services:
 
 **关键设置**：
 ```rust
+use std::process::Stdio;
 use tokio::process::Command;
 
-let mut child = Command::new(&service.command)
-    .current_dir(&service.cwd)
+let arguments = shell_words::split(&service.command)?;
+let (program, args) = arguments
+    .split_first()
+    .ok_or_else(|| anyhow::anyhow!("empty service command"))?;
+let mut command = Command::new(program);
+command.args(args);
+if let Some(cwd) = &service.cwd {
+    command.current_dir(cwd);
+}
+let child = command
     .envs(&service.env)
+    .stdin(Stdio::null())
     .stdout(Stdio::piped())  // 捕获日志
     .stderr(Stdio::piped())
+    .process_group(0)       // 独立 Unix 进程组
     .kill_on_drop(true)      // devd 退出时自动杀子进程
     .spawn()?;
 ```
+
+**当前进程边界**：`src/core/process_manager.rs` 的 `ManagedProcess` 面向 macOS/Linux。
+- 命令使用 `shell-words` 拆分带引号的参数后调用 `Command::new(program).args(arguments)`；不会隐式调用 shell。需要管道、重定向或 shell 展开时，显式使用 `sh -c '...'`。
+- `cwd` 相对于 devd 的工作目录；相对 `env-file` 路径相对于服务的 `cwd`。使用异步文件读取和 `dotenvy` 解析，继承父环境，文件值覆盖父环境，显式 `env` 最后覆盖；不修改 devd 自身的环境。
+- stdin 关闭，stdout/stderr 为独立管道，可由日志收集器各取一次；调用方应并发持续读取，避免管道写满导致服务阻塞。
+- 每个服务创建独立 Unix 进程组，同时启用 `kill_on_drop(true)`。退出状态由 Tokio 的 Child 缓存，不重复维护一份状态。
+- `stop(grace_period)` 发送组 SIGTERM，等待主进程退出；超时后发送组 SIGKILL 并回收主进程。主进程退出时清理仍留在组内的后代；重复停止返回同一退出状态。
+- `restart` 停止旧进程后按原配置快照启动新进程，新进程需要重新取得日志管道。启动失败保留旧进程的退出状态，可修复外部文件后重试。
+- 取消 wait/stop 不丢失进程所有权；Drop 对组发送 SIGKILL，由 Tokio 尽力回收主进程。过大的停止时长返回结构化错误。
+- 进程组清理覆盖留在本组的后代；主动脱离进程组的服务不在此保证内，devd 自身遭 SIGKILL 时也无法执行 Drop。
 
 #### 4.2 进程生命周期管理
 
