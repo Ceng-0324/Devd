@@ -157,4 +157,4 @@ cargo build --locked
 cargo test --locked --test integration
 ```
 
-[测试与手动验证](tests/README.md) · [技术方案](TECHNICAL_DESIGN.md) · [架构设计](ARCHITECTURE.md)
+[测试与手动验证](tests/README.md) · [发布清单](RELEASING.md) · [变更记录](CHANGELOG.md) · [MIT 许可证](LICENSE) · [技术方案](TECHNICAL_DESIGN.md) · [架构设计](ARCHITECTURE.md)
