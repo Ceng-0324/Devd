@@ -160,41 +160,46 @@ let child = command
 - `stop(grace_period)` 发送组 SIGTERM，等待主进程退出；超时后发送组 SIGKILL 并回收主进程。主进程退出时清理仍留在组内的后代；重复停止返回同一退出状态。
 - `restart` 停止旧进程后按原配置快照启动新进程，新进程需要重新取得日志管道。启动失败保留旧进程的退出状态，可修复外部文件后重试。
 - 取消 wait/stop 不丢失进程所有权；Drop 对组发送 SIGKILL，由 Tokio 尽力回收主进程。过大的停止时长返回结构化错误。
+- macOS 进程组只剩退出中成员时可能短暂返回 EPERM；异步组清理以 10ms 间隔重试，额外等待最多 100ms，持续权限错误仍返回给调用方。同步 try_wait 不等待或掩盖此错误。
 - 进程组清理覆盖留在本组的后代；主动脱离进程组的服务不在此保证内，devd 自身遭 SIGKILL 时也无法执行 Drop。
 
 #### 4.2 进程生命周期管理
 
-**状态机**：
-```
-[Pending] → [Starting] → [Healthy] → [Unhealthy] → [Restarting] → [Healthy]
-                ↓            ↓           ↓
-           [Failed]     [Stopping]   [Failed]
+**当前实现**：`ServiceManager` 是前台生命周期所有者，`service_task.rs` 为每个服务提供独立异步任务。构造阶段验证全部配置、健康探测器和计时参数，失败时不创建子进程或状态文件。
+
+**状态流**：
+```text
+Pending -> 等待全部直接依赖 -> Starting -> Running
+Running -> 探测成功 -> Healthy
+Running / Healthy -> 连续失败达到阈值 -> Unhealthy
+进程退出 / 健康失败 -> 按策略停止旧代 -> Restarting -> 等待依赖 -> Starting
+成功退出且无需重启 -> Stopped
+不可恢复失败 / 重启次数耗尽 / 依赖超时 -> Failed
+关闭请求 -> 全部任务禁止启动和重启 -> 反向依赖分层 -> Stopping -> Stopped
 ```
 
-**核心任务**：
-1. **启动任务**：按依赖拓扑排序，依次启动服务
-2. **监控任务**：定期检查进程是否存活（`child.try_wait()`）
-3. **健康检查任务**：HTTP/TCP/Socket probe
-4. **重启任务**：crash 或健康检查失败触发
-5. **清理任务**：devd 退出时优雅关闭所有子进程（SIGTERM → 等 5s → SIGKILL）
+- 所有服务任务同时创建，各自等待依赖状态；一个未就绪的分支不会阻挡其他分支。`started` 要求依赖拥有正在运行的进程；`tcp-ready`/`http-ready` 还要求最新状态为 Healthy。每次自动重启重新检查依赖。
+- `ManagerOptions` 提供 30 秒依赖等待总时限和 5 秒停止宽限期，可由调用方配置；当前 YAML 依赖 schema 不增加 timeout 字段。
+- 通过取消安全的 `ManagedProcess::wait` 观察退出，与健康探测和关闭通知并发等待。退出后立即清除快照 PID，避免已退出的旧代继续满足就绪条件。
+- 没有健康检查时为 Running；探测失败未达阈值时也为 Running，保留失败计数与原因；成功时为 Healthy。`never` 的健康失败仅报告 Unhealthy，继续探测并允许恢复。
+- 不可恢复失败会关闭整个服务栈并返回包含服务名和失败原因的错误；状态文件故障和任务异常同样触发清理。
+- 关闭时先向全部任务发送 Quiescing，取消依赖等待、启动读取和重启延时，然后按反向拓扑层停止，层内并发。丢弃 run future 会中止服务任务并通过进程所有权清理进程组；正常关闭应使用 `run_until` 的关闭 future。
+- stdout/stderr 持续并发排空，以有界 broadcast 输出原始字节和进程代次；缓慢订阅方可能收到 Lagged，不能阻塞子进程。行解析、格式化和日志历史由下一日志模块负责。
+
+**调用入口**：
+```rust
+use devd::core::service_manager::{ManagerOptions, ServiceManager};
+
+let manager = ServiceManager::new(config, ManagerOptions::new(state_path))?;
+let states = manager.subscribe();
+let output = manager.subscribe_output();
+// 调用方可在独立任务中消费 states/output。
+let final_snapshot = manager.run().await?;
+```
 
 #### 4.3 信号处理
 
-**捕获信号**：
-```rust
-use tokio::signal;
-
-tokio::select! {
-    _ = signal::ctrl_c() => {
-        // 用户按 Ctrl+C，优雅退出
-        shutdown_all_services().await;
-    }
-    _ = sigterm_handler() => {
-        // 收到 SIGTERM（systemd/launchd 发来），优雅退出
-        shutdown_all_services().await;
-    }
-}
-```
+**捕获信号**：`ServiceManager::run` 在创建子进程前安装 Unix SIGINT（Ctrl+C）和 SIGTERM 处理器，并委托 `run_until` 执行有序关闭。测试使用隔离的子进程发送真实信号，避免修改测试运行器的全局信号行为。
 
 **转发信号**：
 - `devd restart <service>` → 发 SIGTERM 给目标服务
@@ -253,29 +258,7 @@ enum DependencyCondition {
 
 #### 5.3 依赖条件检查
 
-**实现**：
-```rust
-async fn check_dependency_ready(dep: &Dependency) -> Result<bool> {
-    match dep.condition {
-        DependencyCondition::Started => {
-            // 检查进程是否存活
-            service_manager.is_running(&dep.service_id)
-        }
-        DependencyCondition::SocketReady => {
-            // 尝试连接 Unix socket
-            UnixStream::connect(&socket_path).await.is_ok()
-        }
-        DependencyCondition::TcpReady => {
-            // 尝试 TCP 连接
-            TcpStream::connect(&addr).await.is_ok()
-        }
-        DependencyCondition::HttpReady => {
-            // HTTP 健康检查
-            reqwest::get(&url).await?.status().is_success()
-        }
-    }
-}
-```
+**当前实现**：编排任务订阅 watch 状态快照，复用被依赖服务自己的 TCP/HTTP 监控结果，不重复发送网络探测。读取快照和等待变更使用 `borrow_and_update`/`changed`，避免丢失唤醒；首次启动与自动重启采用同一检查路径。Socket 探测在构造阶段明确拒绝。
 
 ---
 
@@ -423,6 +406,8 @@ devd logs --grep "database"    # 关键词过滤
 ---
 
 ### 8. 重启策略
+
+**MVP 当前行为**：只执行固定延时（`initial-delay`）的 `always`、`on-failure`、`never` 策略。首次启动不占重启次数；后续每次启动尝试（包括 spawn 失败）计一次，`max-attempts: 0` 禁止自动重启。次数在一次 manager 运行中累计，不因短暂健康成功而重置，防止反复崩溃绕过上限。`max-delay` 为后续指数退避保留，固定延时不使用它；配置 exponential 时编排入口明确报错，不静默改为 fixed。下面指数退避与依赖联动重启均为后续版本设计。
 
 #### 8.1 重启策略类型
 
@@ -622,24 +607,30 @@ fn get_process_stats(pid: Pid) -> ProcessStats {
 
 #### 12.2 状态文件格式
 
-**`services.json`**：
+**当前 `services.json`**（服务名按字典序）：
 ```json
 {
-  "services": [
-    {
-      "name": "backend",
+  "supervisor_pid": 12000,
+  "services": {
+    "backend": {
       "pid": 12345,
       "started_at": "2024-01-03T15:30:00Z",
       "restart_count": 2,
-      "status": "healthy"
+      "status": "healthy",
+      "consecutive_failures": 0,
+      "last_exit_code": 7,
+      "last_exit_signal": null,
+      "last_error": null
     }
-  ]
+  }
 }
 ```
 
 **用途**：
-- `devd status` 读取状态
-- devd 重启后恢复服务列表（可选）
+- 为后续 `devd status` 提供运行时快照，不恢复或接管旧进程。退出后保留最终状态与失败诊断。
+- 状态路径由调用方选择，同一项目必须使用同一路径。`<path>.lock` 持有非阻塞独占 flock，第二个 manager 在启动任何子进程前失败。
+- 使用 `<path>.tmp` + rename 原子替换，读者不会读到半截 JSON。写入任务和服务任务保留锁所有权，防止取消时旧写入与新 manager 竞争；不要求磁盘掉电持久性。
+- 强杀或取消可能留下旧快照；快照 PID 本身不证明服务仍受管理，调用方必须结合锁和 supervisor 存活判断，不能直接向缓存 PID 发信号。
 
 ---
 

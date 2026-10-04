@@ -65,7 +65,7 @@ impl ProbeResult {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Probe {
     Tcp { host: String, port: u16 },
     Http { client: Client, url: Url },
@@ -73,7 +73,7 @@ enum Probe {
 
 /// A validated probe snapshot. Network failures are results, rather than setup
 /// errors. HTTP requests inspect response headers only and do not consume bodies.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HealthChecker {
     probe: Probe,
     timeout: Duration,

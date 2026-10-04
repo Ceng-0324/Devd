@@ -517,49 +517,23 @@ pub enum BackoffType {
 
 ### Service Task State Machine
 
-```rust
-// src/core/service_task.rs
+当前 Unix MVP 由以下模块实现生命周期所有权：
 
-pub struct ServiceTask {
-    pub name: String,
-    pub config: ServiceConfig,
-    pub state: ServiceState,
-    pub process: Option<Child>,
-    pub restart_policy: RestartPolicy,
-    pub health_checker: HealthChecker,
-    pub log_collector: LogCollector,
-}
+| 模块 | 所有权与接口 |
+| --- | --- |
+| `core/service_manager.rs` | 校验全栈、并发创建服务任务、状态订阅、SIGINT/SIGTERM、失败回滚和反向拓扑关闭；公开 `ServiceManager`、`ManagerOptions`、`RuntimeSnapshot` |
+| `core/service_task.rs` | 私有服务任务，独占 `ManagedProcess`，等待依赖、观察退出与健康、固定延时重启、持续排空 stdout/stderr |
+| `core/state_store.rs` | 独占状态锁和原子 JSON 替换；锁在未结束的状态写入与服务任务中保持有效 |
+| `core/health_check.rs` | 不可变探测配置和复用 HTTP client，串行周期探测与连续失败计数 |
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum ServiceState {
-    Pending,
-    Starting,
-    Healthy,
-    Unhealthy,
-    Restarting,
-    Stopping,
-    Stopped,
-    Failed,
-}
-
-impl ServiceTask {
-    pub async fn start(&mut self) -> Result<()> {
-        // Spawn process, start health check, collect logs
-    }
-    
-    pub async fn stop(&mut self) -> Result<()> {
-        // Send SIGTERM, wait, SIGKILL if needed
-    }
-    
-    pub async fn restart(&mut self) -> Result<()> {
-        // Stop + delay + start
-    }
-    
-    pub async fn health_check_loop(&mut self) {
-        // Loop until task is stopped
-    }
-}
+```text
+Pending -> Starting -> Running -> Healthy / Unhealthy
+进程退出或健康失败 -> 停止旧代 -> Restarting -> 再次等待依赖 -> Starting
+终止失败 -> Failed -> manager 清理其他服务
+关闭 -> 全栈 Quiescing -> 反向分层 Stopping -> Stopped
 ```
+
+状态快照保存 PID、开始时间、累计重启次数、连续失败次数和退出/错误诊断。watch 状态只保留最新值，不是可靠的历史事件队列；原始输出使用有界 broadcast，消费者处理 Lagged。没有健康配置的存活服务为 Running。MVP 仅实现 fixed 重启，指数退避、Socket、依赖联动重启仍为后续设计；具体策略与状态持久化契约见 `TECHNICAL_DESIGN.md` 4.2、8、12 节。
 
 ---
 
@@ -596,10 +570,10 @@ impl ServiceTask {
 ```
 
 **说明**：
-- Tokio 默认单线程运行时（`#[tokio::main(flavor = "current_thread")]`）
+- 服务任务支持单线程与多线程 Tokio 运行时；当前 CLI 使用 `#[tokio::main]` 多线程运行时
 - 每个服务是独立的异步任务（`tokio::spawn`）
 - 健康检查、日志收集、重启策略都是该任务内的 sub-task
-- 避免锁竞争（用 `mpsc` channel 通信）
+- 每个服务独占进程句柄；watch 传递最新状态和关闭阶段，broadcast 传递原始输出，不在共享锁内等待网络或进程 I/O
 
 ---
 
