@@ -221,7 +221,7 @@ async fn test_process_stop_handles_rapidly_exiting_descendant_groups() {
         let _reader = ready(&mut process).await;
         let pid = process.pid().unwrap();
         let status = bounded(process.stop(Duration::from_secs(1))).await.unwrap();
-        assert!(status.success());
+        assert!(status.success(), "unexpected stop status: {status:?}");
         assert_eq!(bounded(process.stop(Duration::ZERO)).await.unwrap(), status);
         assert_reaped(pid).await;
     }

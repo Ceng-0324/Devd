@@ -6,7 +6,12 @@ case "$1" in
         sleep 10 &
         printf 'ready\n'
         # A foreground sleep can defer the trap; wait is signal-interruptible.
-        wait
+        # A group signal may wake wait when the descendant exits before this
+        # shell receives TERM. Keep the leader alive for its own trap.
+        while :; do
+            wait || :
+            sleep 10 &
+        done
         ;;
     stubborn)
         trap '' TERM
