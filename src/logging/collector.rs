@@ -40,12 +40,44 @@ pub enum LogOptionsError {
 
 /// Read-only bounded history. This handle does not keep live subscriptions open.
 #[derive(Clone)]
-pub struct LogHistory(Arc<Mutex<VecDeque<Arc<LogEntry>>>>);
+pub struct LogHistory {
+    entries: Arc<Mutex<VecDeque<Arc<LogEntry>>>>,
+    sender: broadcast::WeakSender<Arc<LogEntry>>,
+}
 
 impl LogHistory {
     /// Return up to `limit` newest matching entries, ordered oldest first.
     pub fn recent(&self, service: Option<&str>, limit: usize) -> Vec<Arc<LogEntry>> {
-        let store = self.0.lock().unwrap_or_else(|poison| poison.into_inner());
+        let store = self
+            .entries
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        Self::filtered(&store, service, limit)
+    }
+
+    /// Subscribe and snapshot under the same lock used by publishers.
+    pub fn subscribe_with_recent(
+        &self,
+        service: Option<&str>,
+        limit: usize,
+    ) -> (Vec<Arc<LogEntry>>, broadcast::Receiver<Arc<LogEntry>>) {
+        let store = self
+            .entries
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        let receiver = self
+            .sender
+            .upgrade()
+            .expect("log collector is active")
+            .subscribe();
+        (Self::filtered(&store, service, limit), receiver)
+    }
+
+    fn filtered(
+        store: &VecDeque<Arc<LogEntry>>,
+        service: Option<&str>,
+        limit: usize,
+    ) -> Vec<Arc<LogEntry>> {
         let mut entries: Vec<_> = store
             .iter()
             .rev()
@@ -76,9 +108,13 @@ impl LogCollector {
             return Err(LogOptionsError::InvalidLineSize);
         }
         let (sender, _) = broadcast::channel(256);
+        let history = LogHistory {
+            entries: Arc::new(Mutex::new(VecDeque::new())),
+            sender: sender.downgrade(),
+        };
         Ok(Self {
             options,
-            history: LogHistory(Arc::new(Mutex::new(VecDeque::new()))),
+            history,
             sender,
         })
     }
@@ -143,7 +179,7 @@ impl LogCollector {
     ) {
         let mut store = self
             .history
-            .0
+            .entries
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         let entry = Arc::new(LogEntry {
@@ -389,6 +425,23 @@ mod tests {
         assert_eq!(history.recent(Some("a"), 1)[0].message, "fourth");
         assert!(history.recent(Some("missing"), 10).is_empty());
         assert!(history.recent(None, 0).is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_logging_snapshot_subscription_does_not_repeat_history() {
+        let collector = collector(10, 100);
+        collector
+            .collect(b"before\n".as_slice(), "b".into(), 0, LogLevel::Info)
+            .await
+            .unwrap();
+        let (tail, mut live) = collector.history().subscribe_with_recent(Some("b"), 1);
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail[0].message, "before");
+        collector
+            .collect(b"after\n".as_slice(), "b".into(), 0, LogLevel::Info)
+            .await
+            .unwrap();
+        assert_eq!(live.recv().await.unwrap().message, "after");
     }
 
     #[test]

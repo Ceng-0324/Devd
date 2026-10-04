@@ -3,6 +3,7 @@
 The release workflow is manual and uploads run-scoped artifacts. It does not
 create a tag, GitHub Release, or crates.io publication. The repository owner
 handles those actions after reviewing and testing the artifacts.
+The v0.1 candidate is commit `eaa52b0`; later commits start v0.2 development.
 
 1. From the intended commit, run `cargo fmt --all -- --check`,
    `cargo clippy --locked --all-targets -- -D warnings`,

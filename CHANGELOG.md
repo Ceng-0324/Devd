@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### v0.2.0-alpha.1 development snapshot
+
+- Add `logs --follow` with an atomic buffered-tail to live-stream handoff.
+
 ### v0.1.0 release candidate
 
 - Manage local services from a YAML configuration with dependency-ordered startup and shutdown.

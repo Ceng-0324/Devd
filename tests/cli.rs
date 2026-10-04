@@ -71,6 +71,45 @@ fn test_cli_lifecycle_logs_restart_duplicate_and_config_changes() {
 }
 
 #[test]
+fn test_cli_follow_logs_replays_tail_then_streams_until_shutdown() {
+    let project = Project::new(RUNNING);
+    let mut supervisor = project.start();
+    project.running();
+    wait(|| {
+        success(project.invoke(&["logs", "--tail", "2"]))
+            .contains("problem")
+            .then_some(())
+    });
+    let output = project.path().join("follow.log");
+    let mut follower = Supervisor(
+        project
+            .command(&["logs", "worker", "--follow", "--tail", "2"])
+            .stdout(fs::File::create(&output).unwrap())
+            .stderr(fs::File::create(project.path().join("follow.err")).unwrap())
+            .spawn()
+            .unwrap(),
+    );
+    wait(|| {
+        fs::read_to_string(&output)
+            .unwrap()
+            .contains("problem")
+            .then_some(())
+    });
+    success(project.invoke(&["restart", "worker"]));
+    wait(|| {
+        let text = fs::read_to_string(&output).unwrap();
+        (text.matches("hello").count() == 2 && text.matches("problem").count() == 2).then_some(())
+    });
+    failure(
+        project.invoke(&["logs", "absent", "--follow"]),
+        "unknown service",
+    );
+    success(project.invoke(&["stop"]));
+    supervisor.finish(true);
+    follower.finish(true);
+}
+
+#[test]
 fn test_cli_relative_cwd_env_file_and_deleted_config() {
     let project = Project::new("services:\n  worker:\n    command: sh -c 'echo $MARKER; pwd; exec sleep 60'\n    cwd: service\n    env-file: local.env\n    restart: {policy: never}\n");
     fs::create_dir(project.path().join("service")).unwrap();

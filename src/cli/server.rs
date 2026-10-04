@@ -117,6 +117,28 @@ pub(super) async fn start(
                                 Response::Logs(history.recent(service.as_deref(), tail).iter().map(|entry| (**entry).clone()).collect())
                             }
                         }
+                        Ok(Request::FollowLogs { service, tail }) => {
+                            if service.as_ref().is_some_and(|name| !snapshots.borrow().services.contains_key(name)) {
+                                return protocol::write(&mut stream, &Response::Error(format!("unknown service '{}'", service.unwrap()))).await;
+                            }
+                            if !(1..=1000).contains(&tail) {
+                                return protocol::write(&mut stream, &Response::Error("tail must be between 1 and 1000".into())).await;
+                            }
+                            let (entries, mut live) = history.subscribe_with_recent(service.as_deref(), tail);
+                            protocol::write(&mut stream, &Response::Logs(entries.iter().map(|entry| (**entry).clone()).collect())).await?;
+                            loop {
+                                match live.recv().await {
+                                    Ok(entry) if service.as_ref().is_none_or(|name| entry.service == *name) => {
+                                        protocol::write(&mut stream, &Response::Log((*entry).clone())).await?;
+                                    }
+                                    Ok(_) => {}
+                                    Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                                        return protocol::write(&mut stream, &Response::Error(format!("log stream skipped {count} entries; reconnect to inspect recent history"))).await;
+                                    }
+                                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return Ok(()),
+                                }
+                            }
+                        }
                         Ok(Request::Restart { service }) => {
                             match tokio::time::timeout(Duration::from_secs(55), controller.restart(service)).await {
                                 Ok(Ok(state)) => Response::Restarted(state),

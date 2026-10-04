@@ -9,6 +9,7 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
+use tokio::io::AsyncWriteExt;
 
 use crate::{
     config::{ConfigLoader, DevdConfig},
@@ -60,6 +61,9 @@ enum Command {
         service: Option<String>,
         #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u16).range(1..=1000))]
         tail: u16,
+        /// Continue printing new entries until Ctrl+C or the supervisor stops.
+        #[arg(short, long)]
+        follow: bool,
     },
     /// Validate configuration and supported MVP settings without starting services.
     Check,
@@ -171,7 +175,65 @@ impl Cli {
                     state.pid.context("restart returned no PID")?
                 ))?;
             }
-            Command::Logs { service, tail } => {
+            Command::Logs {
+                service,
+                tail,
+                follow,
+            } if follow => {
+                let mut stream = protocol::connect(&socket).await?;
+                protocol::write(
+                    &mut stream,
+                    &Request::FollowLogs {
+                        service,
+                        tail: tail.into(),
+                    },
+                )
+                .await?;
+                let first = tokio::time::timeout(
+                    protocol::IO_TIMEOUT,
+                    protocol::next_response(&mut stream),
+                )
+                .await
+                .context("log stream did not start")??
+                .context("supervisor closed the log stream before responding")?;
+                let Response::Logs(entries) = first else {
+                    match first {
+                        Response::Error(error) => bail!("{error}"),
+                        _ => bail!("unexpected logs response"),
+                    }
+                };
+                let mut stdout = stdout::Stdout::new()?;
+                for entry in entries {
+                    let line = formatter.format(&entry);
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => return Ok(()),
+                        result = stdout.write_all(line.as_bytes()) => result?,
+                    }
+                }
+                loop {
+                    let response = tokio::select! {
+                        _ = tokio::signal::ctrl_c() => break,
+                        response = protocol::next_response(&mut stream) => response?,
+                    };
+                    match response {
+                        Some(Response::Log(entry)) => {
+                            let line = formatter.format(&entry);
+                            tokio::select! {
+                                _ = tokio::signal::ctrl_c() => break,
+                                result = stdout.write_all(line.as_bytes()) => result?,
+                            }
+                        }
+                        Some(Response::Error(error)) => bail!("{error}"),
+                        None => break,
+                        _ => bail!("unexpected log stream response"),
+                    }
+                }
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {},
+                    result = stdout.flush() => result?,
+                }
+            }
+            Command::Logs { service, tail, .. } => {
                 let Response::Logs(entries) = protocol::request(
                     &socket,
                     Request::Logs {

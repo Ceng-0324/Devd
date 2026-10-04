@@ -28,6 +28,10 @@ pub(super) enum Request {
         service: Option<String>,
         tail: usize,
     },
+    FollowLogs {
+        service: Option<String>,
+        tail: usize,
+    },
 }
 
 #[derive(Serialize, Deserialize)]
@@ -37,6 +41,7 @@ pub(super) enum Response {
     Stopping,
     Restarted(ServiceSnapshot),
     Logs(Vec<LogEntry>),
+    Log(LogEntry),
     Error(String),
 }
 
@@ -71,8 +76,7 @@ pub(super) async fn write<T: Serialize>(stream: &mut UnixStream, message: &T) ->
 }
 
 pub(super) async fn request(socket: &Path, message: Request) -> Result<Response> {
-    let mut stream = tokio::time::timeout(IO_TIMEOUT, UnixStream::connect(socket)).await?
-        .with_context(|| format!("no reachable devd supervisor at {}; run 'devd start' with the same --config and --state-dir", socket.display()))?;
+    let mut stream = connect(socket).await?;
     write(&mut stream, &message).await?;
     let response = tokio::time::timeout(Duration::from_secs(60), read(&mut stream, MAX_RESPONSE))
         .await
@@ -81,6 +85,29 @@ pub(super) async fn request(socket: &Path, message: Request) -> Result<Response>
         Response::Error(error) => bail!("{error}"),
         other => Ok(other),
     }
+}
+
+pub(super) async fn connect(socket: &Path) -> Result<UnixStream> {
+    let stream = tokio::time::timeout(IO_TIMEOUT, UnixStream::connect(socket)).await?
+        .with_context(|| format!("no reachable devd supervisor at {}; run 'devd start' with the same --config and --state-dir", socket.display()))?;
+    Ok(stream)
+}
+
+pub(super) async fn next_response(stream: &mut UnixStream) -> Result<Option<Response>> {
+    let mut prefix = [0u8; 1];
+    if stream.read(&mut prefix).await? == 0 {
+        return Ok(None);
+    }
+    let mut rest = [0u8; 3];
+    stream.read_exact(&mut rest).await?;
+    let length = u32::from_be_bytes([prefix[0], rest[0], rest[1], rest[2]]) as usize;
+    if length > MAX_RESPONSE {
+        bail!("control message exceeds {MAX_RESPONSE} bytes");
+    }
+    let mut bytes = vec![0; length];
+    stream.read_exact(&mut bytes).await?;
+    let response = serde_json::from_slice(&bytes).context("invalid control message")?;
+    Ok(Some(response))
 }
 
 #[cfg(test)]

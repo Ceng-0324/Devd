@@ -18,7 +18,7 @@ Broken file dependencies still need fixing. devd takes care of the services you 
 
 ## What it does
 
-devd is a local development service manager written in Rust. It's currently a **v0.1 MVP for Linux and macOS**.
+devd is a local development service manager written in Rust. This checkout is a **v0.2 development snapshot for Linux and macOS**, built on the v0.1 MVP.
 
 Describe your services and their dependencies in `devd.yml`, then run `devd start` in the foreground. Use another terminal to check status, read logs, or restart a service.
 
@@ -116,7 +116,7 @@ This assumes you already have `backend`, `frontend`, their `dev` scripts, and `b
 | `devd stop` | Request ordered shutdown; the foreground process exits after cleanup |
 | `devd restart <service>` | Restart one service using the configuration loaded at startup, rechecking dependencies |
 | `devd status [--json]` | Show live state, PIDs, restart counts, and diagnostics |
-| `devd logs [service] [--tail N]` | Query buffered logs; defaults to 100 entries, with N from 1–1000 |
+| `devd logs [service] [--tail N] [--follow]` | Query buffered logs (default 100, N from 1–1000); optionally stream new entries |
 | `devd check` | Validate configuration, command quoting, dependencies, and supported settings |
 | `devd graph` | Show dependency edges and parallel startup layers |
 
@@ -133,11 +133,11 @@ devd --config ./devd.local.yml status --json
 
 **Restarts have a defined scope.** A manual restart affects only the named service and uses the configuration loaded at startup. Success means the new process has started; it may still be waiting to pass its health check. Manual restarts can bypass `never` and the automatic retry limit, but don't reset the cumulative restart count. Terminal failures, such as a startup failure with no retries remaining or an exhausted retry budget, trigger cleanup of the whole stack.
 
-**Logs live in memory.** By default, devd retains the latest 1000 entries across the stack, with a 16 KiB limit per line. They can't be queried through `logs` after shutdown. Slow foreground output can lose live entries, with a warning; a broken output pipe triggers service cleanup.
+**Logs live in memory.** By default, devd retains the latest 1000 entries across the stack, with a 16 KiB limit per line. They can't be queried through `logs` after shutdown. `logs --follow` starts with the requested tail and then streams new entries until Ctrl+C or supervisor shutdown; a lagging follower exits with an error. Slow foreground output can lose live entries, with a warning; a broken foreground output pipe triggers service cleanup.
 
 **Diagnostics describe the running instance.** `status` returns an error when the supervisor is offline; leftover state files are for diagnosis. If you break the configuration file while devd is running, you can still use `stop`, `status`, `logs`, and `restart`. `check` performs static validation; executable availability, environment files, and probe endpoints are checked at runtime. Failed commands return a nonzero exit code.
 
-The current scope is local process management. Configuration generation, resource monitoring, hot reload, exponential backoff, `logs --follow`, disk logs, and a TUI are planned for later versions.
+The current scope is local process management. Configuration generation, resource monitoring, hot reload, exponential backoff, disk logs, and a TUI are planned for later versions.
 
 Configuration rejects unknown fields and unsupported `limits` settings. YAML values are literal; `${VAR}` expansion is not implemented. Under fixed backoff, `max-delay` is reserved and does not change the retry delay.
 
