@@ -1,0 +1,37 @@
+[package]
+name = "devd"
+version = "0.1.0"
+edition = "2021"
+description = "A lightweight local development service supervisor"
+license = "MIT"
+
+# Keep devd independent from any Cargo workspace declared by a parent directory.
+[workspace]
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["clock", "serde"] }
+clap = { version = "4", features = ["derive"] }
+colored = "2"
+dirs = "5"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+sysinfo = "0.30"
+thiserror = "1"
+tokio = { version = "1", features = [
+    "fs",
+    "io-util",
+    "macros",
+    "net",
+    "process",
+    "rt-multi-thread",
+    "signal",
+    "sync",
+    "time",
+] }
+
+[dev-dependencies]
+tempfile = "3"
