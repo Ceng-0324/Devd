@@ -170,7 +170,9 @@ impl ManagedProcess {
         match tokio::time::timeout_at(deadline, self.wait()).await {
             Ok(result) => result,
             Err(_) => {
-                self.signal_group(Signal::SIGKILL)?;
+                // Once the whole group is killed, do not signal it again after
+                // reaping the leader: macOS may reject a zombie-only group.
+                self.cleanup_group()?;
                 self.wait().await
             }
         }

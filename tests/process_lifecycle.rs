@@ -224,6 +224,8 @@ async fn test_process_forces_non_cooperative_child_after_grace_period() {
     assert!(started.elapsed() >= grace);
     assert_eq!(status.signal(), Some(nix::libc::SIGKILL));
     assert_eq!(process.state().unwrap(), ProcessState::Exited { status });
+    assert_eq!(bounded(process.stop(Duration::ZERO)).await.unwrap(), status);
+    assert_eq!(bounded(process.wait()).await.unwrap(), status);
 }
 
 #[tokio::test]
