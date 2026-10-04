@@ -1,5 +1,7 @@
 /target
 /.devd/
+examples/**/.devd/
+__pycache__/
 
 # Agent
 AGENTS.md

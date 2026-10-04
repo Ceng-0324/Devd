@@ -141,6 +141,9 @@ devd --config ./devd.local.yml status --json
 
 ## 开发与验证
 
+[API + 网页 + worker 示例](examples/local-stack/README.md)提供了一套可以直接运行的服务，
+附带可重复执行的故障恢复验证脚本。
+
 ```bash
 cargo fmt --all -- --check
 cargo test --locked --all-targets

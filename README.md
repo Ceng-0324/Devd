@@ -143,6 +143,9 @@ Configuration rejects unknown fields and unsupported `limits` settings. YAML val
 
 ## Development and validation
 
+Try the [API + web + worker example](examples/local-stack/README.md) for a working
+stack and a repeatable failure-recovery smoke test.
+
 ```bash
 cargo fmt --all -- --check
 cargo test --locked --all-targets

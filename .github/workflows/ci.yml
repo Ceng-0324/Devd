@@ -61,3 +61,9 @@ jobs:
         run: cargo test --locked --all-targets
       - name: Validate MVP fixture
         run: cargo run --locked -- check --config tests/fixtures/simple.yml
+      - name: Install Python for the example stack
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Exercise API, web and worker recovery
+        run: python3 examples/local-stack/smoke.py --duration 5 --restarts 2

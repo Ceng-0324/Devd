@@ -42,6 +42,11 @@ cargo test --locked --test integration
 
 ## Manual smoke test
 
+For a working HTTP API, frontend and worker, see the
+[local stack example](../examples/local-stack/README.md). Its smoke script also
+checks manual restarts, process crashes, health failures and final cleanup; CI
+runs the short version on Linux and macOS.
+
 If a test runner cannot launch subprocess tests but a normal terminal can, copy the standalone fixture into a temporary project. If the environment prohibits process creation or loopback networking entirely, run the suite on a supported host; configuration validation alone does not prove lifecycle behavior.
 
 ```bash

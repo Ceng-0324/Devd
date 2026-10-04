@@ -1,0 +1,23 @@
+version: "1"
+services:
+  api:
+    command: python3 -u app.py api --port 8731
+    healthcheck:
+      type: http
+      url: http://127.0.0.1:8731/health
+      interval: 200ms
+      timeout: 1s
+      retries: 2
+    restart: {policy: on-failure, initial-delay: 200ms, max-attempts: 10}
+  web:
+    command: python3 -u app.py web --port 8732 --api http://127.0.0.1:8731
+    depends-on: [{service: api, condition: http-ready}]
+    healthcheck:
+      type: http
+      url: http://127.0.0.1:8732/health
+      interval: 1s
+    restart: {policy: on-failure}
+  worker:
+    command: python3 -u app.py worker --api http://127.0.0.1:8731
+    depends-on: [{service: api, condition: http-ready}]
+    restart: {policy: on-failure}
