@@ -1,116 +1,9 @@
 #![cfg(unix)]
 
-use devd::core::service_manager::RuntimeSnapshot;
-use std::{
-    fs,
-    path::Path,
-    process::{Child, Command, Output, Stdio},
-    thread,
-    time::{Duration, Instant},
-};
-use tempfile::TempDir;
+mod support;
 
-struct Project {
-    directory: TempDir,
-}
-impl Project {
-    fn new(yaml: &str) -> Self {
-        let directory = tempfile::Builder::new()
-            .prefix("devd-cli-")
-            .tempdir_in("/tmp")
-            .unwrap();
-        fs::write(
-            directory.path().join("devd.yml"),
-            format!("version: '1'\n{yaml}"),
-        )
-        .unwrap();
-        Self { directory }
-    }
-    fn path(&self) -> &Path {
-        self.directory.path()
-    }
-    fn command(&self, arguments: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_devd"));
-        command.current_dir(self.path()).args(arguments);
-        if !arguments.contains(&"--color") {
-            command.args(["--color", "never"]);
-        }
-        command
-    }
-    fn invoke(&self, arguments: &[&str]) -> Output {
-        self.command(arguments).output().unwrap()
-    }
-    fn start(&self) -> Supervisor {
-        let child = self
-            .command(&["start"])
-            .stdout(fs::File::create(self.path().join("stdout")).unwrap())
-            .stderr(fs::File::create(self.path().join("stderr")).unwrap())
-            .spawn()
-            .unwrap();
-        Supervisor(child)
-    }
-    fn snapshot(&self) -> Option<RuntimeSnapshot> {
-        let output = self.invoke(&["status", "--json"]);
-        if !output.status.success() {
-            return None;
-        }
-        Some(serde_json::from_slice(&output.stdout).unwrap())
-    }
-    fn running(&self) -> RuntimeSnapshot {
-        wait(|| {
-            self.snapshot()
-                .filter(|s| s.services["worker"].pid.is_some())
-        })
-    }
-}
-
-struct Supervisor(Child);
-impl Supervisor {
-    fn finish(&mut self, success: bool) {
-        let status = wait(|| self.0.try_wait().unwrap());
-        assert_eq!(status.success(), success);
-    }
-}
-impl Drop for Supervisor {
-    fn drop(&mut self) {
-        if self.0.try_wait().unwrap().is_none() {
-            let _ = nix::sys::signal::kill(
-                nix::unistd::Pid::from_raw(self.0.id() as i32),
-                nix::sys::signal::Signal::SIGTERM,
-            );
-            let deadline = Instant::now() + Duration::from_secs(8);
-            while self.0.try_wait().unwrap().is_none() && Instant::now() < deadline {
-                thread::sleep(Duration::from_millis(10));
-            }
-            let _ = self.0.kill();
-            let _ = self.0.wait();
-        }
-    }
-}
-
-fn wait<T>(mut check: impl FnMut() -> Option<T>) -> T {
-    let deadline = Instant::now() + Duration::from_secs(12);
-    loop {
-        if let Some(value) = check() {
-            return value;
-        }
-        assert!(Instant::now() < deadline, "CLI condition timed out");
-        thread::sleep(Duration::from_millis(15));
-    }
-}
-fn success(output: Output) -> String {
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout).unwrap()
-}
-fn failure(output: Output, expected: &str) {
-    assert!(!output.status.success());
-    let error = String::from_utf8_lossy(&output.stderr);
-    assert!(error.contains(expected), "{error}");
-}
+use std::{fs, process::Stdio, time::Duration};
+use support::{failure, success, wait, Project, Supervisor};
 const RUNNING: &str = "services:\n  worker:\n    command: sh -c 'echo hello; echo problem >&2; exec sleep 60'\n    restart:\n      policy: never\n";
 
 #[test]
@@ -159,10 +52,7 @@ fn test_cli_lifecycle_logs_restart_duplicate_and_config_changes() {
     );
     failure(project.invoke(&["logs", "absent"]), "unknown service");
     failure(project.invoke(&["logs", "--tail", "0"]), "invalid value");
-    let colored = project
-        .command(&["logs", "--color", "always"])
-        .output()
-        .unwrap();
+    let colored = project.invoke(&["logs", "--color", "always"]);
     assert!(success(colored).contains('\u{1b}'));
     failure(project.invoke(&["restart", "absent"]), "unknown service");
     failure(project.invoke(&["start"]), "another supervisor");

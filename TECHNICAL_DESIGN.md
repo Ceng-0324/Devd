@@ -657,34 +657,9 @@ fn get_process_stats(pid: Pid) -> ProcessStats {
 
 #### 13.2 集成测试
 
-**场景**：
-- 启动一个 mock 服务（HTTP server），验证 devd 能否正确管理
-- 模拟服务 crash，验证自动重启
-- 模拟健康检查失败，验证重启策略
+实际集成入口是 `tests/integration.rs`，通过编译后的公开 CLI 启动真实 shell 工作负载及后代进程。单服务与依赖链配置分别为 `tests/fixtures/simple.yml`、`dependency-chain.yml`。场景覆盖自动恢复、重试耗尽、健康失败与恢复、逐级 readiness 阻塞、反向依赖关闭、启动失败回滚以及等待依赖时的 SIGINT/SIGTERM。
 
-**实现**：
-```rust
-#[tokio::test]
-async fn test_auto_restart_on_crash() {
-    let config = r#"
-services:
-  test-service:
-    command: "bash -c 'sleep 1 && exit 1'"
-    restart:
-      policy: always
-      max-attempts: 3
-"#;
-    
-    let manager = ServiceManager::from_yaml(config).await.unwrap();
-    manager.start_all().await.unwrap();
-    
-    // 等待服务 crash + 重启
-    tokio::time::sleep(Duration::from_secs(5)).await;
-    
-    let stats = manager.get_stats("test-service").unwrap();
-    assert!(stats.restart_count >= 1);
-}
-```
+测试拥有本地 HTTP mock，绑定动态端口后始终保留 listener，并通过结构化 YAML 注入地址；响应状态由测试显式控制。该 mock 模拟探测端点，真实受管进程由 workload.sh 提供。所有临时文件在独立项目目录，PID 记录原子发布。命令和条件等待有截止时间；失败输出状态与日志，作用域退出时关闭 supervisor、HTTP mock 并清理临时目录。验证包含前代进程及后代退出，不仅检查状态文件。
 
 #### 13.3 端到端测试
 
@@ -695,7 +670,7 @@ services:
 4. `devd logs [service] --tail 50` → 验证内存历史；前台 start 验证实时输出
 5. `devd stop` → 验证优雅关闭
 
-自动化真实命令测试入口为 `cargo test --locked --test cli`，包含配置错误、命令失败、信号、重复启动、配置删除、控制协议异常及终端输出故障。热重载不在 MVP 范围。
+命令边界测试为 `cargo test --locked --test cli`；完整 MVP 场景为 `cargo test --locked --test integration`。CI 在 Linux/macOS 执行 `cargo test --locked --all-targets`，并通过公开 check 命令校验 simple.yml。完整验证矩阵、夹具边界及可复制的手动烟雾测试见 [tests/README.md](tests/README.md)。热重载不在 MVP 范围。
 
 ---
 

@@ -58,4 +58,6 @@ jobs:
       - name: Build
         run: cargo build --locked
       - name: Test
-        run: cargo test --locked
+        run: cargo test --locked --all-targets
+      - name: Validate MVP fixture
+        run: cargo run --locked -- check --config tests/fixtures/simple.yml

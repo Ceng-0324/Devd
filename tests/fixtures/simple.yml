@@ -1,0 +1,8 @@
+version: "1"
+services:
+  worker:
+    command: /bin/sh workload.sh worker
+    restart:
+      policy: on-failure
+      initial-delay: 100ms
+      max-attempts: 2

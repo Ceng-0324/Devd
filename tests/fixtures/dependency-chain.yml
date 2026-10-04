@@ -1,0 +1,29 @@
+version: "1"
+services:
+  database:
+    command: /bin/sh workload.sh database
+    healthcheck:
+      type: http
+      url: http://127.0.0.1:1/database
+      interval: 20ms
+      timeout: 1s
+      retries: 1
+    restart: {policy: never}
+  api:
+    command: /bin/sh workload.sh api
+    depends-on:
+      - service: database
+        condition: http-ready
+    healthcheck:
+      type: http
+      url: http://127.0.0.1:1/api
+      interval: 20ms
+      timeout: 1s
+      retries: 1
+    restart: {policy: never}
+  frontend:
+    command: /bin/sh workload.sh frontend
+    depends-on:
+      - service: api
+        condition: http-ready
+    restart: {policy: never}

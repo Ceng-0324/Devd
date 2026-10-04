@@ -399,6 +399,8 @@ devd/
 │
 ├── tests/
 │   ├── cli.rs                 # Real binary lifecycle and failure tests
+│   ├── integration.rs         # Full MVP scenarios through the public CLI
+│   ├── support/               # Bounded command harness and local HTTP mock
 │   ├── integration/           # Integration tests
 │   │   ├── basic_start_stop.rs
 │   │   ├── dependency_order.rs
