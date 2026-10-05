@@ -130,6 +130,30 @@ fn test_cli_lifecycle_logs_restart_duplicate_and_config_changes() {
 }
 
 #[test]
+fn test_cli_init_preserves_multiline_commands_and_yaml_scalar_names() {
+    let project = Project::new(RUNNING);
+    let path = project.path().join("starter.yml");
+    let filename = path.to_str().unwrap();
+    let command = "sh -c 'printf \"key: value\\n\";\necho \"quoted # text\"'";
+    success(project.invoke(&[
+        "init",
+        "--config",
+        filename,
+        "--service",
+        "true",
+        "--command",
+        command,
+    ]));
+    let generated: devd::config::DevdConfig =
+        serde_yaml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(generated.services["true"].command, command);
+    success(project.invoke(&["check", "--config", filename]));
+    let output = success(project.invoke(&["start", "--config", filename]));
+    assert!(output.contains("key: value"), "{output}");
+    assert!(output.contains("quoted # text"), "{output}");
+}
+
+#[test]
 fn test_cli_follow_logs_replays_tail_then_streams_until_shutdown() {
     let project = Project::new(RUNNING);
     let mut supervisor = project.start();

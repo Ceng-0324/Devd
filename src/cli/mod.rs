@@ -103,11 +103,10 @@ impl Cli {
         };
         match self.command {
             Command::Init { service, command } => {
-                let yaml = format!(
-                    "version: \"1\"\nservices:\n  {}:\n    command: {}\n",
-                    serde_yaml::to_string(&service)?.trim(),
-                    serde_yaml::to_string(&command)?.trim(),
-                );
+                let yaml = serde_yaml::to_string(&serde_json::json!({
+                    "version": "1",
+                    "services": { (service): { "command": command } },
+                }))?;
                 let config = ConfigLoader::from_str(&yaml, &config_path)?;
                 ServiceManager::new(config, options)?;
                 let mut file = OpenOptions::new()
