@@ -467,7 +467,7 @@ devd graph                       # 依赖边与并行启动层
 
 `cli/mod.rs` 负责参数、路径和展示；`cli/server.rs` 协调前台 manager、控制连接与日志 writer；`cli/protocol.rs` 使用长度前缀 JSON；`cli/stdout.rs` 对终端和管道采用可取消的非阻塞写，兼容文件及 `/dev/null`。配置默认运行目录为 `<config-dir>/.devd/<config-name>/`，状态为 services.json，端点为 control.sock；socket 路径过长时报错提示使用较短的 --state-dir。
 
-start 先获取 StateStore 的同一把锁，再清理遗留 socket 和 bind；持锁到 socket 清理完成。不会替换非 socket 文件。socket 权限 0600；同时最多 32 个客户端，请求上限 4 KiB，响应上限 128 MiB（覆盖有界历史的 JSON 转义），读取和写入超时 5 秒。重启响应最多等待 55 秒，超时明确提示操作仍可能继续，需检查 status 后再重试。客户端整体响应等待最多 60 秒。
+start 先获取 StateStore 的同一把锁，再清理遗留 socket 和 bind；持锁到 socket 清理完成。不会替换非 socket 文件。socket 权限 0600；同时最多 32 个客户端，其中日志跟随最多 16 个，保留控制请求槽位；静默服务的跟随者断开后也会释放槽位。请求上限 4 KiB，响应上限 128 MiB（覆盖有界历史的 JSON 转义），读取和写入超时 5 秒。跟随流允许帧间静默，收到首字节后剩余帧必须在 5 秒内读完。重启响应最多等待 55 秒，超时明确提示操作仍可能继续，需检查 status 后再重试。客户端整体响应等待最多 60 秒。
 
 stop/status/logs/restart 通过活实例操作，不解析可能已改坏的 YAML，不向遗留 PID 发送信号。status 离线时报错，持久化快照仅用于诊断。stop 返回“请求已接受”；最终退出由前台命令体现。错误返回非零退出码。
 

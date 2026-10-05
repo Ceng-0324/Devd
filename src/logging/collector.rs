@@ -56,6 +56,7 @@ impl LogHistory {
     }
 
     /// Subscribe and snapshot under the same lock used by publishers.
+    /// After collection ends, return retained history and a closed receiver.
     pub fn subscribe_with_recent(
         &self,
         service: Option<&str>,
@@ -65,11 +66,10 @@ impl LogHistory {
             .entries
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        let receiver = self
-            .sender
-            .upgrade()
-            .expect("log collector is active")
-            .subscribe();
+        let receiver = match self.sender.upgrade() {
+            Some(sender) => sender.subscribe(),
+            None => broadcast::channel(1).1,
+        };
         (Self::filtered(&store, service, limit), receiver)
     }
 
@@ -442,6 +442,14 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(live.recv().await.unwrap().message, "after");
+        let history = collector.history();
+        drop(collector);
+        let (tail, mut closed) = history.subscribe_with_recent(Some("b"), 1);
+        assert_eq!(tail[0].message, "after");
+        assert!(matches!(
+            closed.recv().await,
+            Err(broadcast::error::RecvError::Closed)
+        ));
     }
 
     #[test]

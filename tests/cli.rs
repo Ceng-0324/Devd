@@ -346,6 +346,68 @@ fn test_cli_signals_null_output_and_stale_endpoint() {
 }
 
 #[test]
+fn test_cli_idle_followers_release_slots_and_leave_control_available() {
+    use std::{
+        io::{Read, Write},
+        os::unix::net::UnixStream,
+        path::Path,
+    };
+    fn subscribe(path: &Path) -> (UnixStream, serde_json::Value) {
+        let mut stream = UnixStream::connect(path).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        stream
+            .set_write_timeout(Some(Duration::from_secs(3)))
+            .unwrap();
+        let request = br#"{"command":"follow-logs","service":null,"tail":1}"#;
+        stream
+            .write_all(&(request.len() as u32).to_be_bytes())
+            .unwrap();
+        stream.write_all(request).unwrap();
+        let mut length = [0; 4];
+        stream.read_exact(&mut length).unwrap();
+        let length = u32::from_be_bytes(length) as usize;
+        assert!(length < 4096);
+        let mut response = vec![0; length];
+        stream.read_exact(&mut response).unwrap();
+        (stream, serde_json::from_slice(&response).unwrap())
+    }
+    let project =
+        Project::new("services:\n  worker:\n    command: sleep 60\n    restart: {policy: never}\n");
+    let mut supervisor = project.start();
+    project.running();
+    let path = project.path().join(".devd/devd.yml/control.sock");
+    let mut followers = Vec::new();
+    for _ in 0..16 {
+        let (stream, response) = subscribe(&path);
+        assert_eq!(response["result"], "logs");
+        followers.push(stream);
+    }
+    let (excess, response) = subscribe(&path);
+    assert_eq!(response["result"], "error");
+    assert!(response["data"]
+        .as_str()
+        .unwrap()
+        .contains("too many log followers"));
+    drop(excess);
+    success(project.invoke(&["status"]));
+    // No service output can wake a leaked subscriber; EOF must release it.
+    for _ in 0..40 {
+        drop(followers.pop());
+        followers.push(wait(|| {
+            let (stream, response) = subscribe(&path);
+            (response["result"] == "logs").then_some(stream)
+        }));
+    }
+    success(project.invoke(&["stop"]));
+    supervisor.finish(true);
+    for mut stream in followers {
+        assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+    }
+}
+
+#[test]
 fn test_cli_broken_and_stalled_output_shut_down_without_hanging() {
     for broken in [false, true] {
         let project = Project::new("services:\n  worker:\n    command: sh -c 'while :; do echo noisy-output; done'\n    restart: {policy: never}\n");

@@ -14,9 +14,10 @@ use std::{
     time::Duration,
 };
 use tokio::{
+    io::AsyncReadExt,
     net::UnixListener,
     signal::unix::{signal, SignalKind},
-    sync::watch,
+    sync::{watch, Semaphore},
     task::JoinSet,
 };
 
@@ -75,6 +76,8 @@ pub(super) async fn start(
     writer.spawn(write_logs(stdout, logs, formatter));
     let mut writer_done = false;
     let mut clients = JoinSet::new();
+    // Long-lived followers must leave room for status/stop/restart requests.
+    let followers = Arc::new(Semaphore::new(16));
     let mut failure = None;
     let result = loop {
         tokio::select! {
@@ -99,6 +102,7 @@ pub(super) async fn start(
                 let history = history.clone();
                 let controller = controller.clone();
                 let shutdown = shutdown.clone();
+                let followers = followers.clone();
                 clients.spawn(async move {
                     let response = match protocol::read_request(&mut stream).await {
                         Err(error) => Response::Error(error.to_string()),
@@ -124,10 +128,21 @@ pub(super) async fn start(
                             if !(1..=1000).contains(&tail) {
                                 return protocol::write(&mut stream, &Response::Error("tail must be between 1 and 1000".into())).await;
                             }
+                            let Ok(_permit) = followers.try_acquire_owned() else {
+                                return protocol::write(&mut stream, &Response::Error("too many log followers (maximum 16)".into())).await;
+                            };
                             let (entries, mut live) = history.subscribe_with_recent(service.as_deref(), tail);
                             protocol::write(&mut stream, &Response::Logs(entries.iter().map(|entry| (**entry).clone()).collect())).await?;
                             loop {
-                                match live.recv().await {
+                                let mut unexpected = [0];
+                                let entry = tokio::select! {
+                                    result = stream.read(&mut unexpected) => {
+                                        if result? == 0 { return Ok(()); }
+                                        return protocol::write(&mut stream, &Response::Error("unexpected input after log subscription".into())).await;
+                                    }
+                                    entry = live.recv() => entry,
+                                };
+                                match entry {
                                     Ok(entry) if service.as_ref().is_none_or(|name| entry.service == *name) => {
                                         protocol::write(&mut stream, &Response::Log((*entry).clone())).await?;
                                     }

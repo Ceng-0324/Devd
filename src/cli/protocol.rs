@@ -98,21 +98,48 @@ pub(super) async fn next_response(stream: &mut UnixStream) -> Result<Option<Resp
     if stream.read(&mut prefix).await? == 0 {
         return Ok(None);
     }
-    let mut rest = [0u8; 3];
-    stream.read_exact(&mut rest).await?;
-    let length = u32::from_be_bytes([prefix[0], rest[0], rest[1], rest[2]]) as usize;
-    if length > MAX_RESPONSE {
-        bail!("control message exceeds {MAX_RESPONSE} bytes");
-    }
-    let mut bytes = vec![0; length];
-    stream.read_exact(&mut bytes).await?;
-    let response = serde_json::from_slice(&bytes).context("invalid control message")?;
-    Ok(Some(response))
+    // Silence between frames is valid; a partially transmitted frame is not.
+    tokio::time::timeout(IO_TIMEOUT, async {
+        let mut rest = [0u8; 3];
+        stream.read_exact(&mut rest).await?;
+        let length = u32::from_be_bytes([prefix[0], rest[0], rest[1], rest[2]]) as usize;
+        if length > MAX_RESPONSE {
+            bail!("control message exceeds {MAX_RESPONSE} bytes");
+        }
+        let mut bytes = vec![0; length];
+        stream.read_exact(&mut bytes).await?;
+        let response = serde_json::from_slice(&bytes).context("invalid control message")?;
+        Ok(Some(response))
+    })
+    .await
+    .context("log frame timed out")?
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn test_cli_log_stream_bounds_partial_frames_but_allows_silence() {
+        for partial in [vec![0], vec![0, 0, 0, 100, b'{']] {
+            let (mut server, mut client) = UnixStream::pair().unwrap();
+            client.write_all(&partial).await.unwrap();
+            let result = next_response(&mut server).await;
+            assert!(result
+                .err()
+                .unwrap()
+                .to_string()
+                .contains("log frame timed out"));
+        }
+        let (mut server, mut client) = UnixStream::pair().unwrap();
+        let (response, _) = tokio::join!(next_response(&mut server), async {
+            tokio::time::sleep(IO_TIMEOUT * 2).await;
+            write(&mut client, &Response::Logs(vec![])).await.unwrap();
+        });
+        assert!(matches!(response.unwrap(), Some(Response::Logs(_))));
+        drop(client);
+        assert!(next_response(&mut server).await.unwrap().is_none());
+    }
 
     #[tokio::test(start_paused = true)]
     async fn test_cli_protocol_stalled_request_times_out() {
