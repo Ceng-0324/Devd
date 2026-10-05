@@ -6,6 +6,7 @@ description = "A lightweight local development service supervisor"
 license = "MIT"
 repository = "https://github.com/Ceng-0324/Devd"
 readme = "README.md"
+exclude = ["/TECHNICAL_DESIGN.md"]
 keywords = ["development", "process", "supervisor", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 

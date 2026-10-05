@@ -353,7 +353,6 @@ devd/
 ├── Cargo.toml                 # Rust project manifest
 ├── Cargo.lock
 ├── README.md
-├── TECHNICAL_DESIGN.md        # This file
 ├── ARCHITECTURE.md            # Architecture diagrams
 ├── AGENTS.md                  # AI agent collaboration rules
 │
@@ -537,7 +536,7 @@ Pending -> Starting -> Running -> Healthy / Unhealthy
 关闭 -> 全栈 Quiescing -> 反向分层 Stopping -> Stopped
 ```
 
-状态快照保存 PID、开始时间、累计重启次数、连续失败次数和退出/错误诊断。watch 状态只保留最新值，不是可靠的历史事件队列；管道读取侧先拼成完整 LogEntry，再写入有界历史和 broadcast，消费者处理 Lagged。没有健康配置的存活服务为 Running。MVP 仅实现 fixed 重启，v0.2 开发版增加 Unix Socket 探测和有上限、可取消的指数退避；依赖联动重启仍为后续设计。具体策略与状态持久化契约见 `TECHNICAL_DESIGN.md` 4.2、7、8、12 节。
+状态快照保存 PID、开始时间、累计重启次数、连续失败次数和退出/错误诊断。watch 状态只保留最新值，不是可靠的历史事件队列；管道读取侧先拼成完整 LogEntry，再写入有界历史和 broadcast，消费者处理 Lagged。没有健康配置的存活服务为 Running。MVP 仅实现 fixed 重启，v0.2 开发版增加 Unix Socket 探测和有上限、可取消的指数退避；依赖联动重启仍为后续设计。当前使用边界见 [README](README.zh-CN.md#用之前知道这几件事)。
 
 ---
 

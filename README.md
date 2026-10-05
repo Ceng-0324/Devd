@@ -160,4 +160,4 @@ End-to-end tests launch real child processes and verify dependency readiness, fa
 cargo test --locked --test integration
 ```
 
-[Tests and manual validation](tests/README.md) · [Release checklist](RELEASING.md) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE) · [Technical design (中文)](TECHNICAL_DESIGN.md) · [Architecture (中文)](ARCHITECTURE.md)
+[Tests and manual validation](tests/README.md) · [Release checklist](RELEASING.md) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE) · [Architecture (中文)](ARCHITECTURE.md)
