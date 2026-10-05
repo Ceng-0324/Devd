@@ -15,7 +15,7 @@ from urllib.request import urlopen
 from urllib.error import URLError
 
 
-def wait_for(check, timeout=15):
+def wait_for(check, timeout=30):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         value = check()
@@ -137,6 +137,10 @@ def main():
                                   "supervisor_max_ps_cpu_percent": max(s["cpu_percent"] for s in samples)}, indent=2))
             except BaseException:
                 output.flush()
+                try:
+                    print("Buffered service logs:\n" + cli("logs"), flush=True)
+                except (subprocess.SubprocessError, OSError) as error:
+                    print(f"Cannot read service logs: {error}", flush=True)
                 print("Last supervisor status: " + json.dumps(last_status), flush=True)
                 print((directory / "output.log").read_text()[-12000:])
                 raise

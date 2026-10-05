@@ -52,6 +52,11 @@ jobs:
         run: cargo build --locked --release --target '${{ matrix.target }}'
       - name: Test binary
         run: ./target/${{ matrix.target }}/release/devd --version > VERSION
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Exercise release binary recovery
+        run: python3 examples/local-stack/smoke.py --binary target/${{ matrix.target }}/release/devd --duration 5 --restarts 2
       - name: Archive binary and license
         run: tar -czf 'devd-${{ matrix.target }}.tar.gz' -C target/${{ matrix.target }}/release devd -C "$GITHUB_WORKSPACE" LICENSE README.md README.zh-CN.md VERSION REVISION
       - name: Record checksum

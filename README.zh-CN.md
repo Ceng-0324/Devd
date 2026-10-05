@@ -16,7 +16,7 @@
 
 ## 它能做什么
 
-devd 是用 Rust 编写的本地开发服务管理器。当前 checkout 是基于 v0.1 MVP 的 **v0.2 开发快照，支持 Linux 和 macOS**。
+devd 是用 Rust 编写的本地开发服务管理器。**v0.2.0-alpha.1 是基于 v0.1 MVP 的预发布版，支持 Linux 和 macOS**。
 
 一份 `devd.yml` 描述服务和依赖，`devd start` 在前台管理它们。你可以继续在另一个终端查状态、翻日志或重启某个服务。
 

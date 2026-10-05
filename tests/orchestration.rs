@@ -677,7 +677,9 @@ async fn test_orchestration_state_initialization_failure_spawns_no_children() {
 #[tokio::test]
 async fn test_orchestration_shutdown_is_reverse_dependency_order() {
     let directory = tempdir().unwrap();
-    let script = "trap 'echo \"$NAME\" >> \"$DEVD_TEST_DIR/stopped\"; exit 0' TERM; echo ready; sleep 60 & wait";
+    // A descendant may receive the group signal first and wake `wait` before
+    // this shell receives TERM. Keep the leader alive for its own handler.
+    let script = "trap 'echo \"$NAME\" >> \"$DEVD_TEST_DIR/stopped\"; exit 0' TERM; sleep 60 & echo ready; while :; do wait || :; sleep 60 & done";
     let mut root = service(script, directory.path());
     root.env.insert("NAME".into(), "root".into());
     let mut child = service(script, directory.path());

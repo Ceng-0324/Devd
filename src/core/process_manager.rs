@@ -52,6 +52,8 @@ pub enum ProcessError {
         #[source]
         source: std::io::Error,
     },
+    #[error("process group {group} for service '{service}' did not disappear after SIGKILL")]
+    CleanupTimeout { service: String, group: i32 },
     #[error("stop grace period {grace_period:?} is too large for service '{service}'")]
     InvalidGracePeriod {
         service: String,
@@ -116,21 +118,21 @@ impl ManagedProcess {
         self.child.stderr.take()
     }
 
-    /// Refresh the exit status without blocking. Exited leaders trigger cleanup
-    /// of any remaining processes in their group.
-    pub fn try_wait(&mut self) -> Result<Option<ExitStatus>, ProcessError> {
+    /// Poll the leader without waiting for its exit. Once it has exited, await
+    /// cleanup of its process group before reporting the completed generation.
+    pub async fn try_wait(&mut self) -> Result<Option<ExitStatus>, ProcessError> {
         let status = self.child.try_wait().map_err(|source| ProcessError::Wait {
             service: self.service.clone(),
             source,
         })?;
         if status.is_some() {
-            self.cleanup_group()?;
+            self.cleanup_group_async().await?;
         }
         Ok(status)
     }
 
-    pub fn state(&mut self) -> Result<ProcessState, ProcessError> {
-        match self.try_wait()? {
+    pub async fn state(&mut self) -> Result<ProcessState, ProcessError> {
+        match self.try_wait().await? {
             Some(status) => Ok(ProcessState::Exited { status }),
             None => Ok(ProcessState::Running {
                 pid: self.child.id().expect("unreaped child has a PID"),
@@ -157,16 +159,8 @@ impl ManagedProcess {
     /// then use SIGKILL if necessary. Any descendants left after the leader exits
     /// are killed as well. Repeated stops return the same collected exit status.
     pub async fn stop(&mut self, grace_period: Duration) -> Result<ExitStatus, ProcessError> {
-        match self.try_wait() {
-            Ok(Some(status)) => return Ok(status),
-            Ok(None) => {}
-            Err(ProcessError::Signal {
-                source: Errno::EPERM,
-                ..
-            }) if cfg!(target_os = "macos") => {
-                return self.wait().await;
-            }
-            Err(error) => return Err(error),
+        if let Some(status) = self.try_wait().await? {
+            return Ok(status);
         }
         let deadline = tokio::time::Instant::now()
             .checked_add(grace_period)
@@ -178,9 +172,7 @@ impl ManagedProcess {
         match tokio::time::timeout_at(deadline, self.wait()).await {
             Ok(result) => result,
             Err(_) => {
-                // Once the whole group is killed, do not signal it again after
-                // reaping the leader: macOS may reject a zombie-only group.
-                self.cleanup_group_async().await?;
+                self.signal_group(Signal::SIGKILL)?;
                 self.wait().await
             }
         }
@@ -213,27 +205,39 @@ impl ManagedProcess {
         Ok(())
     }
 
-    fn cleanup_group(&mut self) -> Result<(), ProcessError> {
-        self.signal_group(Signal::SIGKILL)?;
-        self.group = None;
-        Ok(())
-    }
-
     async fn cleanup_group_async(&mut self) -> Result<(), ProcessError> {
-        // macOS can temporarily return EPERM for a group containing only exiting
-        // zombies. Allow reaping to finish; persistent permission errors survive.
-        let mut attempt = 0;
+        let Some(group) = self.group else {
+            return Ok(());
+        };
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
         loop {
-            match self.cleanup_group() {
-                Err(ProcessError::Signal {
-                    source: Errno::EPERM,
-                    ..
-                }) if cfg!(target_os = "macos") && attempt < 10 => {
-                    attempt += 1;
-                    tokio::time::sleep(Duration::from_millis(10)).await;
+            // A successful group signal is not a completion barrier: a fork in
+            // flight can leave a descendant behind. Keep ownership and retry
+            // until the kernel reports that the group no longer exists.
+            match killpg(group, Signal::SIGKILL) {
+                Err(Errno::ESRCH) => {
+                    self.group = None;
+                    return Ok(());
                 }
-                result => return result,
+                Ok(()) => {}
+                // Darwin may reject signals to groups containing only exiting
+                // zombies. Retry briefly; never silently swallow persistent EPERM.
+                Err(Errno::EPERM) if cfg!(target_os = "macos") => {}
+                Err(source) => {
+                    return Err(ProcessError::Signal {
+                        service: self.service.clone(),
+                        signal: Signal::SIGKILL,
+                        source,
+                    });
+                }
             }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(ProcessError::CleanupTimeout {
+                    service: self.service.clone(),
+                    group: group.as_raw(),
+                });
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
 }
@@ -241,7 +245,7 @@ impl ManagedProcess {
 impl Drop for ManagedProcess {
     fn drop(&mut self) {
         // Tokio's kill_on_drop only covers the leader. Kill its process group too.
-        let _ = self.cleanup_group();
+        let _ = self.signal_group(Signal::SIGKILL);
     }
 }
 

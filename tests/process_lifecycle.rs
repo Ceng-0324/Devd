@@ -8,7 +8,7 @@ use devd::{
 };
 use nix::{
     errno::Errno,
-    sys::signal::kill,
+    sys::signal::{kill, killpg},
     unistd::{getpgid, Pid},
 };
 use tempfile::tempdir;
@@ -186,8 +186,11 @@ async fn test_process_exit_status_is_cached_and_stop_is_idempotent() {
     let status = bounded(process.wait()).await.unwrap();
     assert_eq!(status.code(), Some(7));
     assert_eq!(process.pid(), None);
-    assert_eq!(process.try_wait().unwrap(), Some(status));
-    assert_eq!(process.state().unwrap(), ProcessState::Exited { status });
+    assert_eq!(process.try_wait().await.unwrap(), Some(status));
+    assert_eq!(
+        process.state().await.unwrap(),
+        ProcessState::Exited { status }
+    );
     assert_eq!(bounded(process.stop(Duration::ZERO)).await.unwrap(), status);
     assert_eq!(bounded(process.wait()).await.unwrap(), status);
 }
@@ -199,7 +202,10 @@ async fn test_process_graceful_stop_uses_an_isolated_process_group() {
         .unwrap();
     let mut stdout = ready(&mut process).await;
     let pid = process.pid().unwrap();
-    assert_eq!(process.state().unwrap(), ProcessState::Running { pid });
+    assert_eq!(
+        process.state().await.unwrap(),
+        ProcessState::Running { pid }
+    );
     assert_eq!(
         getpgid(Some(Pid::from_raw(pid as i32))).unwrap(),
         Pid::from_raw(pid as i32)
@@ -238,7 +244,10 @@ async fn test_process_forces_non_cooperative_child_after_grace_period() {
     let status = bounded(process.stop(grace)).await.unwrap();
     assert!(started.elapsed() >= grace);
     assert_eq!(status.signal(), Some(nix::libc::SIGKILL));
-    assert_eq!(process.state().unwrap(), ProcessState::Exited { status });
+    assert_eq!(
+        process.state().await.unwrap(),
+        ProcessState::Exited { status }
+    );
     assert_eq!(bounded(process.stop(Duration::ZERO)).await.unwrap(), status);
     assert_eq!(bounded(process.wait()).await.unwrap(), status);
 }
@@ -279,10 +288,11 @@ async fn test_process_try_wait_cleans_background_descendants_after_natural_exit(
     let mut process = ManagedProcess::spawn("poll-background", &fixture_config("background"))
         .await
         .unwrap();
+    let group = process.pid().unwrap();
     let mut stdout = process.take_stdout().unwrap();
     let status = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
-            if let Some(status) = process.try_wait().unwrap() {
+            if let Some(status) = process.try_wait().await.unwrap() {
                 break status;
             }
             tokio::time::sleep(Duration::from_millis(10)).await;
@@ -296,10 +306,28 @@ async fn test_process_try_wait_cleans_background_descendants_after_natural_exit(
         tokio::time::timeout(Duration::from_secs(10), stdout.read_to_string(&mut output)).await;
     assert!(
         drained.is_ok(),
-        "descendant stdout remained open after group cleanup; output: {output:?}"
+        "descendant stdout remained open after group {group} cleanup; output: {output:?}"
     );
     drained.unwrap().unwrap();
     assert!(output.contains("leader-exiting\n"));
+}
+
+#[tokio::test]
+async fn test_process_exit_cleanup_waits_for_forking_groups_to_disappear() {
+    // Exercise the fork/exit overlap repeatedly. A successful SIGKILL alone is
+    // not sufficient: returning from wait must mean the old group is gone.
+    for _ in 0..64 {
+        let mut process = ManagedProcess::spawn("forking", &fixture_config("background"))
+            .await
+            .unwrap();
+        let group = Pid::from_raw(process.pid().unwrap() as i32);
+        let mut stdout = process.take_stdout().unwrap();
+        assert_eq!(bounded(process.wait()).await.unwrap().code(), Some(7));
+        assert_eq!(killpg(group, None), Err(Errno::ESRCH));
+        let mut output = String::new();
+        bounded(stdout.read_to_string(&mut output)).await.unwrap();
+        assert!(output.contains("leader-exiting\n"));
+    }
 }
 
 #[tokio::test]
@@ -335,7 +363,10 @@ async fn test_process_wait_and_stop_cancellation_preserve_ownership() {
     )
     .await
     .is_err());
-    assert_eq!(process.state().unwrap(), ProcessState::Running { pid });
+    assert_eq!(
+        process.state().await.unwrap(),
+        ProcessState::Running { pid }
+    );
     assert_eq!(
         bounded(process.stop(Duration::ZERO))
             .await
@@ -357,7 +388,10 @@ async fn test_process_rejects_overflowing_grace_period_without_signaling_child()
         process.stop(Duration::MAX).await,
         Err(ProcessError::InvalidGracePeriod { .. })
     ));
-    assert_eq!(process.state().unwrap(), ProcessState::Running { pid });
+    assert_eq!(
+        process.state().await.unwrap(),
+        ProcessState::Running { pid }
+    );
     assert_eq!(
         bounded(process.stop(Duration::ZERO))
             .await
@@ -410,7 +444,7 @@ async fn test_process_failed_restart_leaves_old_generation_stopped() {
     ));
     assert_eq!(process.pid(), None);
     assert!(
-        matches!(process.state().unwrap(), ProcessState::Exited { status } if status.success())
+        matches!(process.state().await.unwrap(), ProcessState::Exited { status } if status.success())
     );
     tokio::fs::write(&path, "DEVD_RESTART_TEST=2\n")
         .await

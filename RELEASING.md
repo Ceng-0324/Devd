@@ -1,27 +1,30 @@
-# v0.1 release checklist
+# Release checklist
 
 The release workflow is manual and uploads run-scoped artifacts. It does not
-create a tag, GitHub Release, or crates.io publication. The repository owner
-handles those actions after reviewing and testing the artifacts.
-The v0.1 candidate is commit `eaa52b08e119285e37bd4bc5712ed517bc0c7733`;
-later commits start v0.2 development. Run checks on that revision in a separate
-checkout or worktree when preparing v0.1; testing current main tests v0.2.
+create a tag, GitHub Release, or crates.io publication. Publishing is a separate
+action after the source revision, checks, and artifacts have been reviewed.
 
-1. From the intended commit, run `cargo fmt --all -- --check`,
+1. Confirm the Cargo version, changelog, and both READMEs describe the intended
+   release. Alpha versions must be marked as prereleases on GitHub.
+2. Run `cargo fmt --all -- --check`,
    `cargo clippy --locked --all-targets -- -D warnings`,
    `cargo test --locked --all-targets`, and `cargo package --locked`.
-2. Confirm the v0.1 behavior and limitations in both READMEs and replace the
-   changelog's pre-release heading only when the release is actually approved.
-3. After pushing, trigger **Release artifacts** from main and enter the full
-   source commit SHA in its required `revision` input. The workflow checks out
-   and verifies that revision rather than building main implicitly. For v0.1,
-   use the candidate SHA above. Download the Linux
-   x86_64 and macOS arm64 artifacts from the workflow run. Verify each archive
-   against its `.sha256` file with `shasum -a 256 -c <file>` and test the binary
-   on its target platform. Check the archived `VERSION` and `REVISION` files
-   against the intended release. A local macOS build cannot validate the Linux job.
-4. Review the final commit SHA, changelog, archive contents, checksums, and
-   supported platform claims before creating a tag or publishing anything.
+   Verify that local-only documents are absent from `cargo package --list`.
+3. Push the release commit and require successful Linux/macOS CI on that exact
+   SHA, including the three-service recovery smoke test.
+4. Trigger **Release artifacts** from main with the full source commit SHA in
+   its required `revision` input. The workflow verifies the checkout and tests
+   the release binary on each target platform before archiving it.
+5. Download the Linux x86_64 and macOS arm64 artifacts. Verify each archive with
+   `shasum -a 256 -c <file>.sha256`. Inspect its contents and confirm `VERSION`
+   and `REVISION` match the intended release. Local macOS testing does not
+   replace validation of the Linux artifact.
+6. Create a draft GitHub Release targeting that SHA, attach both archives and
+   checksums, and verify its notes, tag target, assets, and prerelease flag
+   before publishing it. Use ordinary forward commits for any follow-up fixes.
+
+The v0.1 MVP was an internal milestone, not a separately published release.
+Historical revisions are not release candidates for the current version.
 
 The crate name `devd` is not reserved for this repository on crates.io. Do not
 promise `cargo install devd` or publish there without checking ownership and
