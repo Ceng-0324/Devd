@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import signal
 import threading
+from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import URLError
 from urllib.request import Request, urlopen
@@ -38,7 +39,7 @@ def main():
             try:
                 with urlopen(Request(args.api + "/jobs", data=b"", method="POST"), timeout=1) as response:
                     print("job completed: " + response.read().decode(), flush=True)
-            except (URLError, OSError) as error:
+            except (HTTPException, URLError, OSError) as error:
                 print(f"API unavailable; will retry: {error}", flush=True)
             stop.wait(1)
         print("worker stopped", flush=True)
