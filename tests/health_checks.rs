@@ -135,6 +135,33 @@ async fn test_health_tcp_reports_success_and_connection_refusal() {
 }
 
 #[tokio::test]
+#[cfg(unix)]
+async fn test_health_socket_requires_a_connectable_listener() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("health.sock");
+    let config = HealthCheck::Socket {
+        path: path.clone(),
+        interval: Duration::from_millis(40),
+        timeout: Duration::from_millis(200),
+        retries: 2,
+    };
+    let checker = HealthChecker::new(&config).unwrap();
+    assert!(matches!(
+        checker.probe().await,
+        ProbeResult::Unhealthy(ProbeFailure::Socket { .. })
+    ));
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    assert!(checker.probe().await.is_healthy());
+    let (stream, _) = listener.accept().await.unwrap();
+    drop(stream);
+    drop(listener);
+    assert!(matches!(
+        checker.probe().await,
+        ProbeResult::Unhealthy(ProbeFailure::Socket { .. })
+    ));
+}
+
+#[tokio::test]
 async fn test_health_tcp_supports_ipv6_loopback() {
     let listener = TcpListener::bind("[::1]:0").await.unwrap();
     let checker = HealthChecker::new(&tcp_config(listener.local_addr().unwrap())).unwrap();

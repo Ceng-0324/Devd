@@ -7,6 +7,28 @@ use support::{failure, success, wait, Project, Supervisor};
 const RUNNING: &str = "services:\n  worker:\n    command: sh -c 'echo hello; echo problem >&2; exec sleep 60'\n    restart:\n      policy: never\n";
 
 #[test]
+fn test_cli_socket_readiness_resolves_against_service_directory() {
+    use devd::core::service_manager::ServiceState;
+    let project = Project::new("services:\n  provider:\n    command: sleep 60\n    cwd: service\n    restart:\n      policy: never\n    healthcheck:\n      type: socket\n      path: health.sock\n      interval: 50ms\n      retries: 1000\n  worker:\n    command: sleep 60\n    depends-on:\n      - service: provider\n        condition: socket-ready\n");
+    fs::create_dir(project.path().join("service")).unwrap();
+    success(project.invoke(&["check"]));
+    let mut supervisor = project.start();
+    let before = wait(|| {
+        project
+            .snapshot()
+            .filter(|s| s.services["provider"].consecutive_failures > 0)
+    });
+    assert_eq!(before.services["worker"].status, ServiceState::Pending);
+    assert!(before.services["worker"].pid.is_none());
+    let _listener =
+        std::os::unix::net::UnixListener::bind(project.path().join("service/health.sock")).unwrap();
+    let after = project.running();
+    assert_eq!(after.services["provider"].status, ServiceState::Healthy);
+    success(project.invoke(&["stop"]));
+    supervisor.finish(true);
+}
+
+#[test]
 fn test_cli_help_validation_graph_and_failures() {
     let project = Project::new("services:\n  worker:\n    command: sleep 60\n  api:\n    command: sleep 60\n    depends-on: [worker]\n");
     assert!(success(project.invoke(&["--help"])).contains("restart"));

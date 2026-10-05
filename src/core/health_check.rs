@@ -13,8 +13,6 @@ use crate::config::{ConfigValidationError, HealthCheck};
 pub enum HealthCheckError {
     #[error(transparent)]
     InvalidConfig(#[from] ConfigValidationError),
-    #[error("{kind} health checks are not supported in MVP v0.1")]
-    UnsupportedProbe { kind: &'static str },
     #[error("failed to construct HTTP health-check client: {source}")]
     Client {
         #[source]
@@ -44,6 +42,11 @@ pub enum ProbeFailure {
         #[source]
         source: io::Error,
     },
+    #[error("Unix socket connection failed: {source}")]
+    Socket {
+        #[source]
+        source: io::Error,
+    },
     #[error("HTTP request failed: {source}")]
     Http {
         #[source]
@@ -68,6 +71,7 @@ impl ProbeResult {
 #[derive(Debug, Clone)]
 enum Probe {
     Tcp { host: String, port: u16 },
+    Socket { path: std::path::PathBuf },
     Http { client: Client, url: Url },
 }
 
@@ -97,9 +101,12 @@ impl HealthChecker {
                 retries,
                 ..
             } => (*interval, *timeout, *retries),
-            HealthCheck::Socket { .. } => {
-                return Err(HealthCheckError::UnsupportedProbe { kind: "socket" })
-            }
+            HealthCheck::Socket {
+                interval,
+                timeout,
+                retries,
+                ..
+            } => (*interval, *timeout, *retries),
         };
         checked_deadline(interval, "interval")?;
         checked_deadline(timeout, "timeout")?;
@@ -118,9 +125,7 @@ impl HealthChecker {
                 let url = Url::parse(url).expect("HTTP URL was validated above");
                 Probe::Http { client, url }
             }
-            HealthCheck::Socket { .. } => {
-                return Err(HealthCheckError::UnsupportedProbe { kind: "socket" })
-            }
+            HealthCheck::Socket { path, .. } => Probe::Socket { path: path.clone() },
         };
         Ok(Self {
             probe,
@@ -139,6 +144,25 @@ impl HealthChecker {
                     .await
                     .map(|_| ())
                     .map_err(|source| ProbeFailure::Tcp { source }),
+                Probe::Socket { path } => {
+                    #[cfg(unix)]
+                    {
+                        tokio::net::UnixStream::connect(path)
+                            .await
+                            .map(|_| ())
+                            .map_err(|source| ProbeFailure::Socket { source })
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        let _ = path;
+                        Err(ProbeFailure::Socket {
+                            source: io::Error::new(
+                                io::ErrorKind::Unsupported,
+                                "Unix sockets are not supported on this platform",
+                            ),
+                        })
+                    }
+                }
                 Probe::Http { client, url } => {
                     let response = client.get(url.clone()).send().await.map_err(|source| {
                         if source.is_timeout() {
@@ -345,10 +369,7 @@ mod tests {
                 Err(HealthCheckError::InvalidConfig(ConfigValidationError::InvalidField { field, .. })) if field == expected));
         }
         let config = serde_yaml::from_str("type: socket\npath: /tmp/db.sock").unwrap();
-        assert!(matches!(
-            HealthChecker::new(&config),
-            Err(HealthCheckError::UnsupportedProbe { kind: "socket" })
-        ));
+        assert!(HealthChecker::new(&config).is_ok());
     }
 
     #[test]

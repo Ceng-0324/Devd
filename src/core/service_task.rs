@@ -246,10 +246,11 @@ impl ServiceTask {
                                         | ServiceState::Unhealthy
                                 )
                         }
-                        DependencyCondition::HttpReady | DependencyCondition::TcpReady => {
+                        DependencyCondition::HttpReady
+                        | DependencyCondition::TcpReady
+                        | DependencyCondition::SocketReady => {
                             dependency.pid.is_some() && dependency.status == ServiceState::Healthy
                         }
-                        DependencyCondition::SocketReady => false,
                     };
                     ready &= condition;
                 }

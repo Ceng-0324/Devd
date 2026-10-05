@@ -187,8 +187,17 @@ impl ServiceManager {
                 format!("services.{name}.restart.initial-delay"),
                 service.restart.initial_delay,
             )?;
-            let checker = service
-                .healthcheck
+            let mut healthcheck = service.healthcheck.clone();
+            if let Some(crate::config::HealthCheck::Socket { path, .. }) = &mut healthcheck {
+                if path.is_relative() {
+                    *path = service
+                        .cwd
+                        .as_deref()
+                        .unwrap_or(std::path::Path::new("."))
+                        .join(&*path);
+                }
+            }
+            let checker = healthcheck
                 .as_ref()
                 .map(HealthChecker::new)
                 .transpose()

@@ -964,10 +964,7 @@ fn test_orchestration_preflight_rejects_invalid_or_unsupported_configuration() {
     child.restart.initial_delay = Duration::ZERO;
     child.healthcheck =
         Some(serde_yaml::from_str("type: socket\npath: /tmp/devd-test.sock").unwrap());
-    assert!(matches!(
-        ServiceManager::new(config([("child", child.clone())]), settings.clone()),
-        Err(ServiceManagerError::Health { .. })
-    ));
+    assert!(ServiceManager::new(config([("child", child.clone())]), settings.clone()).is_ok());
     child.healthcheck = None;
     let mut invalid = settings.clone();
     invalid.grace_period = Duration::MAX;

@@ -6,6 +6,7 @@
 
 - Add `logs --follow` with an atomic buffered-tail to live-stream handoff.
 - Add `devd init` to create a validated starter config without overwriting files.
+- Add Unix socket health checks and `socket-ready` dependencies, resolving relative probe paths against the service working directory.
 
 ### v0.1.0 release candidate
 

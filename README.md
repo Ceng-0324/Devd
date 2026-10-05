@@ -22,8 +22,8 @@ devd is a local development service manager written in Rust. This checkout is a 
 
 Describe your services and their dependencies in `devd.yml`, then run `devd start` in the foreground. Use another terminal to check status, read logs, or restart a service.
 
-- **Start in dependency order.** Independent services start concurrently. Dependencies can wait for a process to start or for a TCP / HTTP health check to pass.
-- **Watch service health.** TCP connection checks and HTTP 2xx probes track consecutive failures and report what went wrong.
+- **Start in dependency order.** Independent services start concurrently. Dependencies can wait for a process to start or for a TCP / HTTP / Unix socket health check to pass.
+- **Watch service health.** TCP and Unix socket connection checks and HTTP 2xx probes track consecutive failures and report what went wrong. Socket paths resolve relative to the service working directory; a stale socket file is not healthy.
 - **Handle unexpected exits.** Choose `always`, `on-failure`, or `never`, with a fixed retry delay and a limit on automatic restarts.
 - **Bring the logs together.** Collect stdout / stderr with timestamps, service names, and colors. Query recent output for a specific service.
 - **Clean up on the way out.** Ctrl+C, SIGTERM, or `devd stop` shuts services down in reverse dependency order and cleans up descendants in their process groups.

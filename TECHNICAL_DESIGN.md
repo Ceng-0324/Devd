@@ -55,7 +55,7 @@
 
 **文件名**：默认 `devd.yml`，`--config` 可选择其他文件；环境覆盖仍为规划。
 
-**未来完整配置示意（包含尚未实现的 Socket、指数退避和资源限制，不能直接用于 v0.1）**：
+**完整配置蓝图（包含尚未实现的指数退避和资源限制，不能直接用于当前版本）**：
 ```yaml
 version: "1"
 
@@ -261,7 +261,7 @@ enum DependencyCondition {
 
 #### 5.3 依赖条件检查
 
-**当前实现**：编排任务订阅 watch 状态快照，复用被依赖服务自己的 TCP/HTTP 监控结果，不重复发送网络探测。读取快照和等待变更使用 `borrow_and_update`/`changed`，避免丢失唤醒；首次启动与自动重启采用同一检查路径。Socket 探测在构造阶段明确拒绝。
+**当前实现**：编排任务订阅 watch 状态快照，复用被依赖服务自己的 TCP/HTTP/Unix Socket 监控结果，不重复探测。读取快照和等待变更使用 `borrow_and_update`/`changed`，避免丢失唤醒；首次启动与自动重启采用同一检查路径。Socket 必须可连接，文件存在不代表就绪；相对路径按服务 cwd 解析。
 
 ---
 
@@ -275,7 +275,7 @@ enum DependencyCondition {
 - `wait_ready(overall_timeout)` 首次立即探测，失败后按 interval 重试到第一次成功；总就绪时限独立于单次 timeout 和 retries，可中断正在执行的探测，超时错误保留最后一次完成的失败。
 - `HealthMonitor::next_check` 串行定期探测，首次立即执行，跳过错过的时间点；完成失败后递增计数，达到 retries 才报告 Unhealthy，成功重置计数。计数饱和而不溢出。
 - 取消未完成探测不增加失败次数；监控状态只描述健康，不直接重启进程，调用方负责停止监控、就绪条件和重启策略。`HealthMonitor` 的创建和轮询在 Tokio 运行时内进行。
-- MVP 只执行 TCP/HTTP。现有 Socket schema 保留，但 `HealthChecker::new` 明确返回 UnsupportedProbe，实际 Socket 和 Script 探测仍留到后续版本。
+- v0.1 执行 TCP/HTTP；v0.2 开发版增加 Unix Socket 连接检查，复用探测超时、失败阈值和就绪状态。Script 探测仍为后续设计。
 
 #### 6.1 健康检查类型
 
@@ -283,7 +283,7 @@ enum DependencyCondition {
 1. **Process Probe**：由进程管理模块观察子进程退出，不属于健康探测器
 2. **TCP Probe**：MVP 已实现，TCP 连接检查
 3. **HTTP Probe**：MVP 已实现，HTTP GET 请求 + 2xx 状态码校验
-4. **Socket Probe**：后续版本实现 Unix socket 连接检查
+4. **Socket Probe**：连接 Unix socket；拒绝将遗留 socket 文件误判为健康
 5. **Script Probe**：后续版本实现自定义脚本检查，退出码 0 为健康
 
 #### 6.2 健康检查调度
@@ -497,7 +497,7 @@ devd check                       # 静态配置和 MVP 能力校验
 devd graph                       # 依赖边与并行启动层
 ```
 
-统一全局选项为 `-c/--config`（默认 `devd.yml`）、`--state-dir` 和 `--color auto|always|never`，可位于子命令前后。服务 cwd 在 CLI 边界解析为配置目录相对路径；env-file 相对服务 cwd。check/graph 复用编排入口校验，包括命令引号、Socket/exponential 等不支持设置，不启动服务或创建状态文件。文件存在性和网络可用性仍由运行时检查。
+统一全局选项为 `-c/--config`（默认 `devd.yml`）、`--state-dir` 和 `--color auto|always|never`，可位于子命令前后。服务 cwd 在 CLI 边界解析为配置目录相对路径；env-file 和健康检查 socket 路径相对服务 cwd。check/graph 复用编排入口校验，包括命令引号与不支持的设置，不启动服务或创建状态文件。文件存在性和网络可用性仍由运行时检查。
 
 `cli/mod.rs` 负责参数、路径和展示；`cli/server.rs` 协调前台 manager、控制连接与日志 writer；`cli/protocol.rs` 使用长度前缀 JSON；`cli/stdout.rs` 对终端和管道采用可取消的非阻塞写，兼容文件及 `/dev/null`。配置默认运行目录为 `<config-dir>/.devd/<config-name>/`，状态为 services.json，端点为 control.sock；socket 路径过长时报错提示使用较短的 --state-dir。
 
@@ -507,7 +507,7 @@ stop/status/logs/restart 通过活实例操作，不解析可能已改坏的 YAM
 
 手动 restart 经有界 channel 进入 manager，旧服务 actor 完成停止和日志收尾后重建 actor；保留累计重启次数与日志代次，允许重启仍有其他服务在运行时已正常退出的服务。手动操作绕过自动策略限制，但不重置自动重试的累计预算。等待健康依赖时可以被全栈停止打断；同一服务的并发重启明确拒绝。成功响应表示新代已启动，而非已经健康；服务终止失败仍触发全栈清理。
 
-start 输出断开触发有序停止，卡住的终端不会阻止采集；退出时日志排空最多等待 1 秒。日志历史仅存活于 supervisor，logs 不支持离线查询。`init`、`top`、`--profile`、`logs --follow` 和高级过滤留待后续版本。
+start 输出断开触发有序停止，卡住的终端不会阻止采集；退出时日志排空最多等待 1 秒。日志历史仅存活于 supervisor，logs 不支持离线查询。v0.2 开发版支持 `init` 生成最小配置，以及 `logs --follow` 原子衔接历史与实时日志。`top`、`--profile` 和高级过滤仍为后续设计。
 
 #### 9.2 交互式 TUI（可选）
 
@@ -809,9 +809,9 @@ chmod +x /usr/local/bin/devd
 ### v0.2 - 1 周
 - [ ] 指数退避重启策略
 - [ ] 依赖联动重启
-- [ ] Unix Socket 健康检查
+- [x] Unix Socket 健康检查
 - [ ] 资源监控（CPU、内存）
-- [ ] 配置生成（`devd init`）
+- [x] 配置生成（`devd init`，最小配置；扫描与问答模板待实现）
 
 ### v0.3 - 1 周
 - [ ] 多环境配置（dev/staging/prod）

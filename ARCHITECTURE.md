@@ -20,7 +20,7 @@ flowchart LR
 
 默认状态目录为 `<config-dir>/.devd/<config-name>/`，可用 `--state-dir` 覆盖。服务 cwd 相对配置目录；环境文件相对服务 cwd。stop 的响应表示请求已接受，前台 supervisor 负责完成反向依赖关闭。手动 restart 通过 manager channel 停止旧 actor 并重建，保留计数/日志代次、重新检查依赖，不联动重启其他服务。
 
-当前可用命令为 start、stop、restart、status、logs、check、graph。下方总体蓝图仍包含未来的 init、资源监控、Socket/Script 健康检查、指数退避、配置监听等扩展，不能视为当前实现。
+当前可用命令为 start、stop、restart、status、logs（含 --follow）、check、graph、init，支持 TCP/HTTP/Unix Socket 健康检查。下方总体蓝图仍包含未来的资源监控、Script 健康检查、指数退避、配置监听等扩展，不能视为当前实现。
 
 ## 系统架构图
 
@@ -537,7 +537,7 @@ Pending -> Starting -> Running -> Healthy / Unhealthy
 关闭 -> 全栈 Quiescing -> 反向分层 Stopping -> Stopped
 ```
 
-状态快照保存 PID、开始时间、累计重启次数、连续失败次数和退出/错误诊断。watch 状态只保留最新值，不是可靠的历史事件队列；管道读取侧先拼成完整 LogEntry，再写入有界历史和 broadcast，消费者处理 Lagged。没有健康配置的存活服务为 Running。MVP 仅实现 fixed 重启，指数退避、Socket、依赖联动重启仍为后续设计；具体策略与状态持久化契约见 `TECHNICAL_DESIGN.md` 4.2、7、8、12 节。
+状态快照保存 PID、开始时间、累计重启次数、连续失败次数和退出/错误诊断。watch 状态只保留最新值，不是可靠的历史事件队列；管道读取侧先拼成完整 LogEntry，再写入有界历史和 broadcast，消费者处理 Lagged。没有健康配置的存活服务为 Running。MVP 仅实现 fixed 重启，v0.2 开发版增加 Unix Socket 探测；指数退避、依赖联动重启仍为后续设计。具体策略与状态持久化契约见 `TECHNICAL_DESIGN.md` 4.2、7、8、12 节。
 
 ---
 
