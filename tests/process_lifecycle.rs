@@ -280,7 +280,7 @@ async fn test_process_try_wait_cleans_background_descendants_after_natural_exit(
         .await
         .unwrap();
     let mut stdout = process.take_stdout().unwrap();
-    let status = bounded(async {
+    let status = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             if let Some(status) = process.try_wait().unwrap() {
                 break status;
@@ -288,10 +288,17 @@ async fn test_process_try_wait_cleans_background_descendants_after_natural_exit(
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
-    .await;
+    .await
+    .expect("polling the background leader timed out");
     assert_eq!(status.code(), Some(7));
     let mut output = String::new();
-    bounded(stdout.read_to_string(&mut output)).await.unwrap();
+    let drained =
+        tokio::time::timeout(Duration::from_secs(10), stdout.read_to_string(&mut output)).await;
+    assert!(
+        drained.is_ok(),
+        "descendant stdout remained open after group cleanup; output: {output:?}"
+    );
+    drained.unwrap().unwrap();
     assert!(output.contains("leader-exiting\n"));
 }
 

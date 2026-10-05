@@ -46,6 +46,7 @@ def main():
     source = Path(__file__).resolve().parent
     api_port, web_port = free_ports()
     known_pids = set()
+    last_status = None
     with tempfile.TemporaryDirectory(prefix="devd-smoke-", dir="/tmp") as temporary:
         directory = Path(temporary)
         shutil.copy(source / "app.py", directory)
@@ -57,12 +58,15 @@ def main():
                                   capture_output=True, text=True, timeout=15, check=True).stdout
 
         def snapshot():
+            nonlocal last_status
             if supervisor.poll() is not None:
                 raise AssertionError(f"supervisor exited: {supervisor.returncode}")
             try:
                 value = json.loads(cli("status", "--json"))
-            except subprocess.CalledProcessError:
+            except subprocess.CalledProcessError as error:
+                last_status = {"status_error": error.stderr}
                 return None
+            last_status = value
             known_pids.update(s["pid"] for s in value["services"].values() if s["pid"])
             return value["services"]
 
@@ -133,6 +137,7 @@ def main():
                                   "supervisor_max_ps_cpu_percent": max(s["cpu_percent"] for s in samples)}, indent=2))
             except BaseException:
                 output.flush()
+                print("Last supervisor status: " + json.dumps(last_status), flush=True)
                 print((directory / "output.log").read_text()[-12000:])
                 raise
             finally:
