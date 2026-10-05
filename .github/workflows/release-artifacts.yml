@@ -2,6 +2,11 @@ name: Release artifacts
 
 on:
   workflow_dispatch:
+    inputs:
+      revision:
+        description: Full 40-character commit SHA to build
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -20,7 +25,23 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
     steps:
+      - name: Validate source revision
+        env:
+          DEVD_RELEASE_REVISION: ${{ inputs.revision }}
+        run: |
+          if [[ ! "$DEVD_RELEASE_REVISION" =~ ^[0-9a-f]{40}$ ]]; then
+            echo 'revision must be a full lowercase commit SHA' >&2
+            exit 1
+          fi
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.revision }}
+      - name: Record source revision
+        env:
+          DEVD_RELEASE_REVISION: ${{ inputs.revision }}
+        run: |
+          git rev-parse HEAD > REVISION
+          test "$(cat REVISION)" = "$DEVD_RELEASE_REVISION"
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
@@ -30,9 +51,9 @@ jobs:
       - name: Build
         run: cargo build --locked --release --target '${{ matrix.target }}'
       - name: Test binary
-        run: ./target/${{ matrix.target }}/release/devd --version
+        run: ./target/${{ matrix.target }}/release/devd --version > VERSION
       - name: Archive binary and license
-        run: tar -czf 'devd-${{ matrix.target }}.tar.gz' -C target/${{ matrix.target }}/release devd -C "$GITHUB_WORKSPACE" LICENSE README.md README.zh-CN.md
+        run: tar -czf 'devd-${{ matrix.target }}.tar.gz' -C target/${{ matrix.target }}/release devd -C "$GITHUB_WORKSPACE" LICENSE README.md README.zh-CN.md VERSION REVISION
       - name: Record checksum
         run: shasum -a 256 'devd-${{ matrix.target }}.tar.gz' > 'devd-${{ matrix.target }}.tar.gz.sha256'
       - uses: actions/upload-artifact@v4
