@@ -102,8 +102,6 @@ pub enum ServiceManagerError {
         #[source]
         source: HealthCheckError,
     },
-    #[error("service '{service}' uses exponential backoff, which requires v0.2")]
-    UnsupportedBackoff { service: String },
     #[error("{field} duration {duration:?} does not fit the runtime timer")]
     InvalidDuration { field: String, duration: Duration },
     #[error("dependency timeout must be positive")]
@@ -179,9 +177,10 @@ impl ServiceManager {
             let service = &config.services[name];
             parse_command(name, &service.command)?;
             if service.restart.backoff == BackoffType::Exponential {
-                return Err(ServiceManagerError::UnsupportedBackoff {
-                    service: name.into(),
-                });
+                validate_duration(
+                    format!("services.{name}.restart.max-delay"),
+                    service.restart.max_delay,
+                )?;
             }
             validate_duration(
                 format!("services.{name}.restart.initial-delay"),

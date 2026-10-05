@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use crate::core::dependency::{DependencyError, DependencyGraph};
 
-use super::{DependencyCondition, DevdConfig, HealthCheck};
+use super::{BackoffType, DependencyCondition, DevdConfig, HealthCheck};
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ConfigValidationError {
@@ -59,6 +59,14 @@ impl DevdConfig {
                 return Err(invalid(
                     format!("{prefix}.limits"),
                     "resource limits are not implemented; remove 'limits' before starting services",
+                ));
+            }
+            if service.restart.backoff == BackoffType::Exponential
+                && service.restart.max_delay < service.restart.initial_delay
+            {
+                return Err(invalid(
+                    format!("{prefix}.restart.max-delay"),
+                    "must be at least initial-delay for exponential backoff",
                 ));
             }
             if let Some(check) = &service.healthcheck {

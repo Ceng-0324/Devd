@@ -5,7 +5,9 @@ use std::{
 use chrono::Utc;
 use tokio::{sync::watch, task::JoinSet};
 
-use crate::config::{DependencyCondition, RestartPolicyType, ServiceConfig};
+use crate::config::{
+    BackoffType, DependencyCondition, RestartPolicy, RestartPolicyType, ServiceConfig,
+};
 use crate::logging::{LogCollector, LogLevel};
 
 use super::{
@@ -329,7 +331,7 @@ impl ServiceTask {
                 self.mark_stopped();
                 false
             },
-            _ = tokio::time::sleep(self.config.restart.initial_delay) => true,
+            _ = tokio::time::sleep(restart_delay(&self.config.restart, self.state.restart_count)) => true,
         }
     }
 
@@ -359,6 +361,24 @@ impl ServiceTask {
     }
 }
 
+fn restart_delay(policy: &RestartPolicy, count: u32) -> Duration {
+    let mut delay = policy.initial_delay;
+    if policy.backoff == BackoffType::Fixed || delay.is_zero() {
+        return delay;
+    }
+    // At most 94 doublings span Duration's range, even for unlimited retries.
+    for _ in 0..count {
+        if delay >= policy.max_delay {
+            return policy.max_delay;
+        }
+        delay = delay
+            .checked_mul(2)
+            .unwrap_or(policy.max_delay)
+            .min(policy.max_delay);
+    }
+    delay
+}
+
 fn should_restart(config: &ServiceConfig, failed: bool, count: u32) -> bool {
     count < config.restart.max_attempts
         && match config.restart.policy {
@@ -384,6 +404,65 @@ impl OutputReaders {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_restart_delay_growth_cap_zero_and_overflow() {
+        let mut policy = RestartPolicy {
+            backoff: BackoffType::Exponential,
+            initial_delay: Duration::from_millis(10),
+            max_delay: Duration::from_millis(35),
+            ..RestartPolicy::default()
+        };
+        for (count, millis) in [(0, 10), (1, 20), (2, 35), (u32::MAX, 35)] {
+            assert_eq!(restart_delay(&policy, count), Duration::from_millis(millis));
+        }
+        policy.initial_delay = Duration::ZERO;
+        assert_eq!(restart_delay(&policy, u32::MAX), Duration::ZERO);
+        policy.initial_delay = Duration::from_nanos(1);
+        policy.max_delay = Duration::MAX;
+        assert_eq!(restart_delay(&policy, u32::MAX), Duration::MAX);
+        policy.backoff = BackoffType::Fixed;
+        policy.initial_delay = Duration::from_secs(60);
+        policy.max_delay = Duration::ZERO;
+        assert_eq!(restart_delay(&policy, u32::MAX), Duration::from_secs(60));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_restart_wait_uses_cumulative_count_and_is_cancellable() {
+        let config: ServiceConfig = serde_yaml::from_str(
+            "command: sleep 60\nrestart: {backoff: exponential, initial-delay: 1s, max-delay: 3s, max-attempts: 10}",
+        )
+        .unwrap();
+        let (control, receiver) = watch::channel(Control::Running);
+        let (snapshots, _) = watch::channel(RuntimeSnapshot {
+            supervisor_pid: std::process::id(),
+            services: [("child".into(), ServiceSnapshot::default())].into(),
+        });
+        let mut task = ServiceTask::new(
+            "child".into(),
+            config,
+            None,
+            ManagerOptions::new("unused"),
+            receiver,
+            snapshots,
+            LogCollector::new(Default::default()).unwrap(),
+        );
+        for (count, seconds) in [(0, 1), (1, 2), (2, 3), (3, 3)] {
+            task.state.restart_count = count;
+            let start = tokio::time::Instant::now();
+            assert!(task.schedule_restart(true).await);
+            assert_eq!(start.elapsed(), Duration::from_secs(seconds));
+        }
+        let start = tokio::time::Instant::now();
+        let stop = async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            control.send_replace(Control::Stopping);
+        };
+        let (retry, _) = tokio::join!(task.schedule_restart(true), stop);
+        assert!(!retry);
+        assert_eq!(start.elapsed(), Duration::from_millis(100));
+        assert_eq!(task.state.status, ServiceState::Stopped);
+    }
 
     #[test]
     fn test_orchestration_restart_policy_and_attempt_budget() {

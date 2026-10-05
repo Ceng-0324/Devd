@@ -382,6 +382,7 @@ async fn test_orchestration_restart_budget_stops_failure_loop() {
     let mut child = service("exit 9", directory.path());
     child.restart.policy = RestartPolicyType::Always;
     child.restart.max_attempts = 2;
+    child.restart.backoff = BackoffType::Exponential;
     let mut run = RunningManager::start(
         ServiceManager::new(config([("child", child)]), options(&directory)).unwrap(),
     );
@@ -951,9 +952,16 @@ fn test_orchestration_preflight_rejects_invalid_or_unsupported_configuration() {
     let settings = options(&directory);
     let mut child = sleeper(directory.path());
     child.restart.backoff = BackoffType::Exponential;
+    assert!(ServiceManager::new(config([("child", child.clone())]), settings.clone()).is_ok());
+    child.restart.max_delay = Duration::ZERO;
     assert!(matches!(
         ServiceManager::new(config([("child", child.clone())]), settings.clone()),
-        Err(ServiceManagerError::UnsupportedBackoff { .. })
+        Err(ServiceManagerError::InvalidConfig(_))
+    ));
+    child.restart.max_delay = Duration::MAX;
+    assert!(matches!(
+        ServiceManager::new(config([("child", child.clone())]), settings.clone()),
+        Err(ServiceManagerError::InvalidDuration { .. })
     ));
     child.restart.backoff = BackoffType::Fixed;
     child.restart.initial_delay = Duration::MAX;

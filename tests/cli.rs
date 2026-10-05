@@ -206,7 +206,7 @@ fn test_cli_spawn_failure_and_unsupported_config() {
         "version: '1'\nservices:\n  worker:\n    command: sleep 60\n    restart: {backoff: exponential}\n",
     )
     .unwrap();
-    failure(project.invoke(&["check"]), "requires v0.2");
+    success(project.invoke(&["check"]));
     fs::write(
         project.path().join("devd.yml"),
         "version: '1'\nservices:\n  worker:\n    command: \"sh '\"\n",

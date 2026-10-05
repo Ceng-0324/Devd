@@ -55,7 +55,7 @@
 
 **文件名**：默认 `devd.yml`，`--config` 可选择其他文件；环境覆盖仍为规划。
 
-**完整配置蓝图（包含尚未实现的指数退避和资源限制，不能直接用于当前版本）**：
+**完整配置蓝图（包含尚未实现的资源限制，不能直接用于当前版本）**：
 ```yaml
 version: "1"
 
@@ -103,7 +103,7 @@ services:
 校验不访问文件系统或网络，不启动子进程。
 
 **校验规则**：
-- 所有配置层级拒绝未知字段，避免拼写错误被静默忽略。`limits` 一旦配置即明确报错；尚无资源限制实现。fixed 策略的 `max-delay` 为指数退避预留，不影响固定延时。
+- 所有配置层级拒绝未知字段，避免拼写错误被静默忽略。`limits` 一旦配置即明确报错；尚无资源限制实现。`max-delay` 仅用于指数退避，不影响 fixed 延时。
 - 配置版本必须为 `"1"`，且至少定义一个服务。
 - 服务名以 ASCII 字母、数字或下划线开头，其余字符允许 ASCII 字母、数字、`_`、`-`、`.`。
 - 命令不能为空或包含 NUL；依赖必须存在且不能重复，循环依赖报告完整闭环路径。
@@ -409,7 +409,7 @@ devd logs --grep "database"    # 关键词过滤
 
 ### 8. 重启策略
 
-**MVP 当前行为**：只执行固定延时（`initial-delay`）的 `always`、`on-failure`、`never` 策略。首次启动不占重启次数；后续每次启动尝试（包括 spawn 失败）计一次，`max-attempts: 0` 禁止自动重启。次数在一次 manager 运行中累计，不因短暂健康成功而重置，防止反复崩溃绕过上限。`max-delay` 为后续指数退避保留，固定延时不使用它；配置 exponential 时编排入口明确报错，不静默改为 fixed。下面指数退避与依赖联动重启均为后续版本设计。
+**当前行为**：v0.1 支持 fixed，v0.2 开发版增加 exponential；均支持 `always`、`on-failure`、`never`。首次启动不占重启次数；后续每次启动尝试（包括 spawn 失败）计一次，`max-attempts: 0` 禁止自动重启。次数在一次 manager 运行中累计（含手动重启），不因短暂健康成功而重置，防止反复崩溃绕过上限。指数退避延时为 `min(initial-delay × 2^restart_count, max-delay)`，首次等待使用 initial-delay，max-delay 不得小于 initial-delay；fixed 只使用 initial-delay。零延时合法，计算饱和且不会溢出。等待可被停止或手动重启取消。依赖联动重启仍为后续设计。
 
 #### 8.1 重启策略类型
 
@@ -427,41 +427,7 @@ services:
 
 #### 8.2 指数退避实现
 
-**算法**：
-```rust
-struct RestartPolicy {
-    policy: RestartPolicyType,
-    backoff: BackoffType,
-    initial_delay: Duration,
-    max_delay: Duration,
-    max_attempts: u32,
-    current_attempts: u32,
-}
-
-impl RestartPolicy {
-    fn next_delay(&mut self) -> Option<Duration> {
-        if self.current_attempts >= self.max_attempts {
-            return None;  // 超过最大重试次数
-        }
-        
-        self.current_attempts += 1;
-        
-        let delay = match self.backoff {
-            BackoffType::Fixed => self.initial_delay,
-            BackoffType::Exponential => {
-                let delay = self.initial_delay * 2u32.pow(self.current_attempts - 1);
-                delay.min(self.max_delay)
-            }
-        };
-        
-        Some(delay)
-    }
-    
-    fn reset(&mut self) {
-        self.current_attempts = 0;
-    }
-}
-```
+`service_task::restart_delay` 按累计次数逐次翻倍，遇到上限立即返回；乘法溢出也直接封顶。零初始延时直接返回，避免在极大计数下空转。策略预算检查、延时等待和实际启动计数各自独立，取消等待不会占用一次启动尝试。
 
 #### 8.3 依赖联动重启
 
@@ -807,7 +773,7 @@ chmod +x /usr/local/bin/devd
 - [x] CLI 基础命令（start, stop, logs, status）
 
 ### v0.2 - 1 周
-- [ ] 指数退避重启策略
+- [x] 指数退避重启策略
 - [ ] 依赖联动重启
 - [x] Unix Socket 健康检查
 - [ ] 资源监控（CPU、内存）

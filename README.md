@@ -24,7 +24,7 @@ Describe your services and their dependencies in `devd.yml`, then run `devd star
 
 - **Start in dependency order.** Independent services start concurrently. Dependencies can wait for a process to start or for a TCP / HTTP / Unix socket health check to pass.
 - **Watch service health.** TCP and Unix socket connection checks and HTTP 2xx probes track consecutive failures and report what went wrong. Socket paths resolve relative to the service working directory; a stale socket file is not healthy.
-- **Handle unexpected exits.** Choose `always`, `on-failure`, or `never`, with a fixed retry delay and a limit on automatic restarts.
+- **Handle unexpected exits.** Choose `always`, `on-failure`, or `never`, with fixed or exponential retry delays and a limit on automatic restarts.
 - **Bring the logs together.** Collect stdout / stderr with timestamps, service names, and colors. Query recent output for a specific service.
 - **Clean up on the way out.** Ctrl+C, SIGTERM, or `devd stop` shuts services down in reverse dependency order and cleans up descendants in their process groups.
 
@@ -138,9 +138,9 @@ devd --config ./devd.local.yml status --json
 
 **Diagnostics describe the running instance.** `status` returns an error when the supervisor is offline; leftover state files are for diagnosis. If you break the configuration file while devd is running, you can still use `stop`, `status`, `logs`, and `restart`. `check` performs static validation; executable availability, environment files, and probe endpoints are checked at runtime. Failed commands return a nonzero exit code.
 
-The current scope is local process management. `init` creates a starter file; project scanning and interactive templates are planned. Resource monitoring, hot reload, exponential backoff, disk logs, and a TUI are also planned for later versions.
+The current scope is local process management. `init` creates a starter file; project scanning and interactive templates are planned. Resource monitoring, hot reload, disk logs, and a TUI are also planned for later versions.
 
-Configuration rejects unknown fields and unsupported `limits` settings. YAML values are literal; `${VAR}` expansion is not implemented. Under fixed backoff, `max-delay` is reserved and does not change the retry delay.
+Configuration rejects unknown fields and unsupported `limits` settings. YAML values are literal; `${VAR}` expansion is not implemented. With `backoff: exponential`, retries start at `initial-delay`, double with the cumulative restart count, and cap at `max-delay` (default 60s, must be at least `initial-delay`). Healthy probes do not reset that count. Fixed backoff ignores `max-delay`; either wait can be interrupted by stopping the service.
 
 ## Development and validation
 
