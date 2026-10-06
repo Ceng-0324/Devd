@@ -2,6 +2,7 @@
 
 ## Unreleased — v0.4
 
+- Add `devd top` for live service status, resource metrics, bounded logs, asynchronous single-service restart, and confirmed whole-stack stop; quitting the view leaves services running.
 - Add opt-in JSONL persistence with `start --persist-logs`, per-instance/profile storage, size-based rotation, and configurable archive retention (`--log-max-size` in MiB and `--log-keep`).
 - Query offline disk history with `logs --stored`, reusing service, level, time, literal text, and filtered-tail selection without requiring the YAML file.
 - Drain and sync disk logs on graceful shutdown; report bounded-buffer losses, recover interrupted final records, reject linked/non-regular managed files, and stop services on storage failures.

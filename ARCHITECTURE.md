@@ -7,7 +7,7 @@ flowchart LR
     start[devd start: foreground] --> lock[Project state lock]
     lock --> server[Unix socket control server]
     server --> manager[ServiceManager]
-    clients[stop / restart / status / logs] --> server
+    clients[stop / restart / status / logs / top] --> server
     manager --> actors[Service actors and process groups]
     actors --> logs[Bounded in-memory logs]
     logs --> terminal[Serialized live stdout]
@@ -16,7 +16,7 @@ flowchart LR
     check[check / graph] --> config[Configuration validation and DAG]
 ```
 
-`cli/mod.rs` 负责 clap 参数、配置路径和命令输出；`cli/graph.rs` 将已校验的依赖图确定性地渲染为文本、DOT 或 Mermaid，图边从前置服务指向依赖者并标注就绪条件；`cli/protocol.rs` 提供有界长度前缀 JSON；`cli/server.rs` 在同一状态锁下管理 socket、编排器与客户端；`cli/snapshot.rs` 负责离线配置副本；`cli/stdout.rs` 支持可取消的终端/管道写入。运行控制命令通过活实例操作，离线 status 报错，不信任旧状态文件中的 PID。
+`cli/mod.rs` 负责 clap 参数、配置路径和命令输出；`cli/graph.rs` 将已校验的依赖图确定性地渲染为文本、DOT 或 Mermaid，图边从前置服务指向依赖者并标注就绪条件；`cli/protocol.rs` 提供有界长度前缀 JSON；`cli/server.rs` 在同一状态锁下管理 socket、编排器与客户端；`cli/snapshot.rs` 负责离线配置副本；`cli/stdout.rs` 支持可取消的终端/管道写入；`cli/top.rs` 用独立状态轮询、日志订阅和控制请求驱动 TUI。运行控制命令通过活实例操作，离线 status 报错，不信任旧状态文件中的 PID。
 
 默认状态目录为 `<config-dir>/.devd/<config-name>/`，可用 `--state-dir` 覆盖。服务 cwd 相对配置目录；环境文件相对服务 cwd。stop 的响应表示请求已接受，前台 supervisor 负责完成反向依赖关闭。手动 restart 通过 manager channel 停止旧 actor 并重建，保留计数/日志代次、重新检查依赖；仅当下游显式开启 `restart-on-dep-recovery` 时，目标恢复会触发后续联动。命令成功只表示指定目标的新进程已启动。
 
@@ -24,7 +24,7 @@ v0.3 增加单文件 `profiles` 与全局 `--profile`。`config/profile.rs` 独�
 
 配置快照按完整 YAML 文件保存于基础状态目录的 `snapshots/<name>.yml`，不进入 profile 子目录。保存和恢复复制原始字节，支持未完成编辑的配置；校验仍由 `check` 负责。临时文件先写入同一目录并同步，再通过不覆盖的原子发布创建目标；快照名限制为安全的小写 ASCII，恢复目标只能是原配置目录的新文件名，以维持相对路径语义。配置快照不接触 `services.json`、控制 socket 或进程；恢复不会修改运行中实例，也不会接管遗留 PID。
 
-当前可用命令为 start、stop、restart、status、logs（含 --follow）、check、graph、init、snapshot，支持 TCP/HTTP/Unix Socket 健康检查和 fixed/exponential 重启延时。status 提供服务主进程 CPU／RSS 采样。下方总体蓝图仍包含未来的 Script 健康检查、配置监听等扩展，不能视为当前实现。
+当前可用命令为 start、stop、restart、status、top、logs（含 --follow）、check、graph、init、snapshot，支持 TCP/HTTP/Unix Socket 健康检查和 fixed/exponential 重启延时。status 提供服务主进程 CPU／RSS 采样。top 仅连接活实例，退出界面不停止服务，停止全栈必须在界面内确认；终端恢复由 RAII 处理。下方总体蓝图仍包含未来的 Script 健康检查、配置监听等扩展，不能视为当前实现。
 
 资源采集由 `core::resource_monitor` 每秒通过阻塞线程池读取受管主 PID 的 sysinfo 指标，生命周期仍由 service actor 独占。监控 future 随 manager 驱动、退出时停止轮询；在途 OS 读取只持有局部数据，不能在退出后写回状态。采样以 PID、started_at、restart_count 核对进程代次，actor 发布健康状态时保留同代指标，退出时清除。CPU 首次采样只建立基线；不可用指标保持空值。缓存随代次淘汰，Linux 线程枚举关闭；不统计子进程、不执行资源限制。
 

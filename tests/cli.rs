@@ -451,9 +451,7 @@ fn test_cli_help_validation_graph_and_failures() {
         project.invoke(&["init"]),
         "existing configuration will not be replaced",
     );
-    for command in ["top", "wat"] {
-        failure(project.invoke(&[command]), "unrecognized subcommand");
-    }
+    failure(project.invoke(&["wat"]), "unrecognized subcommand");
     for arguments in [
         &["status"][..],
         &["stop"],

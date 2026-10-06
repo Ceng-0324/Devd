@@ -20,7 +20,7 @@ Broken file dependencies still need fixing. devd takes care of the services you 
 
 devd is a local development service manager written in Rust. **v0.3.0-alpha.1 is a prerelease for Linux and macOS**, built on the v0.1 MVP.
 
-The main branch is developing v0.4. Its first module adds opt-in disk logs and rotation; install from source to use the commands below. The v0.3 release binaries do not include them.
+The main branch is developing v0.4, with opt-in disk logs and an interactive terminal view. Install from source to use the commands below; the v0.3 release binaries do not include them.
 
 This version adds CPU and memory samples to `status`, opt-in restarts after dependency recovery, named configuration profiles, configuration snapshots, dependency diagram export, and log filters.
 
@@ -175,6 +175,7 @@ Diagram arrows point from each prerequisite to the service that depends on it; e
 | `devd stop` | Request ordered shutdown; the foreground process exits after cleanup |
 | `devd restart <service>` | Restart one service using the configuration loaded at startup, rechecking dependencies |
 | `devd status [--json]` | Show live state, PIDs, CPU / RSS, restart counts, and diagnostics |
+| `devd top` | Inspect a running stack and its live logs in an interactive terminal |
 | `devd logs [service] [--tail N] [--level info|warn|error] [--since DURATION] [--grep TEXT] [--follow \| --stored]` | Query live memory or offline disk logs; follow live output |
 | `devd check` | Validate configuration, command quoting, dependencies, and supported settings |
 | `devd graph [--format text|dot|mermaid]` | Show dependency edges and startup layers, or export a diagram |
@@ -227,11 +228,13 @@ Disk writes run independently of service capture using a bounded subscription. A
 
 Filter history or a live stream with `--level`, `--since`, and `--grep`, alone or together. For example, `devd logs api --level error --since 5m --grep database --tail 50 --follow` first shows up to 50 matching retained entries, then matching new ones. Level matches exactly; `--grep` is literal and case-sensitive against the raw message. `--since` accepts `ms`, `s`, `m`, or `h` (for example `500ms` or `2h`) and fixes its cutoff when the command starts. Filtering cannot recover entries evicted from memory.
 
-**Diagnostics describe the running instance.** `status` returns an error when the supervisor is offline; leftover state files are for diagnosis. If you break the configuration file while devd is running, you can still use `stop`, `status`, `logs`, and `restart`. `check` performs static validation; executable availability, environment files, and probe endpoints are checked at runtime. Failed commands return a nonzero exit code.
+**Diagnostics describe the running instance.** `status` returns an error when the supervisor is offline; leftover state files are for diagnosis. If you break the configuration file while devd is running, you can still use `stop`, `status`, `logs`, `restart`, and `top`. `check` performs static validation; executable availability, environment files, and probe endpoints are checked at runtime. Failed commands return a nonzero exit code.
+
+`devd top` connects to the same running instance as `status` and `logs`. It shows service state, PID, restart count, CPU/RSS and a bounded live log tail. Use Up/Down (or j/k) to select a service, `r` to restart it, Page Up/Down to scroll logs, and End to return to the latest entries. `s` asks for confirmation before stopping the entire stack; Enter or `s` confirms, Esc or `n` cancels. `q` and Ctrl+C only close the view. It requires an interactive terminal and does not start a supervisor.
 
 **Resource samples describe the main process.** The supervisor samples about once per second; child processes launched by a shell or package manager are not added to the totals. CPU uses one fully occupied core as 100%, so multithreaded processes can exceed 100%. Memory is RSS, shown in MiB. Unavailable values display `-`; CPU needs two successful samples after startup or restart. JSON includes optional `resources` with `cpu_percent` (nullable during warmup), `memory_bytes`, and `sampled_at`. Samples are cleared on exit and are observational; `limits` remains unsupported.
 
-The current scope is local process management. `init` creates a starter file; project scanning and interactive templates are planned. Hot reload and a TUI are also planned for later modules.
+The current scope is local process management. `init` creates a starter file; project scanning and interactive templates are planned. Hot reload remains a later module.
 
 Configuration rejects unknown fields and unsupported `limits` settings. YAML values are literal; `${VAR}` expansion is not implemented. With `backoff: exponential`, retries start at `initial-delay`, double with the cumulative restart count, and cap at `max-delay` (default 60s, must be at least `initial-delay`). Healthy probes do not reset that count. Fixed backoff ignores `max-delay`; either wait can be interrupted by stopping the service.
 

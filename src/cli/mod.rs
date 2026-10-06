@@ -3,6 +3,7 @@ mod protocol;
 mod server;
 mod snapshot;
 mod stdout;
+mod top;
 
 use std::{
     io::{self, Write},
@@ -70,6 +71,8 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Inspect and control a running stack in an interactive terminal.
+    Top,
     /// Print buffered logs, or query stored logs after shutdown (oldest first).
     Logs {
         service: Option<String>,
@@ -263,6 +266,14 @@ impl Cli {
                     }
                     output(&text)?;
                 }
+            }
+            Command::Top => {
+                let color = match self.color {
+                    Color::Auto => colored::control::SHOULD_COLORIZE.should_colorize(),
+                    Color::Always => true,
+                    Color::Never => false,
+                };
+                top::run(&socket, color).await?;
             }
             Command::Stop => {
                 let Response::Stopping = protocol::request(&socket, Request::Stop).await? else {
