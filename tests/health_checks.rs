@@ -116,7 +116,9 @@ fn tcp_config(address: SocketAddr) -> HealthCheck {
         host: address.ip().to_string(),
         port: address.port(),
         interval: Duration::from_millis(40),
-        timeout: Duration::from_millis(200),
+        // Windows may retry a refused loopback connection before reporting it,
+        // including the IPv6 attempt preceding localhost's IPv4 fallback.
+        timeout: Duration::from_secs(3),
         retries: 2,
     }
 }
@@ -130,8 +132,12 @@ async fn test_health_tcp_reports_success_and_connection_refusal() {
     let (stream, _) = bounded(listener.accept()).await.unwrap();
     drop(stream);
     drop(listener);
-    assert!(matches!(bounded(checker.probe()).await,
-        ProbeResult::Unhealthy(ProbeFailure::Tcp { source }) if source.kind() == std::io::ErrorKind::ConnectionRefused));
+    let result = bounded(checker.probe()).await;
+    assert!(
+        matches!(&result,
+        ProbeResult::Unhealthy(ProbeFailure::Tcp { source }) if source.kind() == std::io::ErrorKind::ConnectionRefused),
+        "{result:?}"
+    );
 }
 
 #[tokio::test]
@@ -238,13 +244,16 @@ async fn test_health_http_connection_errors_are_unhealthy_results() {
     let config = HealthCheck::Http {
         url: format!("http://{}/health", listener.local_addr().unwrap()),
         interval: Duration::from_millis(40),
-        timeout: Duration::from_millis(200),
+        // Allow the OS to report refusal; separate tests cover probe timeouts.
+        timeout: Duration::from_secs(3),
         retries: 2,
     };
     drop(listener);
     let checker = HealthChecker::new(&config).unwrap();
+    let result = bounded(checker.probe()).await;
     assert!(
-        matches!(bounded(checker.probe()).await, ProbeResult::Unhealthy(ProbeFailure::Http { source }) if source.is_connect())
+        matches!(&result, ProbeResult::Unhealthy(ProbeFailure::Http { source }) if source.is_connect()),
+        "{result:?}"
     );
 }
 

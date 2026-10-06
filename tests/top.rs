@@ -22,6 +22,7 @@ struct Top {
     child: Supervisor,
     master: fs::File,
     screen: String,
+    terminal: vt100::Parser,
 }
 
 impl Top {
@@ -48,6 +49,7 @@ impl Top {
             child: Supervisor(child),
             master,
             screen: String::new(),
+            terminal: vt100::Parser::new(size.ws_row, size.ws_col, 0),
         }
     }
 
@@ -57,7 +59,7 @@ impl Top {
 
     fn seen(&mut self, expected: &str) -> bool {
         self.drain();
-        self.screen.contains(expected)
+        self.terminal.screen().contents().contains(expected)
     }
 
     fn drain(&mut self) {
@@ -65,9 +67,13 @@ impl Top {
         loop {
             match self.master.read(&mut bytes) {
                 Ok(0) => break,
-                Ok(size) => self
-                    .screen
-                    .push_str(&String::from_utf8_lossy(&bytes[..size])),
+                Ok(size) => {
+                    // Ratatui writes only changed cells, which may split words
+                    // across frames and UTF-8 characters across PTY reads.
+                    self.terminal.process(&bytes[..size]);
+                    self.screen
+                        .push_str(&String::from_utf8_lossy(&bytes[..size]));
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
                 Err(error) if error.raw_os_error() == Some(5) => break,
                 Err(error) => panic!("PTY read failed: {error}"),
@@ -156,7 +162,7 @@ fn test_top_restart_cancel_quit_and_confirm_stop() {
     top.write(b"q");
     top.finish();
     assert!(
-        top.seen("\x1b[?1049l"),
+        top.screen.contains("\x1b[?1049l"),
         "q must restore the terminal: {}",
         top.screen
     );
@@ -184,7 +190,7 @@ fn test_top_sigterm_restores_terminal_without_stopping_stack() {
     kill(Pid::from_raw(top.child.0.id() as i32), Signal::SIGTERM).unwrap();
     top.finish();
     assert!(
-        top.seen("\x1b[?1049l"),
+        top.screen.contains("\x1b[?1049l"),
         "SIGTERM must restore the terminal: {}",
         top.screen
     );

@@ -56,3 +56,4 @@ tokio = { version = "1", features = ["test-util"] }
 
 [target.'cfg(unix)'.dev-dependencies]
 nix = { version = "0.31", features = ["term"] }
+vt100 = "0.16"
