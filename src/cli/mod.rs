@@ -1,5 +1,6 @@
 mod protocol;
 mod server;
+mod snapshot;
 mod stdout;
 
 use std::{
@@ -82,14 +83,38 @@ enum Command {
         #[arg(long, default_value = "sh -c 'echo app-ready; exec sleep 3600'")]
         command: String,
     },
+    /// Save a copy of the YAML configuration or restore it to a new file.
+    Snapshot {
+        #[command(subcommand)]
+        action: SnapshotAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum SnapshotAction {
+    /// Save the complete on-disk YAML, including all profiles.
+    Save { name: String },
+    /// Restore a saved YAML to a new file beside the original configuration.
+    Restore {
+        name: String,
+        /// New filename in the original configuration directory; never overwritten.
+        #[arg(long)]
+        output: PathBuf,
+    },
 }
 
 impl Cli {
     pub async fn run(self) -> Result<()> {
         if let Some(profile) = &self.profile {
             validate_profile_name(profile)?;
-            if matches!(self.command, Command::Init { .. }) {
-                bail!("--profile is not supported by init; add profiles to the generated YAML");
+            match self.command {
+                Command::Init { .. } => {
+                    bail!("--profile is not supported by init; add profiles to the generated YAML");
+                }
+                Command::Snapshot { .. } => {
+                    bail!("--profile is not supported by snapshot; snapshots contain the whole YAML, including all profiles");
+                }
+                _ => {}
             }
         }
         let config_path = absolute_config(&self.config).await?;
@@ -136,6 +161,16 @@ impl Cli {
                 file.flush().await?;
                 output(&format!("Created {}\n", config_path.display()))?;
             }
+            Command::Snapshot { action } => match action {
+                SnapshotAction::Save { name } => {
+                    let path = snapshot::save(&config_path, &state_dir, &name).await?;
+                    output(&format!("Saved snapshot {}\n", path.display()))?;
+                }
+                SnapshotAction::Restore { name, output: file } => {
+                    let path = snapshot::restore(&config_path, &state_dir, &name, &file).await?;
+                    output(&format!("Restored configuration to {}\n", path.display()))?;
+                }
+            },
             Command::Start => {
                 let config = load_config(&config_path, self.profile.as_deref()).await?;
                 let manager = ServiceManager::new(config, options.clone())?;

@@ -24,6 +24,9 @@ clearing, aliases, duplicate and unknown fields, invalid names, added services,
 and effective dependency errors. CLI tests run base/dev/staging concurrently,
 check cwd/env-file resolution, default/explicit state directory isolation,
 case-sensitive names, and control after configuration corruption/deletion.
+`snapshots.rs` verifies exact YAML round trips, deleted/invalid source recovery,
+new-file-only behavior, safe path handling, symlink rejection, and unchanged live
+supervisor process ownership.
 
 | Scenario | Evidence |
 | --- | --- |

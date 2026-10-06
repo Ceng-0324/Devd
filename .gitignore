@@ -2,6 +2,7 @@
 /.devd/
 examples/**/.devd/
 __pycache__/
+.DS_Store
 
 # Agent
 AGENTS.md

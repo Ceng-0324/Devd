@@ -26,6 +26,7 @@ serde_json = "1"
 serde_yaml = "0.9"
 shell-words = "1.1"
 thiserror = "1"
+tempfile = "3"
 tokio = { version = "1", features = [
     "fs",
     "io-util",
@@ -44,5 +45,4 @@ sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 
 [dev-dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
-tempfile = "3"
 tokio = { version = "1", features = ["test-util"] }

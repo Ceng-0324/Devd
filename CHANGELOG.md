@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add byte-preserving configuration snapshots with `snapshot save` and `snapshot restore --output`; include all profiles, create new files atomically without overwriting, and keep runtime state and processes untouched.
+- Ignore macOS `.DS_Store` files in the repository.
 - Add single-file configuration `profiles` and global `--profile` selection for startup, validation, dependency graphs, and live control commands.
 - Merge environment and restart settings by key, replace dependency lists and health checks, support clearing optional fields, and validate effective dependencies before startup.
 - Isolate profile sockets and state even with an explicit state directory and on case-insensitive filesystems; retain live control when the configuration is corrupted or deleted.

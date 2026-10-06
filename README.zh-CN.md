@@ -18,7 +18,7 @@
 
 devd 是用 Rust 编写的本地开发服务管理器。**v0.2.0-alpha.1 是基于 v0.1 MVP 的预发布版，支持 Linux 和 macOS**。
 
-当前开发分支还增加了 `status` 的 CPU／内存采样、可选的依赖恢复联动重启，以及 v0.3 的首个模块多环境配置；这些能力尚未包含在 alpha.1 发布的二进制中。
+当前开发分支还增加了 `status` 的 CPU／内存采样、可选的依赖恢复联动重启，以及 v0.3 的多环境配置和配置快照；这些能力尚未包含在 alpha.1 发布的二进制中。
 
 一份 `devd.yml` 描述服务和依赖，`devd start` 在前台管理它们。你可以继续在另一个终端查状态、翻日志或重启某个服务。
 
@@ -137,6 +137,20 @@ profiles:
 
 可以直接试 [dev / staging / prod 示例](examples/profiles/README.md)。
 
+### 配置快照
+
+改配置前先留一份。需要回退时，恢复成新文件，再检查它：
+
+```bash
+devd snapshot save before-refactor
+devd snapshot restore before-refactor --output devd.recovered.yml
+devd check --config devd.recovered.yml
+```
+
+快照原样复制磁盘上的整份 YAML，包括所有 profile；默认保存在 `.devd/<配置文件名>/snapshots/<名称>.yml`，也可以用 `--state-dir` 指定存放目录。恢复时沿用相同的 `--config` 和 `--state-dir`，即使原配置已被删除也可以。名称长度为 1–64，只允许小写 ASCII 字母、数字、`_`、`-`、`.`，且首字符只能是字母、数字或 `_`。
+
+`--output` 只能是原配置目录里的新文件名，这样相对 `cwd` 和环境文件路径不会变义。保存和恢复都不覆盖已有文件。快照保留原始字节，不做配置校验；使用恢复文件前请运行 `check`。它不保存运行状态，不热重载正在运行的 supervisor，也不启动或接管旧进程。快照包含全部 profile，因此 `snapshot` 不接受 `--profile`。
+
 ### 命令速查
 
 | 命令 | 用途 |
@@ -149,8 +163,10 @@ profiles:
 | `devd check` | 校验配置、命令引号、依赖关系及当前支持的设置 |
 | `devd graph` | 显示依赖边和并行启动层 |
 | `devd init [--service NAME] [--command CMD]` | 创建通过校验的初始配置，不覆盖现有文件 |
+| `devd snapshot save <NAME>` | 保存磁盘上整份 YAML 到项目状态目录 |
+| `devd snapshot restore <NAME> --output <FILENAME>` | 恢复成原配置目录中的新文件 |
 
-命令共用 `-c / --config <PATH>`、`--profile <NAME>`（`init` 除外）、`--state-dir <PATH>` 和 `--color auto|always|never`，选项可以放在子命令前后：
+命令共用 `-c / --config <PATH>`、`--profile <NAME>`（`init`、`snapshot` 除外）、`--state-dir <PATH>` 和 `--color auto|always|never`，选项可以放在子命令前后：
 
 ```bash
 devd start --config ./devd.local.yml

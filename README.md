@@ -20,7 +20,7 @@ Broken file dependencies still need fixing. devd takes care of the services you 
 
 devd is a local development service manager written in Rust. **v0.2.0-alpha.1 is a prerelease for Linux and macOS**, built on the v0.1 MVP.
 
-The current development checkout also adds CPU and memory samples to `status`, opt-in restarts after dependency recovery, and named configuration profiles as the first v0.3 module; these are not included in the alpha.1 release binaries.
+The current development checkout also adds CPU and memory samples to `status`, opt-in restarts after dependency recovery, named configuration profiles, and configuration snapshots; these are not included in the alpha.1 release binaries.
 
 Describe your services and their dependencies in `devd.yml`, then run `devd start` in the foreground. Use another terminal to check status, read logs, or restart a service.
 
@@ -139,6 +139,20 @@ Paths retain the usual configuration-directory and service-`cwd` rules. Profile 
 
 Try the [runnable dev / staging / prod example](examples/profiles/README.md).
 
+### Configuration snapshots
+
+Save the whole configuration before a risky edit, then restore it under a new filename if you need to go back:
+
+```bash
+devd snapshot save before-refactor
+devd snapshot restore before-refactor --output devd.recovered.yml
+devd check --config devd.recovered.yml
+```
+
+The snapshot is an exact copy of the on-disk YAML, including every profile. It lives at `.devd/<config-filename>/snapshots/<name>.yml`, or under the directory selected by `--state-dir`; use the same `--config` and `--state-dir` to restore it even if the original file has been deleted. Names use 1–64 lowercase ASCII letters, digits, `_`, `-`, or `.`, starting with a letter, digit, or `_`.
+
+`--output` must be a new filename in the original configuration directory, so relative `cwd` and environment-file paths keep their meaning. Neither save nor restore overwrites an existing file. Snapshots copy configuration bytes without validation; run `check` on the restored file before using it. They do not save runtime state, reload a running supervisor, or start or adopt processes. Since the YAML contains all profiles, `snapshot` does not accept `--profile`.
+
 ### Command reference
 
 | Command | Purpose |
@@ -151,8 +165,10 @@ Try the [runnable dev / staging / prod example](examples/profiles/README.md).
 | `devd check` | Validate configuration, command quoting, dependencies, and supported settings |
 | `devd graph` | Show dependency edges and parallel startup layers |
 | `devd init [--service NAME] [--command CMD]` | Create a checked starter configuration without overwriting an existing file |
+| `devd snapshot save <NAME>` | Save the complete on-disk YAML under the project state directory |
+| `devd snapshot restore <NAME> --output <FILENAME>` | Restore it to a new file beside the original configuration |
 
-Commands accept `-c / --config <PATH>`, `--profile <NAME>` (except `init`), `--state-dir <PATH>`, and `--color auto|always|never`. Options work before or after the subcommand:
+Commands accept `-c / --config <PATH>`, `--profile <NAME>` (except `init` and `snapshot`), `--state-dir <PATH>`, and `--color auto|always|never`. Options work before or after the subcommand:
 
 ```bash
 devd start --config ./devd.local.yml
