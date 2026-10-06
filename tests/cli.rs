@@ -7,6 +7,222 @@ use support::{failure, success, wait, Project, Supervisor};
 const RUNNING: &str = "services:\n  worker:\n    command: sh -c 'echo hello; echo problem >&2; exec sleep 60'\n    restart:\n      policy: never\n";
 
 #[test]
+fn test_cli_profiles_isolate_instances_and_keep_controls_after_config_removal() {
+    use devd::core::service_manager::RuntimeSnapshot;
+    for explicit_state_dir in [false, true] {
+        let project = Project::new(
+            r#"services:
+  worker:
+    command: sh -c 'echo "$MODE:$KEEP:$FILE:$PWD"; exec sleep 60'
+    env: {MODE: base, KEEP: inherited}
+    env-file: base.env
+    restart: {policy: never}
+profiles:
+  dev:
+    services:
+      worker:
+        cwd: development
+        env-file: dev.env
+        env: {MODE: dev}
+  staging:
+    services:
+      worker:
+        cwd: stage
+        env-file: null
+        env: {MODE: staging, FILE: cleared}
+"#,
+        );
+        fs::write(project.path().join("base.env"), "FILE=base-file\n").unwrap();
+        fs::create_dir(project.path().join("development")).unwrap();
+        fs::create_dir(project.path().join("stage")).unwrap();
+        fs::write(
+            project.path().join("development/dev.env"),
+            "FILE=dev-file\nMODE=file-value\n",
+        )
+        .unwrap();
+        let invoke = |args: &[&str], profile: Option<&str>| {
+            let mut args = args.to_vec();
+            if let Some(name) = profile {
+                args.extend(["--profile", name]);
+            }
+            if explicit_state_dir {
+                args.extend(["--state-dir", "runtime"]);
+            }
+            project.invoke(&args)
+        };
+        let snapshot = |profile| -> RuntimeSnapshot {
+            wait(|| {
+                let output = invoke(&["status", "--json"], profile);
+                if !output.status.success() {
+                    return None;
+                }
+                let snapshot: RuntimeSnapshot = serde_json::from_slice(&output.stdout).unwrap();
+                snapshot.services["worker"]
+                    .pid
+                    .is_some()
+                    .then_some(snapshot)
+            })
+        };
+        let mut supervisors = Vec::new();
+        for name in [None, Some("dev"), Some("staging")] {
+            let mut args = vec!["start"];
+            if let Some(name) = name {
+                args.extend(["--profile", name]);
+            }
+            if explicit_state_dir {
+                args.extend(["--state-dir", "runtime"]);
+            }
+            let suffix = name.unwrap_or("base");
+            supervisors.push(Supervisor(
+                project
+                    .command(&args)
+                    .stdout(
+                        fs::File::create(project.path().join(format!("stdout-{suffix}"))).unwrap(),
+                    )
+                    .stderr(
+                        fs::File::create(project.path().join(format!("stderr-{suffix}"))).unwrap(),
+                    )
+                    .spawn()
+                    .unwrap(),
+            ));
+        }
+        let base = snapshot(None);
+        let dev = snapshot(Some("dev"));
+        let staging = snapshot(Some("staging"));
+        assert_ne!(base.supervisor_pid, dev.supervisor_pid);
+        assert_ne!(dev.supervisor_pid, staging.supervisor_pid);
+        assert_ne!(base.services["worker"].pid, dev.services["worker"].pid);
+        for (profile, prefix, cwd) in [
+            (None, "base:inherited:base-file:", ""),
+            (Some("dev"), "dev:inherited:dev-file:", "/development"),
+            (Some("staging"), "staging:inherited:cleared:", "/stage"),
+        ] {
+            let expected = format!(
+                "{prefix}{}{cwd}",
+                fs::canonicalize(project.path()).unwrap().display()
+            );
+            wait(|| {
+                success(invoke(&["logs", "worker"], profile))
+                    .contains(&expected)
+                    .then_some(())
+            });
+        }
+        failure(invoke(&["start"], Some("dev")), "another supervisor");
+        // Controls use startup configuration and profile routing, even if the
+        // on-disk document is unreadable or has gone away altogether.
+        fs::write(project.path().join("devd.yml"), "version: [").unwrap();
+        success(invoke(&["restart", "worker"], Some("dev")));
+        let restarted = snapshot(Some("dev"));
+        assert_eq!(restarted.services["worker"].restart_count, 1);
+        assert_ne!(restarted.services["worker"].pid, dev.services["worker"].pid);
+        wait(|| {
+            (success(invoke(&["logs", "worker"], Some("dev")))
+                .matches("dev:inherited:dev-file:")
+                .count()
+                == 2)
+                .then_some(())
+        });
+        fs::remove_file(project.path().join("devd.yml")).unwrap();
+        success(invoke(&["stop"], Some("dev")));
+        supervisors[1].finish(true);
+        failure(
+            invoke(&["status"], Some("dev")),
+            "no reachable devd supervisor",
+        );
+        assert_eq!(
+            snapshot(None).services["worker"].pid,
+            base.services["worker"].pid
+        );
+        assert_eq!(
+            snapshot(Some("staging")).services["worker"].pid,
+            staging.services["worker"].pid
+        );
+        success(invoke(&["stop"], None));
+        success(invoke(&["stop"], Some("staging")));
+        supervisors[0].finish(true);
+        supervisors[2].finish(true);
+        let root = project.path().join(if explicit_state_dir {
+            "runtime"
+        } else {
+            ".devd/devd.yml"
+        });
+        for subdir in ["", "profiles/dev", "profiles/staging"] {
+            let saved: RuntimeSnapshot =
+                serde_json::from_slice(&fs::read(root.join(subdir).join("services.json")).unwrap())
+                    .unwrap();
+            assert!(saved.services["worker"].pid.is_none());
+        }
+    }
+}
+
+#[test]
+fn test_cli_profile_validation_graph_and_init_boundaries() {
+    let project = Project::new("services:\n  worker: {command: sleep 60}\nprofiles:\n  dev:\n    services:\n      db: {command: sleep 60}\n      worker: {depends-on: [db]}\n");
+    let text = success(project.invoke(&["--profile", "dev", "check"]));
+    assert!(text.contains("(profile: dev)"));
+    assert!(success(project.invoke(&["graph", "--profile", "dev"])).contains("worker -> db"));
+    assert!(!success(project.invoke(&["graph"])).contains("worker -> db"));
+    for command in ["start", "check", "graph"] {
+        failure(
+            project.invoke(&[command, "--profile", "missing"]),
+            "unknown profile 'missing'",
+        );
+    }
+    for command in ["start", "check", "graph", "stop", "status", "logs"] {
+        failure(
+            project.invoke(&[command, "--profile", "../dev"]),
+            "invalid profile name",
+        );
+    }
+    failure(
+        project.invoke(&["init", "--profile", "dev", "--config", "new.yml"]),
+        "--profile is not supported by init",
+    );
+    assert!(!project.path().join("new.yml").exists());
+    assert!(!project.path().join(".devd").exists());
+}
+
+#[test]
+fn test_cli_profile_names_remain_case_sensitive_on_all_filesystems() {
+    let project = Project::new("services:\n  worker: {command: sleep 60, restart: {policy: never}}\nprofiles: {dev: {}, Dev: {}}\n");
+    let mut supervisors = Vec::new();
+    let mut pids = Vec::new();
+    for name in ["dev", "Dev"] {
+        supervisors.push(Supervisor(
+            project
+                .command(&["start", "--profile", name])
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+        ));
+        pids.push(wait(|| {
+            let output = project.invoke(&["status", "--json", "--profile", name]);
+            if !output.status.success() {
+                return None;
+            }
+            let state: devd::core::service_manager::RuntimeSnapshot =
+                serde_json::from_slice(&output.stdout).unwrap();
+            state.services["worker"].pid
+        }));
+    }
+    assert_ne!(pids[0], pids[1]);
+    success(project.invoke(&["stop", "--profile", "dev"]));
+    supervisors[0].finish(true);
+    success(project.invoke(&["status", "--profile", "Dev"]));
+    success(project.invoke(&["stop", "--profile", "Dev"]));
+    supervisors[1].finish(true);
+    assert!(project
+        .path()
+        .join(".devd/devd.yml/profiles/dev/services.json")
+        .is_file());
+    assert!(project
+        .path()
+        .join(".devd/devd.yml/profiles/~44ev/services.json")
+        .is_file());
+}
+
+#[test]
 fn test_cli_dependency_recovery_restarts_opted_in_service_and_retains_logs() {
     let project = Project::new("services:\n  db:\n    command: sleep 60\n    restart: {policy: never}\n  worker:\n    command: sh -c 'echo worker-started; exec sleep 60'\n    depends-on: [db]\n    restart-on-dep-recovery: true\n    restart: {policy: on-failure, initial-delay: 20ms, max-attempts: 3}\n  unchanged:\n    command: sleep 60\n    depends-on: [db]\n    restart: {policy: never}\n");
     success(project.invoke(&["check"]));

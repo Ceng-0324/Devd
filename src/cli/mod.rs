@@ -13,7 +13,7 @@ use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 
 use crate::{
-    config::{ConfigLoader, DevdConfig},
+    config::{validate_profile_name, ConfigLoader, DevdConfig},
     core::{
         dependency::DependencyGraph,
         service_manager::{ManagerOptions, ServiceManager},
@@ -28,6 +28,9 @@ pub struct Cli {
     /// Configuration file; service cwd paths are relative to its directory.
     #[arg(short, long, global = true, default_value = "devd.yml")]
     config: PathBuf,
+    /// Select a named configuration overlay and its isolated runtime instance.
+    #[arg(long, global = true)]
+    profile: Option<String>,
     /// Override the project runtime directory (use a short path for Unix sockets).
     #[arg(long, global = true)]
     state_dir: Option<PathBuf>,
@@ -83,8 +86,14 @@ enum Command {
 
 impl Cli {
     pub async fn run(self) -> Result<()> {
+        if let Some(profile) = &self.profile {
+            validate_profile_name(profile)?;
+            if matches!(self.command, Command::Init { .. }) {
+                bail!("--profile is not supported by init; add profiles to the generated YAML");
+            }
+        }
         let config_path = absolute_config(&self.config).await?;
-        let state_dir = match self.state_dir {
+        let mut state_dir = match self.state_dir {
             Some(path) => path,
             None => config_path
                 .parent()
@@ -92,6 +101,9 @@ impl Cli {
                 .join(".devd")
                 .join(config_path.file_name().unwrap()),
         };
+        if let Some(profile) = &self.profile {
+            state_dir = state_dir.join("profiles").join(profile_directory(profile));
+        }
         let socket = state_dir.join("control.sock");
         let options = ManagerOptions::new(state_dir.join("services.json"));
         let formatter = LogFormatter {
@@ -125,16 +137,26 @@ impl Cli {
                 output(&format!("Created {}\n", config_path.display()))?;
             }
             Command::Start => {
-                let config = load_config(&config_path).await?;
+                let config = load_config(&config_path, self.profile.as_deref()).await?;
                 let manager = ServiceManager::new(config, options.clone())?;
                 server::start(manager, options, socket, formatter).await?;
             }
             Command::Check => {
-                ServiceManager::new(load_config(&config_path).await?, options)?;
-                output(&format!("Configuration valid: {}\n", config_path.display()))?;
+                ServiceManager::new(
+                    load_config(&config_path, self.profile.as_deref()).await?,
+                    options,
+                )?;
+                let profile = self
+                    .profile
+                    .as_ref()
+                    .map_or_else(String::new, |name| format!(" (profile: {name})"));
+                output(&format!(
+                    "Configuration valid: {}{profile}\n",
+                    config_path.display()
+                ))?;
             }
             Command::Graph => {
-                let config = load_config(&config_path).await?;
+                let config = load_config(&config_path, self.profile.as_deref()).await?;
                 ServiceManager::new(config.clone(), options)?;
                 let graph = DependencyGraph::from_config(&config)?;
                 let mut text = String::from("Dependencies (service -> prerequisite):\n");
@@ -316,8 +338,21 @@ async fn absolute_config(path: &Path) -> Result<PathBuf> {
         .join(name))
 }
 
-async fn load_config(path: &Path) -> Result<DevdConfig> {
-    let mut config = ConfigLoader::new().load(path).await?;
+fn profile_directory(name: &str) -> String {
+    // Escape uppercase bytes to keep case-sensitive profile identities distinct
+    // on case-insensitive filesystems. '~' cannot appear in a profile name.
+    name.bytes().fold(String::new(), |mut path, byte| {
+        if byte.is_ascii_uppercase() {
+            path.push_str(&format!("~{byte:02x}"));
+        } else {
+            path.push(char::from(byte));
+        }
+        path
+    })
+}
+
+async fn load_config(path: &Path, profile: Option<&str>) -> Result<DevdConfig> {
+    let mut config = ConfigLoader::new().load_profile(path, profile).await?;
     for service in config.services.values_mut() {
         service.cwd = Some(
             path.parent()

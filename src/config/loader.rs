@@ -2,11 +2,18 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
+use super::profile::{ConfigDocument, ProfileError};
 use super::schema::DevdConfig;
 use super::validation::ConfigValidationError;
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
+    #[error("invalid configuration file {path}: {source}")]
+    Profile {
+        path: PathBuf,
+        #[source]
+        source: ProfileError,
+    },
     #[error("failed to read configuration file {path}: {source}")]
     Read {
         path: PathBuf,
@@ -40,6 +47,18 @@ impl ConfigLoader {
     where
         P: AsRef<Path>,
     {
+        self.load_profile(path, None).await
+    }
+
+    /// Apply the selected profile before validating services and dependencies.
+    pub async fn load_profile<P>(
+        &self,
+        path: P,
+        profile: Option<&str>,
+    ) -> Result<DevdConfig, ConfigError>
+    where
+        P: AsRef<Path>,
+    {
         let path = path.as_ref().to_path_buf();
         let contents =
             tokio::fs::read_to_string(&path)
@@ -49,18 +68,47 @@ impl ConfigLoader {
                     source,
                 })?;
 
-        let config = Self::from_str(&contents, &path)?;
-        config
-            .validate()
-            .map_err(|source| ConfigError::Validation { path, source })?;
+        let config = Self::from_str_profile(&contents, &path, profile)?;
+        config.validate().map_err(|source| match profile {
+            Some(name) => ConfigError::Profile {
+                path: path.clone(),
+                source: ProfileError::Validation {
+                    name: name.to_owned(),
+                    source,
+                },
+            },
+            None => ConfigError::Validation {
+                path: path.clone(),
+                source,
+            },
+        })?;
         Ok(config)
     }
 
     /// Deserialize YAML without semantic validation. Call `DevdConfig::validate`
     /// before using the configuration to start services.
     pub fn from_str(contents: &str, path: impl Into<PathBuf>) -> Result<DevdConfig, ConfigError> {
+        Self::from_str_profile(contents, path, None)
+    }
+
+    /// Deserialize and merge a profile without semantic validation.
+    pub fn from_str_profile(
+        contents: &str,
+        path: impl Into<PathBuf>,
+        profile: Option<&str>,
+    ) -> Result<DevdConfig, ConfigError> {
         let path = path.into();
-        serde_yaml::from_str(contents).map_err(|source| ConfigError::Parse { path, source })
+        let (document, base) =
+            ConfigDocument::parse(contents).map_err(|source| ConfigError::Parse {
+                path: path.clone(),
+                source,
+            })?;
+        match profile {
+            Some(name) => document
+                .select(name)
+                .map_err(|source| ConfigError::Profile { path, source }),
+            None => Ok(base),
+        }
     }
 }
 
@@ -184,7 +232,7 @@ services:
     #[test]
     fn test_config_loader_rejects_unknown_fields_at_every_level() {
         for contents in [
-            "version: '1'\nservices: {}\nprofiles: {}",
+            "version: '1'\nservices: {}\nprofile: {}",
             "version: '1'\nservices:\n  api: {command: api, health-check: {type: tcp, port: 80}}",
             "version: '1'\nservices:\n  api: {command: api, restart: {max-attempt: 2}}",
             "version: '1'\nservices:\n  api: {command: api, healthcheck: {type: tcp, port: 80, retry: 3}}",
