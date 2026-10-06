@@ -1,6 +1,6 @@
 # MVP validation
 
-Run from the repository root on Linux or macOS with Rust and `/bin/sh`. No Docker, Python, database, external endpoint, or fixed free port is required.
+Run from the repository root on Linux or macOS with Rust 1.95 or newer and `/bin/sh`. No Docker, Python, database, external endpoint, or fixed free port is required.
 
 ```bash
 cargo fmt --all -- --check
@@ -29,6 +29,7 @@ cargo test --locked --test integration
 | Startup rollback | Release database readiness into a missing API executable; require a failed foreground exit, persisted error, stopped database, and no frontend launch |
 | Signal cancellation | SIGINT/SIGTERM while dependencies are pending; verify no later service starts and the process tree is cleaned |
 | Retry exhaustion | Crash all three permitted generations; require Failed status, final exit code, all failure log lines, and no remaining fixture processes |
+| Resource monitoring | Sample a busy shell's CPU and RSS through CLI text and JSON, restart it, verify fresh persisted metrics, and confirm shutdown clears samples; unit tests cover warmup, generation cache retirement, late samples, unavailable values, and health-state updates |
 
 `cli.rs` covers command options, malformed input, duplicate supervisors, configuration deletion, control protocol errors, and terminal backpressure. Lower-level lifecycle, orchestration, health, configuration, dependency, and logging suites retain their focused checks.
 

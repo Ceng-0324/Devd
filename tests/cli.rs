@@ -7,6 +7,72 @@ use support::{failure, success, wait, Project, Supervisor};
 const RUNNING: &str = "services:\n  worker:\n    command: sh -c 'echo hello; echo problem >&2; exec sleep 60'\n    restart:\n      policy: never\n";
 
 #[test]
+fn test_cli_resource_samples_follow_busy_process_restart_and_shutdown() {
+    let project = Project::new("services:\n  worker:\n    command: sh -c 'while :; do :; done'\n    restart: {policy: never}\n");
+    let mut supervisor = project.start();
+    let first = project.running();
+    let sampled = wait(|| {
+        project.snapshot().filter(|s| {
+            s.services["worker"]
+                .resources
+                .as_ref()
+                .is_some_and(|r| r.cpu_percent.is_some_and(|cpu| cpu > 0.0))
+        })
+    });
+    let state = &sampled.services["worker"];
+    let resources = state.resources.as_ref().unwrap();
+    assert!(resources.memory_bytes > 0);
+    assert!(resources.sampled_at >= state.started_at.unwrap());
+    let text = success(project.invoke(&["status"]));
+    assert!(text.contains("CPU %\tRSS MiB"), "{text}");
+    let row: Vec<_> = text
+        .lines()
+        .find(|line| line.starts_with("worker\t"))
+        .unwrap()
+        .split('\t')
+        .collect();
+    assert!(row[4].parse::<f32>().unwrap() > 0.0);
+    assert!(row[5].parse::<f64>().unwrap() >= 0.0);
+
+    success(project.invoke(&["restart", "worker"]));
+    let restarted = project.running();
+    assert_ne!(
+        first.services["worker"].pid,
+        restarted.services["worker"].pid
+    );
+    assert_eq!(restarted.services["worker"].restart_count, 1);
+    if let Some(resources) = &restarted.services["worker"].resources {
+        assert!(resources.sampled_at >= restarted.services["worker"].started_at.unwrap());
+    }
+    wait(|| {
+        project.snapshot().filter(|s| {
+            s.services["worker"]
+                .resources
+                .as_ref()
+                .is_some_and(|r| r.cpu_percent.is_some_and(|cpu| cpu > 0.0))
+        })
+    });
+    // The persisted snapshot receives samples through the same state store.
+    wait(|| {
+        let saved: devd::core::service_manager::RuntimeSnapshot = serde_json::from_slice(
+            &fs::read(project.path().join(".devd/devd.yml/services.json")).unwrap(),
+        )
+        .unwrap();
+        (saved.services["worker"].restart_count == 1
+            && saved.services["worker"].resources.is_some())
+        .then_some(())
+    });
+    success(project.invoke(&["stop"]));
+    supervisor.finish(true);
+    let saved: devd::core::service_manager::RuntimeSnapshot = serde_json::from_slice(
+        &fs::read(project.path().join(".devd/devd.yml/services.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(saved.services["worker"].pid.is_none());
+    assert!(saved.services["worker"].resources.is_none());
+}
+
+#[test]
 fn test_cli_socket_readiness_resolves_against_service_directory() {
     use devd::core::service_manager::ServiceState;
     let project = Project::new("services:\n  provider:\n    command: sleep 60\n    cwd: service\n    restart:\n      policy: never\n    healthcheck:\n      type: socket\n      path: health.sock\n      interval: 50ms\n      retries: 1000\n  worker:\n    command: sleep 60\n    depends-on:\n      - service: provider\n        condition: socket-ready\n");

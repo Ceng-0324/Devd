@@ -2,6 +2,7 @@
 name = "devd"
 version = "0.2.0-alpha.1"
 edition = "2021"
+rust-version = "1.95"
 description = "A lightweight local development service supervisor"
 license = "MIT"
 repository = "https://github.com/Ceng-0324/Devd"
@@ -39,6 +40,7 @@ tokio = { version = "1", features = [
 
 [target.'cfg(unix)'.dependencies]
 nix = { version = "0.31", features = ["signal", "process", "fs"] }
+sysinfo = { version = "0.39", default-features = false, features = ["system"] }
 
 [dev-dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }

@@ -167,10 +167,22 @@ impl ServiceTask {
     fn publish(&self) {
         self.snapshots.send_if_modified(|snapshot| {
             let previous = snapshot.services.get_mut(&self.name).unwrap();
-            if *previous == self.state {
+            let mut next = self.state.clone();
+            // The monitor owns metrics; lifecycle updates preserve only samples
+            // belonging to the same live process generation.
+            if next.pid.is_some()
+                && next.pid == previous.pid
+                && next.started_at == previous.started_at
+                && next.restart_count == previous.restart_count
+            {
+                next.resources = previous.resources.clone();
+            } else {
+                next.resources = None;
+            }
+            if *previous == next {
                 false
             } else {
-                *previous = self.state.clone();
+                *previous = next;
                 true
             }
         });
@@ -404,6 +416,44 @@ impl OutputReaders {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_resources_survive_health_updates_and_clear_on_exit() {
+        use crate::core::resource_monitor::ResourceUsage;
+        let config: ServiceConfig = serde_yaml::from_str("command: sleep 60").unwrap();
+        let (_, control) = watch::channel(Control::Running);
+        let initial = ServiceSnapshot {
+            pid: Some(123),
+            started_at: Some(Utc::now()),
+            status: ServiceState::Running,
+            ..Default::default()
+        };
+        let (snapshots, _) = watch::channel(RuntimeSnapshot {
+            supervisor_pid: std::process::id(),
+            services: [("child".into(), initial)].into(),
+        });
+        let mut task = ServiceTask::new(
+            "child".into(),
+            config,
+            None,
+            ManagerOptions::new("unused"),
+            control,
+            snapshots.clone(),
+            LogCollector::new(Default::default()).unwrap(),
+        );
+        let usage = ResourceUsage {
+            cpu_percent: Some(50.0),
+            memory_bytes: 100_000,
+            sampled_at: Utc::now(),
+        };
+        snapshots
+            .send_modify(|s| s.services.get_mut("child").unwrap().resources = Some(usage.clone()));
+        task.transition(ServiceState::Healthy);
+        assert_eq!(snapshots.borrow().services["child"].resources, Some(usage));
+        task.fail("process observation failed".into());
+        assert!(snapshots.borrow().services["child"].resources.is_none());
+        assert!(snapshots.borrow().services["child"].pid.is_none());
+    }
 
     #[test]
     fn test_restart_delay_growth_cap_zero_and_overflow() {

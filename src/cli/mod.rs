@@ -168,15 +168,24 @@ impl Cli {
                     output(&format!("{}\n", serde_json::to_string_pretty(&snapshot)?))?;
                 } else {
                     let mut text = format!(
-                        "Supervisor PID: {}\nSERVICE\tSTATE\tPID\tRESTARTS\n",
+                        "Supervisor PID: {}\nSERVICE\tSTATE\tPID\tRESTARTS\tCPU %\tRSS MiB\n",
                         snapshot.supervisor_pid
                     );
                     for (name, state) in snapshot.services {
                         text.push_str(&format!(
-                            "{name}\t{:?}\t{}\t{}\n",
+                            "{name}\t{:?}\t{}\t{}\t{}\t{}\n",
                             state.status,
                             state.pid.map_or_else(|| "-".into(), |pid| pid.to_string()),
-                            state.restart_count
+                            state.restart_count,
+                            state
+                                .resources
+                                .as_ref()
+                                .and_then(|r| r.cpu_percent)
+                                .map_or_else(|| "-".into(), |cpu| format!("{cpu:.1}")),
+                            state.resources.as_ref().map_or_else(
+                                || "-".into(),
+                                |r| format!("{:.1}", r.memory_bytes as f64 / 1_048_576.0)
+                            )
                         ));
                         if let Some(error) = state.last_error {
                             text.push_str(&format!("  {error:?}\n"));

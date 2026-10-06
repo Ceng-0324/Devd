@@ -17,6 +17,7 @@ use super::{
     dependency::DependencyGraph,
     health_check::{HealthCheckError, HealthChecker},
     process_manager::{parse_command, ProcessError},
+    resource_monitor::{self, ResourceUsage},
     service_task::{Control, ServiceTask},
     state_store::StateStore,
 };
@@ -35,7 +36,7 @@ pub enum ServiceState {
     Failed,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ServiceSnapshot {
     pub status: ServiceState,
     pub pid: Option<u32>,
@@ -45,6 +46,9 @@ pub struct ServiceSnapshot {
     pub last_exit_code: Option<i32>,
     pub last_exit_signal: Option<i32>,
     pub last_error: Option<String>,
+    /// Latest sample of the service leader; absent before sampling or after exit.
+    #[serde(default)]
+    pub resources: Option<ResourceUsage>,
 }
 
 impl Default for ServiceSnapshot {
@@ -58,11 +62,12 @@ impl Default for ServiceSnapshot {
             last_exit_code: None,
             last_exit_signal: None,
             last_error: None,
+            resources: None,
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RuntimeSnapshot {
     pub supervisor_pid: u32,
     pub services: BTreeMap<String, ServiceSnapshot>,
@@ -300,10 +305,13 @@ impl ServiceManager {
         let mut starting: BTreeMap<String, oneshot::Sender<Result<ServiceSnapshot, String>>> =
             BTreeMap::new();
         let mut error = None;
+        let monitor = resource_monitor::run(self.snapshots.clone());
+        tokio::pin!(monitor);
         while !shutdown_requested && !tasks.is_empty() {
             tokio::select! {
                 biased;
                 _ = &mut shutdown => break,
+                _ = &mut monitor => {},
                 Some(request) = self.commands.recv() => {
                     let name = request.service;
                     let rejection = if !controls.contains_key(&name) {
@@ -463,6 +471,7 @@ fn collect_task(
                     let service = snapshot.services.get_mut(&name).unwrap();
                     service.status = ServiceState::Failed;
                     service.pid = None;
+                    service.resources = None;
                     service.last_error = Some(error.to_string());
                 });
             }

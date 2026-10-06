@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add per-service leader CPU and RSS samples to `status`, JSON responses, and runtime snapshots, sampled approximately every second without blocking lifecycle control.
+- Reset CPU baselines on restart, discard late samples from previous generations, and clear metrics on exit or unavailable observations.
+- Require Rust 1.95 or newer for the resource-monitoring dependency.
+
 ## v0.2.0-alpha.1 — 2026-10-05
 
 First public prerelease for local development on Linux and macOS.

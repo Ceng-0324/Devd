@@ -18,19 +18,22 @@
 
 devd 是用 Rust 编写的本地开发服务管理器。**v0.2.0-alpha.1 是基于 v0.1 MVP 的预发布版，支持 Linux 和 macOS**。
 
+当前开发分支还为 `status` 增加了 CPU 和内存采样；这项能力尚未包含在 alpha.1 发布的二进制中。
+
 一份 `devd.yml` 描述服务和依赖，`devd start` 在前台管理它们。你可以继续在另一个终端查状态、翻日志或重启某个服务。
 
 - **按依赖启动**：独立服务并发启动；依赖可以等待进程启动，也可以等待 TCP / HTTP / Unix Socket 健康检查通过。
 - **观察健康状态**：TCP、Unix Socket 连接与 HTTP 2xx 探测，记录连续失败和错误原因。Socket 路径相对服务工作目录解析，遗留文件不算健康，必须能连上。
 - **处理异常退出**：支持 `always`、`on-failure`、`never`，可选固定延时或指数退避，并限制自动重试次数。
 - **把日志放到一起**：收集 stdout / stderr，添加时间、服务名和颜色，按服务查询最近的输出。
+- **看看服务吃了多少资源**：`status` 显示每个服务主进程的 CPU 和常驻内存。
 - **有序收尾**：Ctrl+C、SIGTERM 或 `devd stop` 触发反向依赖关闭，并清理受管进程组里的后代。
 
 适合 API、前端、worker 等需要一起运行的本地项目。服务继续使用自己的启动命令，devd 负责把它们组织起来。
 
 ## 先跑起来
 
-需要 Rust 工具链。在仓库根目录安装：
+需要 Rust 1.95 或更新版本。在仓库根目录安装：
 
 ```bash
 cargo install --path . --locked
@@ -113,7 +116,7 @@ services:
 | `devd start` | 前台启动全栈并实时输出日志 |
 | `devd stop` | 请求有序关闭，前台进程完成清理后退出 |
 | `devd restart <service>` | 用启动时的配置重启一个服务，重新检查依赖 |
-| `devd status [--json]` | 查看实时状态、PID、重启次数和诊断信息 |
+| `devd status [--json]` | 查看实时状态、PID、CPU／RSS、重启次数和诊断信息 |
 | `devd logs [service] [--tail N] [--follow]` | 查询内存日志（默认 100 条，N 为 1–1000），可持续接收新日志 |
 | `devd check` | 校验配置、命令引号、依赖关系及当前支持的设置 |
 | `devd graph` | 显示依赖边和并行启动层 |
@@ -136,7 +139,9 @@ devd --config ./devd.local.yml status --json
 
 **诊断反映当前实例。** `status` 离线时返回错误，遗留状态文件仅用于诊断。配置内容被改坏后，仍可通过活实例执行 `stop`、`status`、`logs` 和 `restart`。`check` 做静态校验，可执行文件、环境文件和探测端点是否可用，要到运行时确认。命令失败返回非零退出码。
 
-当前范围是本地进程管理。`init` 可生成初始配置；项目扫描和交互式模板仍在规划。资源监控、热重载、磁盘日志和 TUI 也在后续规划里。
+**资源指标只统计服务主进程。** supervisor 大约每秒采样一次，不累加 shell 或包管理器启动的子进程。CPU 以一个核心满载为 100%，多线程进程可以超过 100%；内存为 RSS，终端以 MiB 显示。不可用的指标显示 `-`，CPU 在启动或重启后需要两次成功采样。JSON 的可选 `resources` 包含 `cpu_percent`（预热时为 `null`）、`memory_bytes` 和 `sampled_at`。进程退出后清除指标；采样只用于观察，`limits` 仍不支持。
+
+当前范围是本地进程管理。`init` 可生成初始配置；项目扫描和交互式模板仍在规划。热重载、磁盘日志和 TUI 也在后续规划里。
 
 配置会拒绝未知字段和未实现的 `limits`。YAML 值按字面使用，尚未实现 `${VAR}` 替换。`backoff: exponential` 从 `initial-delay` 开始，随累计重启次数翻倍，到 `max-delay` 封顶（默认 60s，不能小于初始延时）；健康检查成功不会重置计数。fixed 不使用 `max-delay`；两种等待均可被停止操作中断。
 
