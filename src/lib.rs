@@ -1,5 +1,5 @@
-#[cfg(unix)]
 pub mod cli;
 pub mod config;
 pub mod core;
 pub mod logging;
+pub(crate) mod platform;

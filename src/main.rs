@@ -1,4 +1,3 @@
-#[cfg(unix)]
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
     use clap::Parser;
@@ -9,10 +8,4 @@ async fn main() -> std::process::ExitCode {
             std::process::ExitCode::FAILURE
         }
     }
-}
-
-#[cfg(not(unix))]
-fn main() -> std::process::ExitCode {
-    eprintln!("error: devd currently supports Linux and macOS");
-    std::process::ExitCode::FAILURE
 }

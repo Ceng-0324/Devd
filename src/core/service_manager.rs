@@ -4,7 +4,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{
-    signal::unix::{signal, SignalKind},
     sync::{broadcast, mpsc, oneshot, watch},
     task::{Id, JoinError, JoinSet},
     time::Instant,
@@ -258,17 +257,12 @@ impl ServiceManager {
         self.controller.clone()
     }
 
-    /// Install SIGINT (Ctrl+C) and SIGTERM handlers before spawning children.
+    /// Install shutdown handlers before spawning children (SIGINT/SIGTERM on
+    /// Unix, Ctrl+C/Ctrl+Break on Windows).
     pub async fn run(self) -> Result<RuntimeSnapshot, ServiceManagerError> {
-        let mut interrupt = signal(SignalKind::interrupt()).map_err(ServiceManagerError::Signal)?;
-        let mut terminate = signal(SignalKind::terminate()).map_err(ServiceManagerError::Signal)?;
-        self.run_until(async move {
-            tokio::select! {
-                _ = interrupt.recv() => {},
-                _ = terminate.recv() => {},
-            }
-        })
-        .await
+        let mut signals =
+            crate::platform::shutdown::Shutdown::new(false).map_err(ServiceManagerError::Signal)?;
+        self.run_until(async move { signals.recv().await }).await
     }
 
     /// Run in the foreground until cancellation, terminal failure, or all service

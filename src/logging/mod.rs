@@ -1,6 +1,5 @@
 mod collector;
 mod output;
-#[cfg(unix)]
 pub mod storage;
 
 use chrono::{DateTime, Utc};

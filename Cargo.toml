@@ -39,12 +39,16 @@ tokio = { version = "1", features = [
     "time",
 ] }
 
-[target.'cfg(unix)'.dependencies]
 crossterm = { version = "0.29", features = ["event-stream"] }
 futures-util = { version = "0.3.34", default-features = false, features = ["std", "async-await"] }
-nix = { version = "0.31", features = ["signal", "process", "fs"] }
 ratatui = { version = "0.30.2", default-features = false, features = ["crossterm"] }
 sysinfo = { version = "0.39", default-features = false, features = ["system"] }
+
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31", features = ["signal", "process", "fs"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_Diagnostics_ToolHelp", "Win32_System_IO", "Win32_System_JobObjects", "Win32_System_Threading"] }
 
 [dev-dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }

@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 
+#[cfg(unix)]
 use nix::{
     errno::Errno,
     sys::signal::{killpg, Signal},
@@ -13,6 +14,13 @@ use thiserror::Error;
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 
 use crate::config::ServiceConfig;
+#[cfg(windows)]
+use crate::platform::job::Job;
+
+#[cfg(unix)]
+type ProcessGroup = Pid;
+#[cfg(windows)]
+type ProcessGroup = Job;
 
 #[derive(Debug, Error)]
 pub enum ProcessError {
@@ -52,19 +60,33 @@ pub enum ProcessError {
         #[source]
         source: std::io::Error,
     },
+    #[cfg(unix)]
     #[error("process group {group} for service '{service}' did not disappear after SIGKILL")]
     CleanupTimeout { service: String, group: i32 },
+    #[cfg(windows)]
+    #[error(
+        "process job for service '{service}' still contains active processes after termination"
+    )]
+    JobCleanupTimeout { service: String },
     #[error("stop grace period {grace_period:?} is too large for service '{service}'")]
     InvalidGracePeriod {
         service: String,
         grace_period: Duration,
     },
+    #[cfg(unix)]
     #[error("failed to send {signal:?} to process group for service '{service}': {source}")]
     Signal {
         service: String,
         signal: Signal,
         #[source]
         source: Errno,
+    },
+    #[cfg(windows)]
+    #[error("failed to control process job for service '{service}': {source}")]
+    Job {
+        service: String,
+        #[source]
+        source: std::io::Error,
     },
 }
 
@@ -74,7 +96,7 @@ pub enum ProcessState {
     Exited { status: ExitStatus },
 }
 
-/// Owns one Unix service process and its process group. Operations do not schedule
+/// Owns one service process and its process tree. Operations do not schedule
 /// dependencies or drain logs. Callers must drain stdout and stderr concurrently
 /// to avoid a child blocking on full pipes.
 #[derive(Debug)]
@@ -82,7 +104,7 @@ pub struct ManagedProcess {
     service: String,
     config: ServiceConfig,
     child: Child,
-    group: Option<Pid>,
+    group: Option<ProcessGroup>,
     capture_output: bool,
 }
 
@@ -170,9 +192,10 @@ impl ManagedProcess {
         Ok(status)
     }
 
-    /// Send SIGTERM to the process group, wait up to `grace_period` for the leader,
-    /// then use SIGKILL if necessary. Any descendants left after the leader exits
-    /// are killed as well. Repeated stops return the same collected exit status.
+    /// Request shutdown (Unix SIGTERM or Windows Ctrl+Break), wait up to
+    /// `grace_period`, then force termination of the owned process tree.
+    /// Console-less Windows services terminate directly. Any descendants left
+    /// after the leader exits are killed too. Repeated stops are idempotent.
     pub async fn stop(&mut self, grace_period: Duration) -> Result<ExitStatus, ProcessError> {
         if let Some(status) = self.try_wait().await? {
             return Ok(status);
@@ -183,11 +206,23 @@ impl ManagedProcess {
                 service: self.service.clone(),
                 grace_period,
             })?;
+        #[cfg(unix)]
         self.signal_group(Signal::SIGTERM)?;
+        #[cfg(windows)]
+        if let Some(group) = &self.group {
+            group
+                .interrupt(self.child.id().unwrap())
+                .map_err(|source| self.job_error(source))?;
+        }
         match tokio::time::timeout_at(deadline, self.wait()).await {
             Ok(result) => result,
             Err(_) => {
+                #[cfg(unix)]
                 self.signal_group(Signal::SIGKILL)?;
+                #[cfg(windows)]
+                if let Some(group) = &self.group {
+                    group.terminate().map_err(|source| self.job_error(source))?;
+                }
                 self.wait().await
             }
         }
@@ -204,6 +239,7 @@ impl ManagedProcess {
         Ok(self.child.id().expect("newly spawned child has a PID"))
     }
 
+    #[cfg(unix)]
     fn signal_group(&self, signal: Signal) -> Result<(), ProcessError> {
         if let Some(group) = self.group {
             match killpg(group, signal) {
@@ -220,6 +256,7 @@ impl ManagedProcess {
         Ok(())
     }
 
+    #[cfg(unix)]
     async fn cleanup_group_async(&mut self) -> Result<(), ProcessError> {
         let Some(group) = self.group else {
             return Ok(());
@@ -255,12 +292,45 @@ impl ManagedProcess {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
+
+    #[cfg(windows)]
+    fn job_error(&self, source: std::io::Error) -> ProcessError {
+        ProcessError::Job {
+            service: self.service.clone(),
+            source,
+        }
+    }
+
+    #[cfg(windows)]
+    async fn cleanup_group_async(&mut self) -> Result<(), ProcessError> {
+        let Some(group) = &self.group else {
+            return Ok(());
+        };
+        group.terminate().map_err(|source| self.job_error(source))?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+        while group
+            .active_processes()
+            .map_err(|source| self.job_error(source))?
+            != 0
+        {
+            if tokio::time::Instant::now() >= deadline {
+                return Err(ProcessError::JobCleanupTimeout {
+                    service: self.service.clone(),
+                });
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        self.group = None;
+        Ok(())
+    }
 }
 
 impl Drop for ManagedProcess {
     fn drop(&mut self) {
         // Tokio's kill_on_drop only covers the leader. Kill its process group too.
+        #[cfg(unix)]
         let _ = self.signal_group(Signal::SIGKILL);
+        // Windows Job closes here; KILL_ON_JOB_CLOSE includes descendants.
     }
 }
 
@@ -268,7 +338,7 @@ async fn spawn_child(
     service: &str,
     config: &ServiceConfig,
     capture_output: bool,
-) -> Result<(Child, Pid), ProcessError> {
+) -> Result<(Child, ProcessGroup), ProcessError> {
     let arguments = parse_command(service, &config.command)?;
     let mut command = Command::new(&arguments[0]);
     command
@@ -284,8 +354,9 @@ async fn spawn_child(
         } else {
             Stdio::null()
         })
-        .kill_on_drop(true)
-        .process_group(0);
+        .kill_on_drop(true);
+    #[cfg(unix)]
+    command.process_group(0);
     if let Some(cwd) = &config.cwd {
         command.current_dir(cwd);
     }
@@ -312,14 +383,19 @@ async fn spawn_child(
         }
     }
     command.envs(&config.env);
-    let child = command.spawn().map_err(|source| ProcessError::Spawn {
+    #[cfg(unix)]
+    let spawned = command.spawn().map(|child| {
+        let group = Pid::from_raw(child.id().expect("newly spawned child has a PID") as i32);
+        (child, group)
+    });
+    #[cfg(windows)]
+    let spawned = Job::spawn(&mut command);
+    spawned.map_err(|source| ProcessError::Spawn {
         service: service.to_owned(),
         command: config.command.clone(),
         cwd: config.cwd.clone(),
         source,
-    })?;
-    let group = Pid::from_raw(child.id().expect("newly spawned child has a PID") as i32);
-    Ok((child, group))
+    })
 }
 
 pub(super) fn parse_command(service: &str, command: &str) -> Result<Vec<String>, ProcessError> {

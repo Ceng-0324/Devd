@@ -1,11 +1,9 @@
 use std::{path::Path, time::Duration};
 
+use super::transport::{self, Stream};
 use anyhow::{bail, Context, Result};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::UnixStream,
-};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{
     core::service_manager::{RuntimeSnapshot, ServiceSnapshot},
@@ -49,7 +47,10 @@ pub(super) enum Response {
     Error(String),
 }
 
-async fn read<T: DeserializeOwned>(stream: &mut UnixStream, maximum: usize) -> Result<T> {
+async fn read<T: DeserializeOwned>(
+    stream: &mut (impl AsyncRead + Unpin),
+    maximum: usize,
+) -> Result<T> {
     let length = stream.read_u32().await? as usize;
     if length > maximum {
         bail!("control message exceeds {maximum} bytes");
@@ -59,13 +60,16 @@ async fn read<T: DeserializeOwned>(stream: &mut UnixStream, maximum: usize) -> R
     serde_json::from_slice(&bytes).context("invalid control message")
 }
 
-pub(super) async fn read_request(stream: &mut UnixStream) -> Result<Request> {
+pub(super) async fn read_request(stream: &mut (impl AsyncRead + Unpin)) -> Result<Request> {
     tokio::time::timeout(IO_TIMEOUT, read(stream, MAX_REQUEST))
         .await
         .context("control request timed out")?
 }
 
-pub(super) async fn write<T: Serialize>(stream: &mut UnixStream, message: &T) -> Result<()> {
+pub(super) async fn write<T: Serialize>(
+    stream: &mut (impl AsyncWrite + Unpin),
+    message: &T,
+) -> Result<()> {
     let bytes = serde_json::to_vec(message)?;
     if bytes.len() > MAX_RESPONSE {
         bail!("control response is too large");
@@ -91,13 +95,15 @@ pub(super) async fn request(socket: &Path, message: Request) -> Result<Response>
     }
 }
 
-pub(super) async fn connect(socket: &Path) -> Result<UnixStream> {
-    let stream = tokio::time::timeout(IO_TIMEOUT, UnixStream::connect(socket)).await?
+pub(super) async fn connect(socket: &Path) -> Result<Stream> {
+    let stream = tokio::time::timeout(IO_TIMEOUT, transport::connect(socket)).await?
         .with_context(|| format!("no reachable devd supervisor at {}; run 'devd start' with the same --config and --state-dir", socket.display()))?;
     Ok(stream)
 }
 
-pub(super) async fn next_response(stream: &mut UnixStream) -> Result<Option<Response>> {
+pub(super) async fn next_response(
+    stream: &mut (impl AsyncRead + Unpin),
+) -> Result<Option<Response>> {
     let mut prefix = [0u8; 1];
     if stream.read(&mut prefix).await? == 0 {
         return Ok(None);
@@ -164,7 +170,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn test_cli_log_stream_bounds_partial_frames_but_allows_silence() {
         for partial in [vec![0], vec![0, 0, 0, 100, b'{']] {
-            let (mut server, mut client) = UnixStream::pair().unwrap();
+            let (mut server, mut client) = tokio::io::duplex(1024);
             client.write_all(&partial).await.unwrap();
             let result = next_response(&mut server).await;
             assert!(result
@@ -173,7 +179,7 @@ mod tests {
                 .to_string()
                 .contains("log frame timed out"));
         }
-        let (mut server, mut client) = UnixStream::pair().unwrap();
+        let (mut server, mut client) = tokio::io::duplex(1024);
         let (response, _) = tokio::join!(next_response(&mut server), async {
             tokio::time::sleep(IO_TIMEOUT * 2).await;
             write(&mut client, &Response::Logs(vec![])).await.unwrap();
@@ -185,7 +191,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn test_cli_protocol_stalled_request_times_out() {
-        let (mut server, _client) = UnixStream::pair().unwrap();
+        let (mut server, _client) = tokio::io::duplex(1024);
         let read = tokio::spawn(async move { read_request(&mut server).await });
         tokio::task::yield_now().await;
         tokio::time::advance(IO_TIMEOUT + Duration::from_millis(1)).await;
@@ -199,7 +205,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_cli_protocol_rejects_truncated_frame() {
-        let (mut server, mut client) = UnixStream::pair().unwrap();
+        let (mut server, mut client) = tokio::io::duplex(1024);
         client.write_u32(100).await.unwrap();
         client.write_all(b"{}").await.unwrap();
         drop(client);

@@ -1,4 +1,4 @@
-# MVP validation
+# Validation
 
 Run from the repository root on Linux or macOS with Rust 1.95 or newer and `/bin/sh`. No Docker, Python, database, external endpoint, or fixed free port is required.
 
@@ -11,7 +11,17 @@ cargo build --locked
 cargo doc --locked --no-deps
 ```
 
-The CI matrix runs all test targets and validates the single-service fixture on both Linux and macOS. Run the complete MVP scenario suite separately with:
+The CI matrix builds, lints, and runs all applicable test targets on Linux, macOS,
+and Windows. Unix shell/PTY scenarios remain Unix-only. Windows runs the shared
+configuration, protocol, health, storage, and state-machine tests, plus
+`cargo test --locked --test windows`: real Job-owned process trees, stop/restart/
+drop, script completion/timeout/cancellation, named-pipe CLI control, duplicate
+supervisors, configuration deletion, snapshot restore, stored logs, stalled
+foreground-output cancellation, and cleanup after supervisor termination. Shared
+storage tests also cover native rotation and hard-link rejection; Windows unit
+tests cover reserved filenames and profile directory identities. Its ignored
+fixture is invoked by the parent tests.
+Run the complete Unix MVP scenario suite separately with:
 
 ```bash
 cargo test --locked --test integration
@@ -72,7 +82,9 @@ file locks, permissions, symlink/hard-link rejection, and explicit lag diagnosti
 For a working HTTP API, frontend and worker, see the
 [local stack example](../examples/local-stack/README.md). Its smoke script also
 checks manual restarts, process crashes, health failures and final cleanup; CI
-runs the short version on Linux and macOS.
+runs the short version on all three platforms. On Windows, use
+`python examples/local-stack/smoke.py --binary target/debug/devd.exe --duration 5 --restarts 2`.
+The script selects its own Python executable and needs no Unix tools on Windows.
 
 If a test runner cannot launch subprocess tests but a normal terminal can, copy the standalone fixture into a temporary project. If the environment prohibits process creation or loopback networking entirely, run the suite on a supported host; configuration validation alone does not prove lifecycle behavior.
 

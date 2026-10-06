@@ -2,8 +2,13 @@ mod graph;
 mod protocol;
 mod server;
 mod snapshot;
+#[cfg(unix)]
+mod stdout;
+#[cfg(windows)]
+#[path = "stdout_windows.rs"]
 mod stdout;
 mod top;
+mod transport;
 
 use std::{
     io::{self, Write},
@@ -108,7 +113,14 @@ enum Command {
         #[arg(long, default_value = "app")]
         service: String,
         /// Command to start the first service.
-        #[arg(long, default_value = "sh -c 'echo app-ready; exec sleep 3600'")]
+        #[arg(long)]
+        #[cfg_attr(unix, arg(default_value = "sh -c 'echo app-ready; exec sleep 3600'"))]
+        #[cfg_attr(
+            windows,
+            arg(
+                default_value = "powershell.exe -NoLogo -NoProfile -Command 'Write-Output app-ready; Start-Sleep -Seconds 3600'"
+            )
+        )]
         command: String,
     },
     /// Save a copy of the YAML configuration or restore it to a new file.
@@ -458,16 +470,44 @@ async fn absolute_config(path: &Path) -> Result<PathBuf> {
 }
 
 fn profile_directory(name: &str) -> String {
-    // Escape uppercase bytes to keep case-sensitive profile identities distinct
-    // on case-insensitive filesystems. '~' cannot appear in a profile name.
-    name.bytes().fold(String::new(), |mut path, byte| {
-        if byte.is_ascii_uppercase() {
-            path.push_str(&format!("~{byte:02x}"));
-        } else {
-            path.push(char::from(byte));
+    #[cfg(windows)]
+    {
+        // Windows reserves device names (CON, AUX, ...) even with extensions,
+        // and strips trailing dots. Encode every byte to preserve all accepted
+        // profile identities without changing the portable config schema.
+        name.bytes().fold(String::from("p-"), |mut path, byte| {
+            path.push_str(&format!("{byte:02x}"));
+            path
+        })
+    }
+    #[cfg(unix)]
+    {
+        // Escape uppercase bytes to keep case-sensitive profile identities distinct
+        // on case-insensitive filesystems. '~' cannot appear in a profile name.
+        name.bytes().fold(String::new(), |mut path, byte| {
+            if byte.is_ascii_uppercase() {
+                path.push_str(&format!("~{byte:02x}"));
+            } else {
+                path.push(char::from(byte));
+            }
+            path
+        })
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn test_profile_directories_preserve_windows_device_case_and_dot_names() {
+        let names = ["con", "CON", "con.", "aux", "aux.txt", "prod", "prod."];
+        let root = tempfile::tempdir().unwrap();
+        for name in names {
+            std::fs::create_dir(root.path().join(profile_directory(name))).unwrap();
         }
-        path
-    })
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), names.len());
+    }
 }
 
 async fn load_config(path: &Path, profile: Option<&str>) -> Result<DevdConfig> {

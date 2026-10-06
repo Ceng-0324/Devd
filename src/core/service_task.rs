@@ -1,6 +1,6 @@
-use std::{
-    future::pending, io, os::unix::process::ExitStatusExt, process::ExitStatus, time::Duration,
-};
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt;
+use std::{future::pending, io, process::ExitStatus, time::Duration};
 
 use chrono::Utc;
 use tokio::{sync::watch, task::JoinSet};
@@ -248,7 +248,14 @@ impl ServiceTask {
     fn record_exit(&mut self, status: ExitStatus) {
         self.state.pid = None;
         self.state.last_exit_code = status.code();
-        self.state.last_exit_signal = status.signal();
+        #[cfg(unix)]
+        {
+            self.state.last_exit_signal = status.signal();
+        }
+        #[cfg(windows)]
+        {
+            self.state.last_exit_signal = None;
+        }
         self.publish();
     }
 

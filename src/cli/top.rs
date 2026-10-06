@@ -21,13 +21,7 @@ use ratatui::{
     widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState},
     Terminal,
 };
-use tokio::{
-    net::UnixStream,
-    signal::unix::{signal, SignalKind},
-    sync::mpsc,
-    task::JoinSet,
-    time,
-};
+use tokio::{sync::mpsc, task::JoinSet, time};
 
 use super::protocol::{self, Request, Response};
 use crate::{
@@ -203,14 +197,10 @@ pub(super) async fn run(socket: &Path, color: bool) -> Result<()> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         bail!("top requires an interactive terminal (TTY)");
     }
-    let mut interrupt = signal(SignalKind::interrupt())?;
-    let mut terminate = signal(SignalKind::terminate())?;
-    let mut hangup = signal(SignalKind::hangup())?;
+    let mut signals = crate::platform::shutdown::Shutdown::new(true)?;
     tokio::select! {
         result = run_view(socket, color) => result,
-        _ = interrupt.recv() => Ok(()),
-        _ = terminate.recv() => Ok(()),
-        _ = hangup.recv() => Ok(()),
+        _ = signals.recv() => Ok(()),
     }
 }
 
@@ -320,7 +310,7 @@ async fn run_view(socket: &Path, color: bool) -> Result<()> {
     }
 }
 
-async fn follow(socket: &Path) -> Result<(UnixStream, Vec<LogEntry>)> {
+async fn follow(socket: &Path) -> Result<(super::transport::Stream, Vec<LogEntry>)> {
     let mut stream = protocol::connect(socket).await?;
     protocol::write(
         &mut stream,

@@ -4,14 +4,12 @@ use std::{
     sync::Arc,
 };
 
-use nix::fcntl::{Flock, FlockArg};
-
 use super::service_manager::{RuntimeSnapshot, ServiceManagerError};
 
 pub(crate) struct StateStore {
     path: PathBuf,
     temporary: PathBuf,
-    lock: Arc<Flock<std::fs::File>>,
+    lock: Arc<std::fs::File>,
 }
 
 impl StateStore {
@@ -34,15 +32,14 @@ impl StateStore {
             .map_err(|source| state_error(path, source))?
             .into_std()
             .await;
-        let lock = Flock::lock(file, FlockArg::LockExclusiveNonblock).map_err(|(_, source)| {
-            state_error(path, io::Error::from_raw_os_error(source as i32))
-        })?;
+        file.try_lock()
+            .map_err(|source| state_error(path, source.into()))?;
         let mut temporary = path.as_os_str().to_owned();
         temporary.push(".tmp");
         Ok(Self {
             path: path.into(),
             temporary: temporary.into(),
-            lock: Arc::new(lock),
+            lock: Arc::new(file),
         })
     }
 

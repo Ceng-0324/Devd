@@ -3,14 +3,13 @@
 
 use std::{
     collections::VecDeque,
-    fs::{self, File, OpenOptions},
+    fs::{self, File},
     io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write},
-    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
     sync::Arc,
 };
 
-use nix::fcntl::{Flock, FlockArg};
+use crate::platform::files;
 use tokio::sync::broadcast;
 
 use super::{LogEntry, LogFilter, LogLevel, OutputSummary};
@@ -40,7 +39,7 @@ pub struct LogStorage {
     options: StorageOptions,
     file: File,
     size: u64,
-    _lock: Flock<File>,
+    _lock: File,
 }
 
 impl LogStorage {
@@ -53,7 +52,15 @@ impl LogStorage {
         if !(1..=MAX_ARCHIVES).contains(&options.keep) {
             return Err(invalid("log archive count must be between 1 and 100"));
         }
-        match fs::DirBuilder::new().mode(0o700).create(directory) {
+        let builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        let builder = {
+            use std::os::unix::fs::DirBuilderExt;
+            let mut builder = builder;
+            builder.mode(0o700);
+            builder
+        };
+        match builder.create(directory) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
             Err(error) => return Err(error),
@@ -214,7 +221,8 @@ fn log_path(directory: &Path, index: u16) -> PathBuf {
 }
 
 fn check_directory(path: &Path) -> io::Result<()> {
-    if !fs::symlink_metadata(path)?.is_dir() {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_dir() || files::is_link(&metadata) {
         return Err(invalid(format!("not a log directory: {}", path.display())));
     }
     Ok(())
@@ -222,7 +230,10 @@ fn check_directory(path: &Path) -> io::Result<()> {
 
 fn check_file(path: &Path) -> io::Result<bool> {
     match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_file() && metadata.nlink() == 1 => Ok(true),
+        Ok(metadata) if files::regular(&metadata) => {
+            files::open_regular(path, false, true)?;
+            Ok(true)
+        }
         Ok(_) => Err(invalid(format!(
             "not a regular log file: {}",
             path.display()
@@ -233,39 +244,27 @@ fn check_file(path: &Path) -> io::Result<bool> {
 }
 
 fn open_file(path: &Path, write: bool) -> io::Result<File> {
-    let file = OpenOptions::new()
-        .read(true)
-        .append(write)
-        .create(write)
-        .mode(0o600)
-        .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
-        .open(path)?;
-    let metadata = file.metadata()?;
-    if !metadata.is_file() || metadata.nlink() != 1 {
-        return Err(invalid(format!(
-            "not a regular log file: {}",
-            path.display()
-        )));
+    let mut file = files::open_regular(path, write, true)?;
+    if write {
+        file.seek(SeekFrom::End(0))?;
     }
     Ok(file)
 }
 
-fn lock(directory: &Path, write: bool) -> io::Result<Flock<File>> {
+fn lock(directory: &Path, write: bool) -> io::Result<File> {
     let file = open_file(&directory.join(".lock"), write)?;
-    Flock::lock(
-        file,
-        if write {
-            FlockArg::LockExclusiveNonblock
-        } else {
-            FlockArg::LockSharedNonblock
-        },
-    )
-    .map_err(|(_, error)| {
+    let result = if write {
+        file.try_lock()
+    } else {
+        file.try_lock_shared()
+    };
+    result.map_err(|error| {
         io::Error::new(
             io::ErrorKind::WouldBlock,
             format!("stored logs are in use; stop the supervisor or use live 'logs': {error}"),
         )
-    })
+    })?;
+    Ok(file)
 }
 
 fn remove_if_present(path: &Path) -> io::Result<()> {
@@ -302,6 +301,9 @@ fn repair_tail(file: &mut File) -> io::Result<u64> {
     };
     if removed > 0 {
         file.set_len(length - removed)?;
+        // Truncation preserves the old cursor. On Windows writes use that
+        // position; continuing there would insert a zero-filled gap.
+        file.seek(SeekFrom::End(0))?;
     }
     Ok(removed)
 }
@@ -324,6 +326,7 @@ fn invalid(message: impl Into<String>) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(unix)]
     use std::os::unix::fs::{symlink, PermissionsExt};
 
     fn entry(index: usize) -> LogEntry {
@@ -367,10 +370,12 @@ mod tests {
         drop(storage);
         assert_eq!(read(&path, 100), (6..10).map(entry).collect::<Vec<_>>());
         assert!(!log_path(&path, 2).exists());
+        #[cfg(unix)]
         assert_eq!(
             fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o700
         );
+        #[cfg(unix)]
         assert_eq!(
             fs::metadata(log_path(&path, 0))
                 .unwrap()
@@ -487,6 +492,7 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let target = root.path().join("outside");
         fs::write(&target, "keep me").unwrap();
+        #[cfg(unix)]
         for name in [".lock", "current.jsonl", "archive-1.jsonl"] {
             let sub = tempfile::tempdir().unwrap();
             symlink(&target, sub.path().join(name)).unwrap();
@@ -497,9 +503,12 @@ mod tests {
         fs::create_dir(&path).unwrap();
         fs::create_dir(log_path(&path, 0)).unwrap();
         assert!(LogStorage::open(&path, StorageOptions::default()).is_err());
-        let link = root.path().join("linked");
-        symlink(&path, &link).unwrap();
-        assert!(LogStorage::open(&link, StorageOptions::default()).is_err());
+        #[cfg(unix)]
+        {
+            let link = root.path().join("linked");
+            symlink(&path, &link).unwrap();
+            assert!(LogStorage::open(&link, StorageOptions::default()).is_err());
+        }
         let hardlink_dir = tempfile::tempdir().unwrap();
         fs::hard_link(&target, log_path(hardlink_dir.path(), 0)).unwrap();
         assert!(LogStorage::open(hardlink_dir.path(), StorageOptions::default()).is_err());

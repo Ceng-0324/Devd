@@ -1,6 +1,5 @@
 use std::{
     io::{self, Read, Write},
-    os::unix::fs::OpenOptionsExt,
     path::{Component, Path, PathBuf},
 };
 
@@ -66,7 +65,7 @@ async fn reject_symlink_directory(path: &Path) -> Result<()> {
     let metadata = tokio::fs::symlink_metadata(path)
         .await
         .with_context(|| format!("cannot inspect snapshot directory {}", path.display()))?;
-    if !metadata.file_type().is_dir() {
+    if !metadata.file_type().is_dir() || crate::platform::files::is_link(&metadata) {
         bail!(
             "snapshot directory {} is not a regular directory",
             path.display()
@@ -78,12 +77,9 @@ async fn reject_symlink_directory(path: &Path) -> Result<()> {
 async fn read_regular_file(path: &Path, label: &'static str) -> Result<Vec<u8>> {
     let path = path.to_owned();
     tokio::task::spawn_blocking(move || {
-        let mut file = std::fs::OpenOptions::new()
-            .read(true)
-            .custom_flags(nix::libc::O_NOFOLLOW | nix::libc::O_NONBLOCK)
-            .open(&path)
-            .map_err(|error| {
-                if error.raw_os_error() == Some(nix::libc::ELOOP) {
+        let mut file =
+            crate::platform::files::open_regular(&path, false, false).map_err(|error| {
+                if error.kind() == io::ErrorKind::InvalidData {
                     anyhow::anyhow!("{label} {} is not a regular file", path.display())
                 } else {
                     anyhow::Error::new(error)
@@ -103,6 +99,8 @@ async fn read_regular_file(path: &Path, label: &'static str) -> Result<Vec<u8>> 
 }
 
 async fn create_new(path: PathBuf, bytes: Vec<u8>) -> Result<()> {
+    #[cfg(windows)]
+    validate_windows_filename(&path)?;
     tokio::task::spawn_blocking(move || {
         let directory = path.parent().context("destination has no parent")?;
         let mut temporary = tempfile::NamedTempFile::new_in(directory)
@@ -125,4 +123,66 @@ async fn create_new(path: PathBuf, bytes: Vec<u8>) -> Result<()> {
     })
     .await
     .context("snapshot file task failed")?
+}
+
+#[cfg(windows)]
+fn validate_windows_filename(path: &Path) -> Result<()> {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .context("invalid Windows filename")?;
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
+    let device = matches!(
+        stem.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || stem
+        .strip_prefix("COM")
+        .or_else(|| stem.strip_prefix("LPT"))
+        .is_some_and(|suffix| {
+            matches!(
+                suffix,
+                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+            )
+        });
+    if device
+        || name.ends_with(['.', ' '])
+        || name
+            .chars()
+            .any(|ch| ch.is_control() || "<>:\"/\\|?*".contains(ch))
+    {
+        bail!("invalid or reserved Windows filename: {name}");
+    }
+    Ok(())
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_snapshot_rejects_windows_devices_and_alternate_streams() {
+        let root = tempfile::tempdir().unwrap();
+        for name in [
+            "con.yml",
+            "NUL",
+            "lpt1.yml",
+            "COM¹.yml",
+            "nul .yml",
+            "safe.yml:stream",
+            "trailing.",
+        ] {
+            assert!(create_new(root.path().join(name), b"data".to_vec())
+                .await
+                .is_err());
+        }
+        assert_eq!(std::fs::read_dir(root.path()).unwrap().count(), 0);
+        create_new(root.path().join("snapshot.yml"), b"data".to_vec())
+            .await
+            .unwrap();
+    }
 }

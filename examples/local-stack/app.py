@@ -46,6 +46,8 @@ def main():
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     signal.signal(signal.SIGINT, lambda *_: stop.set())
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, lambda *_: stop.set())
     if args.role == "worker":
         faulthandler.cancel_dump_traceback_later()
         print("worker started", flush=True)

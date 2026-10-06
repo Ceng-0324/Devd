@@ -4,6 +4,8 @@ import json
 import math
 import os
 import platform
+import re
+import shlex
 from pathlib import Path
 import shutil
 import signal
@@ -14,6 +16,67 @@ import tempfile
 import time
 from urllib.request import urlopen
 from urllib.error import URLError
+
+
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel.GetProcessTimes.argtypes = [wintypes.HANDLE] + [ctypes.POINTER(wintypes.FILETIME)] * 4
+
+    class MemoryCounters(ctypes.Structure):
+        _fields_ = [("cb", wintypes.DWORD), ("faults", wintypes.DWORD)] + [
+            (name, ctypes.c_size_t) for name in (
+                "peak_rss", "rss", "peak_paged", "paged", "peak_nonpaged",
+                "nonpaged", "pagefile", "peak_pagefile")
+        ]
+
+    psapi = ctypes.WinDLL("psapi", use_last_error=True)
+    psapi.GetProcessMemoryInfo.argtypes = [wintypes.HANDLE, ctypes.POINTER(MemoryCounters), wintypes.DWORD]
+
+
+def process_alive(pid):
+    if os.name == "nt":
+        handle = kernel.OpenProcess(0x100000, False, pid)  # SYNCHRONIZE
+        if not handle:
+            if ctypes.get_last_error() == 87:  # ERROR_INVALID_PARAMETER: no such PID
+                return False
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            return kernel.WaitForSingleObject(handle, 0) == 258  # WAIT_TIMEOUT
+        finally:
+            kernel.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+
+
+def sample_supervisor(pid, started):
+    if os.name == "nt":
+        handle = kernel.OpenProcess(0x410, False, pid)  # QUERY_INFORMATION | VM_READ
+        if not handle:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            times = [wintypes.FILETIME() for _ in range(4)]
+            memory = MemoryCounters()
+            memory.cb = ctypes.sizeof(memory)
+            if not kernel.GetProcessTimes(handle, *(ctypes.byref(t) for t in times)):
+                raise ctypes.WinError(ctypes.get_last_error())
+            if not psapi.GetProcessMemoryInfo(handle, ctypes.byref(memory), memory.cb):
+                raise ctypes.WinError(ctypes.get_last_error())
+            cpu = sum((t.dwHighDateTime << 32) | t.dwLowDateTime for t in times[2:]) / 10_000_000
+            return {"cpu_percent": 100 * cpu / (time.monotonic() - started), "rss_kib": memory.rss // 1024}
+        finally:
+            kernel.CloseHandle(handle)
+    stats = subprocess.check_output(["ps", "-o", "pcpu=,rss=", "-p", str(pid)], text=True, timeout=5).split()
+    return {"cpu_percent": float(stats[0]), "rss_kib": int(stats[1])}
 
 
 def wait_for(check, timeout=30):
@@ -60,7 +123,7 @@ def free_ports():
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--binary", type=Path, default=Path("target/debug/devd"))
+    parser.add_argument("--binary", type=Path, default=Path("target/debug/devd.exe" if os.name == "nt" else "target/debug/devd"))
     parser.add_argument("--duration", type=float, default=60)
     parser.add_argument("--restarts", type=int, default=3)
     args = parser.parse_args()
@@ -71,10 +134,15 @@ def main():
     api_port, web_port = free_ports()
     known_pids = set()
     last_status = None
-    with tempfile.TemporaryDirectory(prefix="devd-smoke-", dir="/tmp") as temporary:
+    with tempfile.TemporaryDirectory(prefix="devd-smoke-", dir=None if os.name == "nt" else "/tmp") as temporary:
         directory = Path(temporary)
         shutil.copy(source / "app.py", directory)
         config = (source / "devd.yml").read_text().replace("8731", str(api_port)).replace("8732", str(web_port))
+        # devd uses shell-style quoting on all hosts, with no implicit shell.
+        # Use this interpreter rather than a Windows Store python3 alias.
+        interpreter = shlex.quote(sys.executable.replace("\\", "/"))
+        config = re.sub(r"(?m)^(\s*command: )python3 (.*)$",
+                        lambda match: match[1] + json.dumps(f"{interpreter} {match[2]}"), config)
         (directory / "devd.yml").write_text(config)
 
         def cli(*arguments):
@@ -127,7 +195,8 @@ def main():
                     assert after["worker"]["pid"] == initial["worker"]["pid"]
                     wait_for(lambda: jobs() > 0)
                 before = wait_for(healthy)["api"]["pid"]
-                os.kill(before, signal.SIGKILL)
+                # On Windows non-console os.kill signals call TerminateProcess.
+                os.kill(before, signal.SIGTERM if os.name == "nt" else signal.SIGKILL)
                 wait_for(lambda: (value := healthy()) and value["api"]["pid"] != before)
                 wait_for(lambda: jobs() > 0)
                 # Trigger the configured health policy, then restore the input.
@@ -141,8 +210,7 @@ def main():
                 deadline = time.monotonic() + args.duration
                 while time.monotonic() < deadline:
                     assert healthy()
-                    stats = subprocess.check_output(["ps", "-o", "pcpu=,rss=", "-p", str(supervisor.pid)], text=True, timeout=5).split()
-                    samples.append({"cpu_percent": float(stats[0]), "rss_kib": int(stats[1])})
+                    samples.append(sample_supervisor(supervisor.pid, started))
                     time.sleep(min(1, max(0, deadline - time.monotonic())))
                 assert "job completed" in cli("logs", "worker")
                 wait_for(lambda: jobs() > jobs_before_soak)
@@ -151,16 +219,12 @@ def main():
                 state = json.loads((directory / ".devd/devd.yml/services.json").read_text())
                 assert all(s["pid"] is None and s["status"] == "stopped" for s in state["services"].values())
                 for pid in known_pids:
-                    try:
-                        os.kill(pid, 0)
-                    except ProcessLookupError:
-                        continue
-                    raise AssertionError(f"fixture PID remains after shutdown: {pid}")
+                    assert not process_alive(pid), f"fixture PID remains after shutdown: {pid}"
                 print(json.dumps({"platform": platform.platform(), "binary_version": cli("--version").strip(),
                                   "duration_seconds": args.duration, "manual_restarts": args.restarts,
                                   "startup_seconds": round(startup_seconds, 3), "samples": len(samples),
                                   "supervisor_max_rss_kib": max(s["rss_kib"] for s in samples),
-                                  "supervisor_max_ps_cpu_percent": max(s["cpu_percent"] for s in samples)}, indent=2))
+                                  "supervisor_max_cpu_percent": max(s["cpu_percent"] for s in samples)}, indent=2))
             except BaseException:
                 output.flush()
                 try:
@@ -181,7 +245,11 @@ def main():
                         supervisor.wait()
                         for pid in known_pids:
                             try:
-                                os.killpg(pid, signal.SIGKILL)
+                                if os.name == "nt":
+                                    if process_alive(pid):
+                                        os.kill(pid, signal.SIGTERM)
+                                else:
+                                    os.killpg(pid, signal.SIGKILL)
                             except ProcessLookupError:
                                 pass
 

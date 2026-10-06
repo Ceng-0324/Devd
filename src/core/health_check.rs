@@ -11,6 +11,8 @@ use crate::config::{ConfigValidationError, HealthCheck, ServiceConfig};
 
 #[derive(Debug, Error)]
 pub enum HealthCheckError {
+    #[error("Unix socket health checks are not supported on Windows; use TCP, HTTP, or script")]
+    UnsupportedSocket,
     #[error(transparent)]
     InvalidConfig(#[from] ConfigValidationError),
     #[error("failed to construct HTTP health-check client: {source}")]
@@ -91,6 +93,9 @@ pub struct HealthChecker {
 impl HealthChecker {
     pub fn new(config: &HealthCheck) -> Result<Self, HealthCheckError> {
         config.validate()?;
+        if cfg!(windows) && matches!(config, HealthCheck::Socket { .. }) {
+            return Err(HealthCheckError::UnsupportedSocket);
+        }
         let (interval, timeout, retries) = match config {
             HealthCheck::Tcp {
                 interval,
@@ -184,36 +189,24 @@ impl HealthChecker {
 
     /// Perform one bounded probe, including DNS, HTTP/TLS, or script environment
     /// loading and process execution. Cancellation closes network requests or
-    /// sends SIGKILL to the script's process group; Tokio reaps its leader.
+    /// terminates the script's process group/Job; Tokio reaps its leader.
     pub async fn probe(&self) -> ProbeResult {
         let probe = async {
             match &self.probe {
                 Probe::Script { config } => {
-                    #[cfg(unix)]
-                    {
-                        let mut process =
-                            super::process_manager::ManagedProcess::spawn_probe(config)
-                                .await
-                                .map_err(|error| ProbeFailure::Script {
-                                    message: error.to_string(),
-                                })?;
-                        let status =
-                            process.wait().await.map_err(|error| ProbeFailure::Script {
-                                message: error.to_string(),
-                            })?;
-                        if status.success() {
-                            Ok(())
-                        } else {
-                            Err(ProbeFailure::Script {
-                                message: format!("command exited with {status}"),
-                            })
-                        }
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        let _ = config;
+                    let mut process = super::process_manager::ManagedProcess::spawn_probe(config)
+                        .await
+                        .map_err(|error| ProbeFailure::Script {
+                            message: error.to_string(),
+                        })?;
+                    let status = process.wait().await.map_err(|error| ProbeFailure::Script {
+                        message: error.to_string(),
+                    })?;
+                    if status.success() {
+                        Ok(())
+                    } else {
                         Err(ProbeFailure::Script {
-                            message: "script probes are not supported on this platform".into(),
+                            message: format!("command exited with {status}"),
                         })
                     }
                 }
@@ -446,7 +439,7 @@ mod tests {
                 Err(HealthCheckError::InvalidConfig(ConfigValidationError::InvalidField { field, .. })) if field == expected));
         }
         let config = serde_yaml::from_str("type: socket\npath: /tmp/db.sock").unwrap();
-        assert!(HealthChecker::new(&config).is_ok());
+        assert_eq!(HealthChecker::new(&config).is_ok(), cfg!(unix));
     }
 
     #[test]

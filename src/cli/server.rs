@@ -9,27 +9,13 @@ use crate::{
         write_logs, LogFormatter,
     },
 };
-use anyhow::{bail, Context, Result};
-use std::{
-    os::unix::fs::{FileTypeExt, PermissionsExt},
-    path::PathBuf,
-    sync::Arc,
-    time::Duration,
-};
+use anyhow::{Context, Result};
+use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio::{
     io::AsyncReadExt,
-    net::UnixListener,
-    signal::unix::{signal, SignalKind},
     sync::{watch, Semaphore},
     task::JoinSet,
 };
-
-struct Endpoint(PathBuf);
-impl Drop for Endpoint {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.0);
-    }
-}
 
 pub(super) async fn start(
     manager: ServiceManager,
@@ -38,28 +24,14 @@ pub(super) async fn start(
     formatter: LogFormatter,
     storage_options: Option<StorageOptions>,
 ) -> Result<()> {
-    let mut interrupt = signal(SignalKind::interrupt())?;
-    let mut terminate = signal(SignalKind::terminate())?;
+    let mut signals = crate::platform::shutdown::Shutdown::new(false)?;
     // The state lock covers bind, the entire run, and socket cleanup.
     let store = Arc::new(
         StateStore::open(&options.state_path)
             .await
             .context("cannot own project state; another supervisor may already be running")?,
     );
-    match tokio::fs::symlink_metadata(&socket).await {
-        Ok(metadata) if metadata.file_type().is_socket() => tokio::fs::remove_file(&socket).await?,
-        Ok(_) => bail!("refusing to replace non-socket path {}", socket.display()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
-    }
-    let listener = UnixListener::bind(&socket).with_context(|| {
-        format!(
-            "cannot bind {}; try a shorter --state-dir path",
-            socket.display()
-        )
-    })?;
-    let _endpoint = Endpoint(socket.clone());
-    tokio::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).await?;
+    let mut listener = super::transport::Listener::bind(&socket).await?;
     let snapshots = manager.subscribe();
     let history = manager.log_history();
     let controller = manager.controller();
@@ -113,8 +85,7 @@ pub(super) async fn start(
         tokio::select! {
             biased;
             result = &mut run => break result,
-            _ = interrupt.recv() => { shutdown.send_replace(true); },
-            _ = terminate.recv() => { shutdown.send_replace(true); },
+            _ = signals.recv() => { shutdown.send_replace(true); },
             Some(result) = disk_writer.join_next() => {
                 if let Err(error) = result.context("disk log writer task failed").and_then(|r| r.context("cannot write persistent logs")) {
                     failure.get_or_insert(error);
@@ -130,7 +101,7 @@ pub(super) async fn start(
             },
             Some(_) = clients.join_next() => {},
             accepted = listener.accept(), if clients.len() < 32 && !*shutdown.borrow() => {
-                let (mut stream, _) = match accepted {
+                let mut stream = match accepted {
                     Ok(client) => client,
                     Err(error) => { failure.get_or_insert(error.into()); shutdown.send_replace(true); continue; }
                 };
