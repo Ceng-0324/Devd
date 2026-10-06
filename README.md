@@ -20,7 +20,7 @@ Broken file dependencies still need fixing. devd takes care of the services you 
 
 devd is a local development service manager written in Rust. **v0.3.0-alpha.1 is a prerelease for Linux and macOS**, built on the v0.1 MVP.
 
-The main branch is developing v0.4, with opt-in disk logs and an interactive terminal view. Install from source to use the commands below; the v0.3 release binaries do not include them.
+The main branch is developing v0.4, with opt-in disk logs, an interactive terminal view, and resource threshold alerts. Install from source to use these features; the v0.3 release binaries do not include them.
 
 This version adds CPU and memory samples to `status`, opt-in restarts after dependency recovery, named configuration profiles, configuration snapshots, dependency diagram export, and log filters.
 
@@ -232,11 +232,22 @@ Filter history or a live stream with `--level`, `--since`, and `--grep`, alone o
 
 `devd top` connects to the same running instance as `status` and `logs`. It shows service state, PID, restart count, CPU/RSS and a bounded live log tail. Use Up/Down (or j/k) to select a service, `r` to restart it, Page Up/Down to scroll logs, and End to return to the latest entries. `s` asks for confirmation before stopping the entire stack; Enter or `s` confirms, Esc or `n` cancels. `q` and Ctrl+C only close the view. It requires an interactive terminal and does not start a supervisor.
 
-**Resource samples describe the main process.** The supervisor samples about once per second; child processes launched by a shell or package manager are not added to the totals. CPU uses one fully occupied core as 100%, so multithreaded processes can exceed 100%. Memory is RSS, shown in MiB. Unavailable values display `-`; CPU needs two successful samples after startup or restart. JSON includes optional `resources` with `cpu_percent` (nullable during warmup), `memory_bytes`, and `sampled_at`. Samples are cleared on exit and are observational; `limits` remains unsupported.
+**Resource samples describe the main process.** The supervisor samples about once per second; child processes launched by a shell or package manager are not added to the totals. CPU uses one fully occupied core as 100%, so multithreaded processes can exceed 100%. Memory is RSS, shown in MiB. Unavailable values display `-`; CPU needs two successful samples after startup or restart. JSON includes optional `resources` with `cpu_percent` (nullable during warmup), `memory_bytes`, and `sampled_at`. Samples are cleared on exit.
+
+Optional `limits` raise a warning when a sampled value exceeds its threshold and an info entry when it returns within range:
+
+```yaml
+services:
+  api:
+    command: ./run-api
+    limits: {cpu: '150%', memory: 512MiB}
+```
+
+CPU must be a positive integer percentage. Memory accepts a positive integer followed by `B`, `KB`, `MB`, `GB`, `KiB`, `MiB`, or `GiB`; decimal and binary units differ. Each threshold crossing is logged once, including after a process restart. Missing samples and CPU warmup do not clear an active warning. These are sampled alerts, not enforced limits: devd does not throttle or kill services, and descendants are not included.
 
 The current scope is local process management. `init` creates a starter file; project scanning and interactive templates are planned. Hot reload remains a later module.
 
-Configuration rejects unknown fields and unsupported `limits` settings. YAML values are literal; `${VAR}` expansion is not implemented. With `backoff: exponential`, retries start at `initial-delay`, double with the cumulative restart count, and cap at `max-delay` (default 60s, must be at least `initial-delay`). Healthy probes do not reset that count. Fixed backoff ignores `max-delay`; either wait can be interrupted by stopping the service.
+Configuration rejects unknown fields and invalid `limits` settings. YAML values are literal; `${VAR}` expansion is not implemented. With `backoff: exponential`, retries start at `initial-delay`, double with the cumulative restart count, and cap at `max-delay` (default 60s, must be at least `initial-delay`). Healthy probes do not reset that count. Fixed backoff ignores `max-delay`; either wait can be interrupted by stopping the service.
 
 ## Development and validation
 

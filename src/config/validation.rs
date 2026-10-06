@@ -55,11 +55,34 @@ impl DevdConfig {
                     "command must be non-empty and contain no NUL bytes",
                 ));
             }
-            if service.limits.is_some() {
-                return Err(invalid(
-                    format!("{prefix}.limits"),
-                    "resource limits are not implemented; remove 'limits' before starting services",
-                ));
+            if let Some(limits) = &service.limits {
+                if limits.cpu.is_none() && limits.memory.is_none() {
+                    return Err(invalid(format!("{prefix}.limits"), "set cpu and/or memory"));
+                }
+                if limits.cpu.is_some()
+                    && limits
+                        .cpu
+                        .as_deref()
+                        .and_then(super::schema::parse_cpu_limit)
+                        .is_none()
+                {
+                    return Err(invalid(
+                        format!("{prefix}.limits.cpu"),
+                        "expected a positive integer percentage such as '50%'",
+                    ));
+                }
+                if limits.memory.is_some()
+                    && limits
+                        .memory
+                        .as_deref()
+                        .and_then(super::schema::parse_memory_limit)
+                        .is_none()
+                {
+                    return Err(invalid(
+                        format!("{prefix}.limits.memory"),
+                        "expected a positive size with B, KB, MB, GB, KiB, MiB, or GiB suffix",
+                    ));
+                }
             }
             if service.restart_on_dep_recovery {
                 if service.depends_on.is_empty() {
@@ -380,6 +403,54 @@ mod tests {
         assert!(
             matches!(first, ConfigValidationError::InvalidField { field, .. } if field == "services.a.command")
         );
+    }
+
+    #[test]
+    fn test_resource_limits_require_positive_bounded_thresholds() {
+        for (limits, field) in [
+            ("{}", "limits"),
+            ("{cpu: '0%'}", "limits.cpu"),
+            ("{cpu: '+5%'}", "limits.cpu"),
+            ("{cpu: 'NaN%'}", "limits.cpu"),
+            ("{cpu: '50'}", "limits.cpu"),
+            ("{cpu: '1.5%'}", "limits.cpu"),
+            ("{cpu: '4294967296%'}", "limits.cpu"),
+            ("{memory: 0MiB}", "limits.memory"),
+            ("{memory: 1TB}", "limits.memory"),
+            ("{memory: 18446744073709551615GiB}", "limits.memory"),
+        ] {
+            let error =
+                validate(&format!("  api: {{command: api, limits: {limits}}}\n")).unwrap_err();
+            assert!(
+                matches!(&error, ConfigValidationError::InvalidField { field: actual, .. } if *actual == format!("services.api.{field}")),
+                "{limits}: {error}"
+            );
+        }
+        validate("  api: {command: api, limits: {cpu: '250%', memory: 1GiB}}\n").unwrap();
+    }
+
+    #[test]
+    fn test_resource_threshold_units_preserve_decimal_and_binary_sizes() {
+        for (unit, bytes) in [
+            ("B", 1),
+            ("KB", 1_000),
+            ("MB", 1_000_000),
+            ("GB", 1_000_000_000),
+            ("KiB", 1024),
+            ("MiB", 1024 * 1024),
+            ("GiB", 1024 * 1024 * 1024),
+        ] {
+            let config = ConfigLoader::from_str(&format!("version: '1'\nservices:\n  api: {{command: sleep, limits: {{memory: 2{unit}, cpu: '200%'}}}}\n"), "test.yml").unwrap();
+            config.validate().unwrap();
+            let parsed = config.services["api"]
+                .limits
+                .as_ref()
+                .unwrap()
+                .thresholds()
+                .unwrap();
+            assert_eq!(parsed.memory_bytes, Some(2 * bytes));
+            assert_eq!(parsed.cpu_percent, Some(200));
+        }
     }
 
     #[test]

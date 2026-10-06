@@ -201,6 +201,54 @@ pub struct ResourceLimits {
     pub memory: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ResourceThresholds {
+    pub cpu_percent: Option<u32>,
+    pub memory_bytes: Option<u64>,
+}
+
+impl ResourceLimits {
+    pub(crate) fn thresholds(&self) -> Option<ResourceThresholds> {
+        let cpu_percent = match self.cpu.as_deref() {
+            Some(value) => Some(parse_cpu_limit(value)?),
+            None => None,
+        };
+        let memory_bytes = match self.memory.as_deref() {
+            Some(value) => Some(parse_memory_limit(value)?),
+            None => None,
+        };
+        (cpu_percent.is_some() || memory_bytes.is_some()).then_some(ResourceThresholds {
+            cpu_percent,
+            memory_bytes,
+        })
+    }
+}
+
+pub(super) fn parse_cpu_limit(value: &str) -> Option<u32> {
+    let digits = value.trim().strip_suffix('%')?;
+    if !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok().filter(|v| *v > 0)
+}
+
+pub(super) fn parse_memory_limit(value: &str) -> Option<u64> {
+    let value = value.trim();
+    let digits = value.find(|ch: char| !ch.is_ascii_digit())?;
+    let amount: u64 = value[..digits].parse().ok()?;
+    let multiplier: u64 = match &value[digits..] {
+        "B" => 1,
+        "KB" => 1_000,
+        "MB" => 1_000_000,
+        "GB" => 1_000_000_000,
+        "KiB" => 1 << 10,
+        "MiB" => 1 << 20,
+        "GiB" => 1 << 30,
+        _ => return None,
+    };
+    amount.checked_mul(multiplier).filter(|v| *v > 0)
+}
+
 fn default_health_interval() -> Duration {
     Duration::from_secs(10)
 }

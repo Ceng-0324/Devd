@@ -20,7 +20,7 @@ devd 是用 Rust 编写的本地开发服务管理器。**v0.3.0-alpha.1 是基�
 
 此版本增加了 `status` 的 CPU／内存采样、可选的依赖恢复联动重启，以及多环境配置、配置快照、依赖图导出和日志筛选。
 
-main 分支正在开发 v0.4，已加入可选磁盘日志和交互式终端界面。下文新增命令需要从源码安装，v0.3 发布制品尚不包含这些能力。
+main 分支正在开发 v0.4，已加入可选磁盘日志、交互式终端界面和资源阈值告警。这些新功能需要从源码安装，v0.3 发布制品尚不包含这些能力。
 
 一份 `devd.yml` 描述服务和依赖，`devd start` 在前台管理它们。你可以继续在另一个终端查状态、翻日志或重启某个服务。
 
@@ -230,11 +230,22 @@ devd logs api --stored --level error --since 1h --tail 50
 
 `devd top` 连接与 `status`、`logs` 相同的运行实例，展示服务状态、PID、重启次数、CPU／RSS 和有界的实时日志。上下方向键（或 j/k）选服务，`r` 重启选中服务，Page Up/Down 翻日志，End 回到最新记录。`s` 会先要求确认停止整个服务栈；Enter 或再次按 `s` 确认，Esc 或 `n` 取消。`q` 和 Ctrl+C 只退出界面。需要交互式终端，也不会自行启动 supervisor。
 
-**资源指标只统计服务主进程。** supervisor 大约每秒采样一次，不累加 shell 或包管理器启动的子进程。CPU 以一个核心满载为 100%，多线程进程可以超过 100%；内存为 RSS，终端以 MiB 显示。不可用的指标显示 `-`，CPU 在启动或重启后需要两次成功采样。JSON 的可选 `resources` 包含 `cpu_percent`（预热时为 `null`）、`memory_bytes` 和 `sampled_at`。进程退出后清除指标；采样只用于观察，`limits` 仍不支持。
+**资源指标只统计服务主进程。** supervisor 大约每秒采样一次，不累加 shell 或包管理器启动的子进程。CPU 以一个核心满载为 100%，多线程进程可以超过 100%；内存为 RSS，终端以 MiB 显示。不可用的指标显示 `-`，CPU 在启动或重启后需要两次成功采样。JSON 的可选 `resources` 包含 `cpu_percent`（预热时为 `null`）、`memory_bytes` 和 `sampled_at`。进程退出后清除指标。
+
+可选的 `limits` 在采样值超出阈值时记录告警，恢复到阈值内时再记录一次：
+
+```yaml
+services:
+  api:
+    command: ./run-api
+    limits: {cpu: '150%', memory: 512MiB}
+```
+
+CPU 使用正整数百分比；内存使用正整数及 `B`、`KB`、`MB`、`GB`、`KiB`、`MiB` 或 `GiB` 单位，十进制与二进制单位不同。每次跨越阈值只记录一次，进程重启后重新计数。缺失采样及 CPU 预热不会清除既有告警。这是采样告警，不会限速或杀死进程，也不包含子进程用量。
 
 当前范围是本地进程管理。`init` 可生成初始配置；项目扫描、交互式模板和热重载仍在后续模块规划里。
 
-配置会拒绝未知字段和未实现的 `limits`。YAML 值按字面使用，尚未实现 `${VAR}` 替换。`backoff: exponential` 从 `initial-delay` 开始，随累计重启次数翻倍，到 `max-delay` 封顶（默认 60s，不能小于初始延时）；健康检查成功不会重置计数。fixed 不使用 `max-delay`；两种等待均可被停止操作中断。
+配置会拒绝未知字段和无效的 `limits`。YAML 值按字面使用，尚未实现 `${VAR}` 替换。`backoff: exponential` 从 `initial-delay` 开始，随累计重启次数翻倍，到 `max-delay` 封顶（默认 60s，不能小于初始延时）；健康检查成功不会重置计数。fixed 不使用 `max-delay`；两种等待均可被停止操作中断。
 
 ## 开发与验证
 

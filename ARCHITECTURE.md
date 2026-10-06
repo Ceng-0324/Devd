@@ -26,7 +26,7 @@ v0.3 增加单文件 `profiles` 与全局 `--profile`。`config/profile.rs` 独�
 
 当前可用命令为 start、stop、restart、status、top、logs（含 --follow）、check、graph、init、snapshot，支持 TCP/HTTP/Unix Socket 健康检查和 fixed/exponential 重启延时。status 提供服务主进程 CPU／RSS 采样。top 仅连接活实例，退出界面不停止服务，停止全栈必须在界面内确认；终端恢复由 RAII 处理。下方总体蓝图仍包含未来的 Script 健康检查、配置监听等扩展，不能视为当前实现。
 
-资源采集由 `core::resource_monitor` 每秒通过阻塞线程池读取受管主 PID 的 sysinfo 指标，生命周期仍由 service actor 独占。监控 future 随 manager 驱动、退出时停止轮询；在途 OS 读取只持有局部数据，不能在退出后写回状态。采样以 PID、started_at、restart_count 核对进程代次，actor 发布健康状态时保留同代指标，退出时清除。CPU 首次采样只建立基线；不可用指标保持空值。缓存随代次淘汰，Linux 线程枚举关闭；不统计子进程、不执行资源限制。
+资源采集由 `core::resource_monitor` 每秒通过阻塞线程池读取受管主 PID 的 sysinfo 指标，生命周期仍由 service actor 独占。监控 future 随 manager 驱动、退出时停止轮询；在途 OS 读取只持有局部数据，不能在退出后写回状态。采样以 PID、started_at、restart_count 核对进程代次，actor 发布健康状态时保留同代指标，退出时清除。CPU 首次采样只建立基线；不可用指标保持空值。缓存随代次淘汰，Linux 线程枚举关闭；不统计子进程。可选 `limits` 对采样值执行跨阈值告警与恢复日志，不执行强制限制。
 
 依赖联动由 `core::dependency_recovery` 比较依赖进程代次：actor 在通过启动就绪检查的同一个快照读锁内记录直接依赖的 PID、started_at、restart_count。运行期间只在代次变化且所有依赖满足各自条件时停止旧进程组，复用自动重启的退避、预算、依赖等待和日志排空。基线随下一次就绪检查更新，不依赖 watch 保留每次中间事件；单纯健康波动不会触发。每个服务独立恢复，非全图原子操作。监听其他服务状态时保留在途健康探测 future，防止频繁快照更新取消探测。开启联动要求存在依赖且自动策略不是 never；次数耗尽沿用 Failed 与全栈清理语义。
 
@@ -696,7 +696,7 @@ pub struct FileSink { ... }
 ### 2. 进程隔离
 - 子进程继承 devd 的用户权限（不提权）
 - 不支持以不同用户运行服务（避免权限问题）
-- 提供主进程 CPU／RSS 监控；资源限制仍为后续规划，配置 `limits` 会明确报错
+- 提供主进程 CPU／RSS 监控及可选阈值告警；不提供强制资源限制
 
 ### 3. 日志脱敏（未来）
 - 配置敏感字段白名单（`DATABASE_URL`、`API_KEY`）

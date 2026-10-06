@@ -42,6 +42,7 @@ concurrent instance isolation.
 | Signal cancellation | SIGINT/SIGTERM while dependencies are pending; verify no later service starts and the process tree is cleaned |
 | Retry exhaustion | Crash all three permitted generations; require Failed status, final exit code, all failure log lines, and no remaining fixture processes |
 | Resource monitoring | Sample a busy shell's CPU and RSS through CLI text and JSON, restart it, verify fresh persisted metrics, and confirm shutdown clears samples; unit tests cover warmup, generation cache retirement, late samples, unavailable values, and health-state updates |
+| Resource alerts | Validate CPU and memory thresholds and profile replacement/clearing; check crossing, recovery, missing samples, and generation reset with synthetic samples; exercise real RSS alerts, deduplication, manual restart, and stored log queries without automatic process termination |
 | Dependency recovery | Opt-in chains after manual/automatic replacement, readiness gating, same-process health-flap exclusion, combined recoveries, shared retry budgets, stop/manual restart during backoff, completed services staying stopped, and slow health probes surviving peer updates; CLI verifies config validation, logs, and cleanup |
 
 `cli.rs` covers command options, malformed input, duplicate supervisors, configuration deletion, control protocol errors, and terminal backpressure. Lower-level lifecycle, orchestration, health, configuration, dependency, and logging suites retain their focused checks.

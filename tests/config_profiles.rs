@@ -38,6 +38,22 @@ profiles:
 "#;
 
 #[test]
+fn test_profile_limits_replace_base_thresholds_and_can_be_cleared() {
+    let yaml = "version: '1'\nservices:\n  api: {command: sleep 60, limits: {cpu: '50%', memory: 1GiB}}\nprofiles:\n  dev:\n    services:\n      api: {limits: {memory: 512MiB}}\n  free:\n    services:\n      api: {limits: null}\n";
+    let base = ConfigLoader::from_str(yaml, "devd.yml").unwrap();
+    base.validate().unwrap();
+    let dev = ConfigLoader::from_str_profile(yaml, "devd.yml", Some("dev")).unwrap();
+    dev.validate().unwrap();
+    let limits = dev.services["api"].limits.as_ref().unwrap();
+    assert!(limits.cpu.is_none());
+    assert_eq!(limits.memory.as_deref(), Some("512MiB"));
+    let free = ConfigLoader::from_str_profile(yaml, "devd.yml", Some("free")).unwrap();
+    free.validate().unwrap();
+    assert!(free.services["api"].limits.is_none());
+    assert!(base.services["api"].limits.as_ref().unwrap().cpu.is_some());
+}
+
+#[test]
 fn test_profiles_merge_maps_replace_lists_and_probes_and_add_services() {
     let base = ConfigLoader::from_str(CONFIG, "devd.yml").unwrap();
     assert_eq!(base.services.len(), 2);
@@ -157,7 +173,7 @@ async fn test_profile_validation_uses_effective_dependencies_and_context() {
         "depends-on: [worker]",
         "depends-on: [{service: db, condition: http-ready}]",
         "command: ''",
-        "limits: {cpu: '50%'}",
+        "limits: {cpu: '0%'}",
     ] {
         let yaml = format!("version: '1'\nservices:\n  db: {{command: sleep 60}}\n  api: {{command: sleep 60}}\n  worker: {{command: sleep 60, depends-on: [api]}}\nprofiles:\n  dev:\n    services:\n      api:\n        {patch}\n");
         tokio::fs::write(&path, yaml).await.unwrap();

@@ -768,12 +768,12 @@ fn test_cli_spawn_failure_and_unsupported_config() {
 fn test_cli_rejects_ignored_settings_before_creating_runtime_state() {
     for (service, message) in [
         (
-            "command: touch should-not-exist\n    limits: {memory: 1GB}",
-            "resource limits are not implemented",
+            "command: touch should-not-exist\n    limits: {memory: 0GB}",
+            "expected a positive size",
         ),
         (
             "command: touch should-not-exist\n    limits: {}",
-            "resource limits are not implemented",
+            "set cpu and/or memory",
         ),
         (
             "command: touch should-not-exist\n    restart: {max-attempt: 5}",
@@ -791,6 +791,69 @@ fn test_cli_rejects_ignored_settings_before_creating_runtime_state() {
         assert!(!project.path().join(".devd").exists());
         assert!(!project.path().join("should-not-exist").exists());
     }
+}
+
+#[test]
+fn test_cli_resource_limit_warns_without_stopping_service() {
+    let project = Project::new("services:\n  worker:\n    command: sleep 60\n    restart: {policy: never}\n    limits: {memory: 1B}\n");
+    success(project.invoke(&["check"]));
+    let mut supervisor = Supervisor(
+        project
+            .command(&["start", "--persist-logs"])
+            .stdout(Stdio::null())
+            .stderr(fs::File::create(project.path().join("stderr")).unwrap())
+            .spawn()
+            .unwrap(),
+    );
+    let initial = project.running();
+    wait(|| {
+        let output = project.invoke(&["logs", "worker", "--level", "warn"]);
+        (output.status.success()
+            && String::from_utf8_lossy(&output.stdout).contains("RSS limit exceeded"))
+        .then_some(())
+    });
+    // Wait for another sample, so deduplication is checked across monitor ticks.
+    let sampled_at = project.snapshot().unwrap().services["worker"]
+        .resources
+        .as_ref()
+        .unwrap()
+        .sampled_at;
+    let sampled = wait(|| {
+        project.snapshot().filter(|snapshot| {
+            snapshot.services["worker"]
+                .resources
+                .as_ref()
+                .is_some_and(|usage| usage.sampled_at > sampled_at)
+        })
+    });
+    let warnings = success(project.invoke(&["logs", "worker", "--level", "warn"]));
+    assert_eq!(warnings.matches("RSS limit exceeded").count(), 1);
+    assert_eq!(
+        sampled.services["worker"].pid,
+        initial.services["worker"].pid
+    );
+    assert_eq!(sampled.services["worker"].restart_count, 0);
+    success(project.invoke(&["restart", "worker"]));
+    wait(|| {
+        (success(project.invoke(&["logs", "worker", "--level", "warn"]))
+            .matches("RSS limit exceeded")
+            .count()
+            == 2)
+            .then_some(())
+    });
+    assert_eq!(project.running().services["worker"].restart_count, 1);
+    success(project.invoke(&["stop"]));
+    supervisor.finish(true);
+    let stored = success(project.invoke(&[
+        "logs",
+        "worker",
+        "--stored",
+        "--level",
+        "warn",
+        "--grep",
+        "RSS limit exceeded",
+    ]));
+    assert_eq!(stored.lines().count(), 2);
 }
 
 #[test]

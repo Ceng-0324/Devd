@@ -192,7 +192,7 @@ impl LogCollector {
         }
     }
 
-    fn record(
+    pub(crate) fn record(
         &self,
         service: &str,
         generation: u32,

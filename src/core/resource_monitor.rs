@@ -7,6 +7,11 @@ use serde::{Deserialize, Serialize};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 use tokio::sync::watch;
 
+use crate::{
+    config::ResourceThresholds,
+    logging::{LogCollector, LogLevel},
+};
+
 use super::service_manager::{RuntimeSnapshot, ServiceSnapshot};
 
 /// A service leader's RSS and CPU usage (one fully occupied core is 100%).
@@ -149,8 +154,108 @@ fn apply(snapshot: &mut RuntimeSnapshot, samples: BTreeMap<String, Sample>) -> b
     changed
 }
 
-pub(super) async fn run(snapshots: watch::Sender<RuntimeSnapshot>) -> ! {
+#[derive(Default)]
+struct Alarms(BTreeMap<String, Alarm>);
+
+struct Alarm {
+    generation: Generation,
+    cpu: bool,
+    memory: bool,
+}
+
+struct Alert {
+    service: String,
+    generation: u32,
+    level: LogLevel,
+    message: String,
+}
+
+impl Alarms {
+    fn evaluate(
+        &mut self,
+        snapshot: &RuntimeSnapshot,
+        limits: &BTreeMap<String, ResourceThresholds>,
+    ) -> Vec<Alert> {
+        self.0.retain(|name, alarm| {
+            snapshot
+                .services
+                .get(name)
+                .and_then(Generation::of)
+                .as_ref()
+                == Some(&alarm.generation)
+        });
+        let mut alerts = Vec::new();
+        for (name, thresholds) in limits {
+            let Some(state) = snapshot.services.get(name) else {
+                continue;
+            };
+            let (Some(generation), Some(usage)) = (Generation::of(state), &state.resources) else {
+                continue;
+            };
+            let alarm = self.0.entry(name.clone()).or_insert_with(|| Alarm {
+                generation: generation.clone(),
+                cpu: false,
+                memory: false,
+            });
+            if let (Some(limit), Some(value)) = (thresholds.cpu_percent, usage.cpu_percent) {
+                let exceeded = f64::from(value) > f64::from(limit);
+                if exceeded != alarm.cpu {
+                    alarm.cpu = exceeded;
+                    alerts.push(Alert {
+                        service: name.clone(),
+                        generation: state.restart_count,
+                        level: if exceeded {
+                            LogLevel::Warn
+                        } else {
+                            LogLevel::Info
+                        },
+                        message: format!(
+                            "CPU {}: {value:.1}% (limit {limit}%)",
+                            if exceeded {
+                                "limit exceeded"
+                            } else {
+                                "back within limit"
+                            }
+                        ),
+                    });
+                }
+            }
+            if let Some(limit) = thresholds.memory_bytes {
+                let exceeded = usage.memory_bytes > limit;
+                if exceeded != alarm.memory {
+                    alarm.memory = exceeded;
+                    alerts.push(Alert {
+                        service: name.clone(),
+                        generation: state.restart_count,
+                        level: if exceeded {
+                            LogLevel::Warn
+                        } else {
+                            LogLevel::Info
+                        },
+                        message: format!(
+                            "RSS {}: {} B (limit {limit} B)",
+                            if exceeded {
+                                "limit exceeded"
+                            } else {
+                                "back within limit"
+                            },
+                            usage.memory_bytes
+                        ),
+                    });
+                }
+            }
+        }
+        alerts
+    }
+}
+
+pub(super) async fn run(
+    snapshots: watch::Sender<RuntimeSnapshot>,
+    logs: LogCollector,
+    limits: BTreeMap<String, ResourceThresholds>,
+) -> ! {
     let mut sampler = Sampler::default();
+    let mut alarms = Alarms::default();
     loop {
         let snapshot = snapshots.borrow().clone();
         let result = tokio::task::spawn_blocking(move || {
@@ -162,6 +267,16 @@ pub(super) async fn run(snapshots: watch::Sender<RuntimeSnapshot>) -> ! {
             Ok((next, samples)) => {
                 sampler = next;
                 snapshots.send_if_modified(|snapshot| apply(snapshot, samples));
+                let alerts = alarms.evaluate(&snapshots.borrow(), &limits);
+                for alert in alerts {
+                    logs.record(
+                        &alert.service,
+                        alert.generation,
+                        alert.level,
+                        alert.message,
+                        false,
+                    );
+                }
             }
             Err(_) => {
                 // Observation failure must neither stop services nor preserve
@@ -206,6 +321,52 @@ mod tests {
             memory_bytes: 42_000,
             sampled_at: Utc::now(),
         }
+    }
+
+    #[test]
+    fn test_resource_alarms_deduplicate_recover_and_reset_on_restart() {
+        let limits = [(
+            "worker".into(),
+            ResourceThresholds {
+                cpu_percent: Some(100),
+                memory_bytes: Some(40_000),
+            },
+        )]
+        .into();
+        let mut state = snapshot();
+        state.services.get_mut("worker").unwrap().resources = Some(usage());
+        let mut alarms = Alarms::default();
+        let first = alarms.evaluate(&state, &limits);
+        assert_eq!(first.len(), 2);
+        assert!(first.iter().all(|alert| alert.level == LogLevel::Warn));
+        assert!(alarms.evaluate(&state, &limits).is_empty());
+        state.services.get_mut("worker").unwrap().resources = None;
+        assert!(alarms.evaluate(&state, &limits).is_empty());
+        state.services.get_mut("worker").unwrap().resources = Some(ResourceUsage {
+            cpu_percent: None,
+            ..usage()
+        });
+        assert!(alarms.evaluate(&state, &limits).is_empty());
+        let service = state.services.get_mut("worker").unwrap();
+        service.resources = Some(ResourceUsage {
+            cpu_percent: Some(100.0),
+            memory_bytes: 40_000,
+            sampled_at: Utc::now(),
+        });
+        let recovered = alarms.evaluate(&state, &limits);
+        assert_eq!(recovered.len(), 2);
+        assert!(recovered.iter().all(|alert| alert.level == LogLevel::Info));
+        let service = state.services.get_mut("worker").unwrap();
+        service.restart_count += 1;
+        service.resources = Some(usage());
+        assert_eq!(alarms.evaluate(&state, &limits).len(), 2);
+        state.services.get_mut("worker").unwrap().restart_count += 1;
+        let restarted = alarms.evaluate(&state, &limits);
+        assert_eq!(restarted.len(), 2);
+        assert!(restarted.iter().all(|alert| alert.generation == 2));
+        state.services.get_mut("worker").unwrap().pid = None;
+        assert!(alarms.evaluate(&state, &limits).is_empty());
+        assert!(alarms.0.is_empty());
     }
 
     #[test]

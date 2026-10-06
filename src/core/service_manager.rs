@@ -10,7 +10,7 @@ use tokio::{
     time::Instant,
 };
 
-use crate::config::{BackoffType, ConfigValidationError, DevdConfig};
+use crate::config::{BackoffType, ConfigValidationError, DevdConfig, ResourceThresholds};
 use crate::logging::{LogCollector, LogEntry, LogHistory, LogOptions, LogOptionsError};
 
 use super::{
@@ -134,6 +134,7 @@ pub struct ServiceManager {
     checkers: BTreeMap<String, Option<HealthChecker>>,
     snapshots: watch::Sender<RuntimeSnapshot>,
     logs: LogCollector,
+    resource_limits: BTreeMap<String, ResourceThresholds>,
     commands: mpsc::Receiver<RestartRequest>,
     controller: ServiceController,
 }
@@ -211,6 +212,18 @@ impl ServiceManager {
                 })?;
             checkers.insert(name.into(), checker);
         }
+        let resource_limits = config
+            .services
+            .iter()
+            .filter_map(|(name, service)| {
+                service.limits.as_ref().map(|limits| {
+                    (
+                        name.clone(),
+                        limits.thresholds().expect("validated resource limits"),
+                    )
+                })
+            })
+            .collect();
         let initial = RuntimeSnapshot {
             supervisor_pid: std::process::id(),
             services: graph
@@ -228,6 +241,7 @@ impl ServiceManager {
             checkers,
             snapshots,
             logs,
+            resource_limits,
             commands,
             controller: ServiceController(sender),
         })
@@ -305,7 +319,11 @@ impl ServiceManager {
         let mut starting: BTreeMap<String, oneshot::Sender<Result<ServiceSnapshot, String>>> =
             BTreeMap::new();
         let mut error = None;
-        let monitor = resource_monitor::run(self.snapshots.clone());
+        let monitor = resource_monitor::run(
+            self.snapshots.clone(),
+            self.logs.clone(),
+            self.resource_limits.clone(),
+        );
         tokio::pin!(monitor);
         while !shutdown_requested && !tasks.is_empty() {
             tokio::select! {
