@@ -80,6 +80,101 @@ fn recovery_child(directory: &Path, parent: &str, condition: DependencyCondition
     child
 }
 
+fn resource_limited(directory: &Path) -> ServiceConfig {
+    let mut child = sleeper(directory);
+    child.restart.policy = RestartPolicyType::OnFailure;
+    child.limits = Some(serde_yaml::from_str("memory: 1B\non-exceed: restart").unwrap());
+    child
+}
+
+#[tokio::test]
+async fn test_resource_restart_exhausts_shared_budget_and_cleans_dependents() {
+    let directory = tempdir().unwrap();
+    let mut root = resource_limited(directory.path());
+    root.restart.max_attempts = 1;
+    let child = recovery_child(directory.path(), "root", DependencyCondition::Started);
+    let mut observer = sleeper(directory.path());
+    observer
+        .depends_on
+        .push(dependency("root", DependencyCondition::Started));
+    let manager = ServiceManager::new(
+        config([("root", root), ("child", child), ("observer", observer)]),
+        options(&directory),
+    )
+    .unwrap();
+    let history = manager.log_history();
+    let mut run = RunningManager::start(manager);
+    let initial = run
+        .until(|s| s.services.values().all(|s| s.pid.is_some()))
+        .await;
+    let restarted = run
+        .until(|s| {
+            s.services["root"].restart_count == 1
+                && s.services["root"].pid.is_some()
+                && s.services["child"].restart_count == 1
+                && s.services["child"].pid.is_some()
+        })
+        .await;
+    assert_ne!(initial.services["root"].pid, restarted.services["root"].pid);
+    assert_eq!(
+        initial.services["observer"].pid,
+        restarted.services["observer"].pid
+    );
+    assert_eq!(restarted.services["observer"].restart_count, 0);
+    reaped(initial.services["root"].pid.unwrap()).await;
+    let result = run.finish().await;
+    assert!(matches!(
+        result,
+        Err(ServiceManagerError::FailedServices { .. })
+    ));
+    let final_state = run.snapshots.borrow().clone();
+    assert_eq!(final_state.services["root"].restart_count, 1);
+    assert!(final_state.services["root"]
+        .last_error
+        .as_ref()
+        .unwrap()
+        .contains("resource restart budget exhausted"));
+    assert!(final_state
+        .services
+        .values()
+        .all(|s| s.pid.is_none() && s.resource_restart_reason.is_none()));
+    for state in restarted.services.values() {
+        reaped(state.pid.unwrap()).await;
+    }
+    let logs = history.recent(Some("root"), 100);
+    assert!(logs.iter().any(|log| log.level == LogLevel::Warn
+        && log
+            .message
+            .contains("restarting after RSS limit exceeded for 3 consecutive samples")));
+    assert!(logs.iter().any(|log| log.level == LogLevel::Error
+        && log.message.contains("resource restart budget exhausted")));
+}
+
+#[tokio::test]
+async fn test_resource_restart_stop_and_manual_control_interrupt_backoff() {
+    for manual in [false, true] {
+        let directory = tempdir().unwrap();
+        let mut child = resource_limited(directory.path());
+        child.restart.backoff = BackoffType::Exponential;
+        child.restart.initial_delay = Duration::from_secs(60);
+        let manager = ServiceManager::new(config([("child", child)]), options(&directory)).unwrap();
+        let controller = manager.controller();
+        let mut run = RunningManager::start(manager);
+        let initial = run.until(|s| s.services["child"].pid.is_some()).await;
+        run.until(|s| s.services["child"].status == ServiceState::Restarting)
+            .await;
+        reaped(initial.services["child"].pid.unwrap()).await;
+        if manual {
+            let restarted = bounded(controller.restart("child".into())).await.unwrap();
+            assert_eq!(restarted.restart_count, 1);
+            assert!(restarted.resource_restart_reason.is_none());
+        }
+        let stopped = run.shutdown().await.unwrap();
+        assert_eq!(stopped.services["child"].restart_count, u32::from(manual));
+        assert!(stopped.services["child"].pid.is_none());
+    }
+}
+
 #[tokio::test]
 async fn test_dependency_recovery_waits_for_replacement_readiness_and_cascades_opt_in_chain() {
     let directory = tempdir().unwrap();

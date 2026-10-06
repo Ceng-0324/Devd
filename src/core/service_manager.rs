@@ -49,6 +49,9 @@ pub struct ServiceSnapshot {
     /// Latest sample of the service leader; absent before sampling or after exit.
     #[serde(default)]
     pub resources: Option<ResourceUsage>,
+    /// Pending automatic restart decision for this live generation only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_restart_reason: Option<String>,
 }
 
 impl Default for ServiceSnapshot {
@@ -63,6 +66,7 @@ impl Default for ServiceSnapshot {
             last_exit_signal: None,
             last_error: None,
             resources: None,
+            resource_restart_reason: None,
         }
     }
 }
@@ -490,10 +494,46 @@ fn collect_task(
                     service.status = ServiceState::Failed;
                     service.pid = None;
                     service.resources = None;
+                    service.resource_restart_reason = None;
                     service.last_error = Some(error.to_string());
                 });
             }
             Some(ServiceManagerError::Task(error))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_failed_actor_clears_pending_resource_restart() {
+        let (snapshots, _) = watch::channel(RuntimeSnapshot {
+            supervisor_pid: std::process::id(),
+            services: [(
+                "worker".into(),
+                ServiceSnapshot {
+                    pid: Some(123),
+                    resource_restart_reason: Some("RSS limit exceeded".into()),
+                    ..Default::default()
+                },
+            )]
+            .into(),
+        });
+        let mut tasks = JoinSet::new();
+        let task = tasks.spawn(std::future::pending::<()>());
+        let mut names = [(task.id(), "worker".into())].into();
+        task.abort();
+        assert!(collect_task(
+            tasks.join_next_with_id().await.unwrap(),
+            &mut names,
+            &snapshots
+        )
+        .is_some());
+        let snapshot = snapshots.borrow();
+        let state = &snapshot.services["worker"];
+        assert_eq!(state.status, ServiceState::Failed);
+        assert!(state.pid.is_none() && state.resource_restart_reason.is_none());
     }
 }

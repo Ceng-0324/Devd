@@ -230,6 +230,32 @@ services:
     }
 
     #[test]
+    fn test_resource_restart_permission_is_explicit_and_strict() {
+        use crate::config::ResourceLimitAction;
+        for (extra, expected) in [
+            ("", ResourceLimitAction::Warn),
+            (", on-exceed: warn", ResourceLimitAction::Warn),
+            (", on-exceed: restart", ResourceLimitAction::Restart),
+            (", on_exceed: restart", ResourceLimitAction::Restart),
+        ] {
+            let config = ConfigLoader::from_str(&format!("version: '1'\nservices:\n  api: {{command: sleep, limits: {{memory: 512MiB{extra}}}}}"), "test.yml").unwrap();
+            assert_eq!(
+                config.services["api"].limits.as_ref().unwrap().on_exceed,
+                expected
+            );
+        }
+        for action in [
+            "true",
+            "null",
+            "kill",
+            "Restart",
+            "restart, on_exceed: warn",
+        ] {
+            assert!(ConfigLoader::from_str(&format!("version: '1'\nservices:\n  api: {{command: sleep, limits: {{memory: 512MiB, on-exceed: {action}}}}}"), "test.yml").is_err(), "{action}");
+        }
+    }
+
+    #[test]
     fn test_config_loader_rejects_unknown_fields_at_every_level() {
         for contents in [
             "version: '1'\nservices: {}\nprofile: {}",

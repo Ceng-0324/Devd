@@ -8,11 +8,13 @@ use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
 use tokio::sync::watch;
 
 use crate::{
-    config::ResourceThresholds,
+    config::{ResourceLimitAction, ResourceThresholds},
     logging::{LogCollector, LogLevel},
 };
 
-use super::service_manager::{RuntimeSnapshot, ServiceSnapshot};
+use super::service_manager::{RuntimeSnapshot, ServiceSnapshot, ServiceState};
+
+const RESTART_SAMPLES: u8 = 3;
 
 /// A service leader's RSS and CPU usage (one fully occupied core is 100%).
 /// CPU is unavailable until two successful samples of the same process exist.
@@ -161,6 +163,9 @@ struct Alarm {
     generation: Generation,
     cpu: bool,
     memory: bool,
+    cpu_samples: u8,
+    memory_samples: u8,
+    last_sample: Option<DateTime<Utc>>,
 }
 
 struct Alert {
@@ -173,7 +178,7 @@ struct Alert {
 impl Alarms {
     fn evaluate(
         &mut self,
-        snapshot: &RuntimeSnapshot,
+        snapshot: &mut RuntimeSnapshot,
         limits: &BTreeMap<String, ResourceThresholds>,
     ) -> Vec<Alert> {
         self.0.retain(|name, alarm| {
@@ -186,19 +191,44 @@ impl Alarms {
         });
         let mut alerts = Vec::new();
         for (name, thresholds) in limits {
-            let Some(state) = snapshot.services.get(name) else {
+            let Some(state) = snapshot.services.get_mut(name) else {
                 continue;
             };
-            let (Some(generation), Some(usage)) = (Generation::of(state), &state.resources) else {
+            let Some(generation) = Generation::of(state) else {
                 continue;
             };
+            if !matches!(
+                state.status,
+                ServiceState::Running | ServiceState::Healthy | ServiceState::Unhealthy
+            ) {
+                continue;
+            }
             let alarm = self.0.entry(name.clone()).or_insert_with(|| Alarm {
-                generation: generation.clone(),
+                generation,
                 cpu: false,
                 memory: false,
+                cpu_samples: 0,
+                memory_samples: 0,
+                last_sample: None,
             });
+            let Some(usage) = &state.resources else {
+                alarm.cpu_samples = 0;
+                alarm.memory_samples = 0;
+                continue;
+            };
+            // A health/peer update or rejected late sample cannot advance a
+            // streak. Decisions are latched for this generation until exit.
+            if alarm.last_sample == Some(usage.sampled_at) {
+                continue;
+            }
+            alarm.last_sample = Some(usage.sampled_at);
             if let (Some(limit), Some(value)) = (thresholds.cpu_percent, usage.cpu_percent) {
                 let exceeded = f64::from(value) > f64::from(limit);
+                alarm.cpu_samples = if exceeded {
+                    alarm.cpu_samples.saturating_add(1).min(RESTART_SAMPLES)
+                } else {
+                    0
+                };
                 if exceeded != alarm.cpu {
                     alarm.cpu = exceeded;
                     alerts.push(Alert {
@@ -219,9 +249,16 @@ impl Alarms {
                         ),
                     });
                 }
+            } else {
+                alarm.cpu_samples = 0;
             }
             if let Some(limit) = thresholds.memory_bytes {
                 let exceeded = usage.memory_bytes > limit;
+                alarm.memory_samples = if exceeded {
+                    alarm.memory_samples.saturating_add(1).min(RESTART_SAMPLES)
+                } else {
+                    0
+                };
                 if exceeded != alarm.memory {
                     alarm.memory = exceeded;
                     alerts.push(Alert {
@@ -243,6 +280,18 @@ impl Alarms {
                         ),
                     });
                 }
+            }
+            if thresholds.on_exceed == ResourceLimitAction::Restart
+                && state.resource_restart_reason.is_none()
+            {
+                let reason = if alarm.cpu_samples == RESTART_SAMPLES {
+                    Some(format!("CPU limit exceeded for {RESTART_SAMPLES} consecutive samples: {:.1}% (limit {}%)", usage.cpu_percent.unwrap(), thresholds.cpu_percent.unwrap()))
+                } else if alarm.memory_samples == RESTART_SAMPLES {
+                    Some(format!("RSS limit exceeded for {RESTART_SAMPLES} consecutive samples: {} B (limit {} B)", usage.memory_bytes, thresholds.memory_bytes.unwrap()))
+                } else {
+                    None
+                };
+                state.resource_restart_reason = reason;
             }
         }
         alerts
@@ -266,8 +315,11 @@ pub(super) async fn run(
         match result {
             Ok((next, samples)) => {
                 sampler = next;
-                snapshots.send_if_modified(|snapshot| apply(snapshot, samples));
-                let alerts = alarms.evaluate(&snapshots.borrow(), &limits);
+                let mut alerts = Vec::new();
+                snapshots.send_modify(|snapshot| {
+                    apply(snapshot, samples);
+                    alerts = alarms.evaluate(snapshot, &limits);
+                });
                 for alert in alerts {
                     logs.record(
                         &alert.service,
@@ -287,6 +339,8 @@ pub(super) async fn run(
                     for state in snapshot.services.values_mut() {
                         changed |= state.resources.take().is_some();
                     }
+                    // Missing observations break every consecutive streak.
+                    alarms.evaluate(snapshot, &limits);
                     changed
                 });
             }
@@ -306,6 +360,7 @@ mod tests {
             services: [(
                 "worker".into(),
                 ServiceSnapshot {
+                    status: ServiceState::Running,
                     pid: Some(std::process::id()),
                     started_at: Some(Utc::now()),
                     ..Default::default()
@@ -330,43 +385,191 @@ mod tests {
             ResourceThresholds {
                 cpu_percent: Some(100),
                 memory_bytes: Some(40_000),
+                on_exceed: ResourceLimitAction::Warn,
             },
         )]
         .into();
         let mut state = snapshot();
         state.services.get_mut("worker").unwrap().resources = Some(usage());
         let mut alarms = Alarms::default();
-        let first = alarms.evaluate(&state, &limits);
+        let first = alarms.evaluate(&mut state, &limits);
         assert_eq!(first.len(), 2);
         assert!(first.iter().all(|alert| alert.level == LogLevel::Warn));
-        assert!(alarms.evaluate(&state, &limits).is_empty());
+        assert!(alarms.evaluate(&mut state, &limits).is_empty());
         state.services.get_mut("worker").unwrap().resources = None;
-        assert!(alarms.evaluate(&state, &limits).is_empty());
+        assert!(alarms.evaluate(&mut state, &limits).is_empty());
         state.services.get_mut("worker").unwrap().resources = Some(ResourceUsage {
             cpu_percent: None,
             ..usage()
         });
-        assert!(alarms.evaluate(&state, &limits).is_empty());
+        assert!(alarms.evaluate(&mut state, &limits).is_empty());
         let service = state.services.get_mut("worker").unwrap();
         service.resources = Some(ResourceUsage {
             cpu_percent: Some(100.0),
             memory_bytes: 40_000,
             sampled_at: Utc::now(),
         });
-        let recovered = alarms.evaluate(&state, &limits);
+        let recovered = alarms.evaluate(&mut state, &limits);
         assert_eq!(recovered.len(), 2);
         assert!(recovered.iter().all(|alert| alert.level == LogLevel::Info));
         let service = state.services.get_mut("worker").unwrap();
         service.restart_count += 1;
         service.resources = Some(usage());
-        assert_eq!(alarms.evaluate(&state, &limits).len(), 2);
+        assert_eq!(alarms.evaluate(&mut state, &limits).len(), 2);
         state.services.get_mut("worker").unwrap().restart_count += 1;
-        let restarted = alarms.evaluate(&state, &limits);
+        let restarted = alarms.evaluate(&mut state, &limits);
         assert_eq!(restarted.len(), 2);
         assert!(restarted.iter().all(|alert| alert.generation == 2));
         state.services.get_mut("worker").unwrap().pid = None;
-        assert!(alarms.evaluate(&state, &limits).is_empty());
+        assert!(alarms.evaluate(&mut state, &limits).is_empty());
         assert!(alarms.0.is_empty());
+    }
+
+    fn observe(
+        alarms: &mut Alarms,
+        state: &mut RuntimeSnapshot,
+        limits: &BTreeMap<String, ResourceThresholds>,
+        tick: i64,
+        values: Option<(Option<f32>, u64)>,
+    ) {
+        let service = state.services.get_mut("worker").unwrap();
+        service.resources = values.map(|(cpu_percent, memory_bytes)| ResourceUsage {
+            cpu_percent,
+            memory_bytes,
+            sampled_at: service.started_at.unwrap() + chrono::Duration::seconds(tick),
+        });
+        alarms.evaluate(state, limits);
+    }
+
+    #[test]
+    fn test_resource_restart_requires_three_distinct_samples_and_permission() {
+        for action in [ResourceLimitAction::Warn, ResourceLimitAction::Restart] {
+            let limits = [(
+                "worker".into(),
+                ResourceThresholds {
+                    cpu_percent: Some(100),
+                    memory_bytes: Some(100),
+                    on_exceed: action,
+                },
+            )]
+            .into();
+            for cpu_trigger in [false, true] {
+                let mut state = snapshot();
+                let mut alarms = Alarms::default();
+                let values = if cpu_trigger {
+                    Some((Some(101.0), 50))
+                } else {
+                    Some((None, 101))
+                };
+                for tick in 1..=2 {
+                    observe(&mut alarms, &mut state, &limits, tick, values);
+                    // Duplicate snapshots cannot count as fresh samples.
+                    for _ in 0..5 {
+                        alarms.evaluate(&mut state, &limits);
+                    }
+                    assert!(state.services["worker"].resource_restart_reason.is_none());
+                }
+                observe(&mut alarms, &mut state, &limits, 3, values);
+                assert_eq!(
+                    state.services["worker"].resource_restart_reason.is_some(),
+                    action == ResourceLimitAction::Restart
+                );
+                if action == ResourceLimitAction::Restart {
+                    let reason = state.services["worker"]
+                        .resource_restart_reason
+                        .clone()
+                        .unwrap();
+                    assert!(reason.starts_with(if cpu_trigger { "CPU" } else { "RSS" }));
+                    // Once decided, a healthy sample cannot erase the actor's request.
+                    observe(&mut alarms, &mut state, &limits, 4, Some((Some(0.0), 50)));
+                    assert_eq!(
+                        state.services["worker"].resource_restart_reason.as_deref(),
+                        Some(reason.as_str())
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_resource_restart_streaks_reset_on_missing_normal_and_new_generation() {
+        let limits = [(
+            "worker".into(),
+            ResourceThresholds {
+                cpu_percent: Some(100),
+                memory_bytes: Some(100),
+                on_exceed: ResourceLimitAction::Restart,
+            },
+        )]
+        .into();
+        for interruption in [None, Some((None, 100)), Some((Some(100.0), 100))] {
+            let mut state = snapshot();
+            let mut alarms = Alarms::default();
+            let high = Some((Some(150.0), 150));
+            observe(&mut alarms, &mut state, &limits, 1, high);
+            observe(&mut alarms, &mut state, &limits, 2, high);
+            observe(&mut alarms, &mut state, &limits, 3, interruption);
+            observe(&mut alarms, &mut state, &limits, 4, high);
+            observe(&mut alarms, &mut state, &limits, 5, high);
+            assert!(state.services["worker"].resource_restart_reason.is_none());
+            state.services.get_mut("worker").unwrap().restart_count += 1;
+            observe(&mut alarms, &mut state, &limits, 6, high);
+            observe(&mut alarms, &mut state, &limits, 7, high);
+            assert!(state.services["worker"].resource_restart_reason.is_none());
+            observe(&mut alarms, &mut state, &limits, 8, high);
+            assert!(state.services["worker"].resource_restart_reason.is_some());
+        }
+        // Alternating CPU/RSS spikes never add up to a sustained violation.
+        let mut state = snapshot();
+        let mut alarms = Alarms::default();
+        for tick in 1..=10 {
+            let values = if tick % 2 == 0 {
+                (Some(150.0), 50)
+            } else {
+                (Some(50.0), 150)
+            };
+            observe(&mut alarms, &mut state, &limits, tick, Some(values));
+            assert!(state.services["worker"].resource_restart_reason.is_none());
+        }
+    }
+
+    #[test]
+    fn test_resource_restart_rejects_late_samples_and_stopping_services() {
+        let limits = [(
+            "worker".into(),
+            ResourceThresholds {
+                cpu_percent: None,
+                memory_bytes: Some(100),
+                on_exceed: ResourceLimitAction::Restart,
+            },
+        )]
+        .into();
+        let mut state = snapshot();
+        let mut alarms = Alarms::default();
+        observe(&mut alarms, &mut state, &limits, 1, Some((None, 200)));
+        observe(&mut alarms, &mut state, &limits, 2, Some((None, 200)));
+        let old_generation = Generation::of(&state.services["worker"]).unwrap();
+        let service = state.services.get_mut("worker").unwrap();
+        service.restart_count += 1;
+        service.resources = None;
+        assert!(!apply(
+            &mut state,
+            [(
+                "worker".into(),
+                Sample {
+                    generation: old_generation,
+                    resources: Some(usage()),
+                }
+            )]
+            .into()
+        ));
+        alarms.evaluate(&mut state, &limits);
+        assert!(state.services["worker"].resource_restart_reason.is_none());
+        state.services.get_mut("worker").unwrap().status = ServiceState::Stopping;
+        for tick in 3..=6 {
+            observe(&mut alarms, &mut state, &limits, tick, Some((None, 200)));
+            assert!(state.services["worker"].resource_restart_reason.is_none());
+        }
     }
 
     #[test]

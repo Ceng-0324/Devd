@@ -39,7 +39,7 @@ profiles:
 
 #[test]
 fn test_profile_limits_replace_base_thresholds_and_can_be_cleared() {
-    let yaml = "version: '1'\nservices:\n  api: {command: sleep 60, limits: {cpu: '50%', memory: 1GiB}}\nprofiles:\n  dev:\n    services:\n      api: {limits: {memory: 512MiB}}\n  free:\n    services:\n      api: {limits: null}\n";
+    let yaml = "version: '1'\nservices:\n  api: {command: sleep 60, limits: {cpu: '50%', memory: 1GiB, on-exceed: restart}}\nprofiles:\n  dev:\n    services:\n      api: {limits: {memory: 512MiB}}\n  free:\n    services:\n      api: {limits: null}\n";
     let base = ConfigLoader::from_str(yaml, "devd.yml").unwrap();
     base.validate().unwrap();
     let dev = ConfigLoader::from_str_profile(yaml, "devd.yml", Some("dev")).unwrap();
@@ -47,6 +47,11 @@ fn test_profile_limits_replace_base_thresholds_and_can_be_cleared() {
     let limits = dev.services["api"].limits.as_ref().unwrap();
     assert!(limits.cpu.is_none());
     assert_eq!(limits.memory.as_deref(), Some("512MiB"));
+    assert_eq!(limits.on_exceed, devd::config::ResourceLimitAction::Warn);
+    assert_eq!(
+        base.services["api"].limits.as_ref().unwrap().on_exceed,
+        devd::config::ResourceLimitAction::Restart
+    );
     let free = ConfigLoader::from_str_profile(yaml, "devd.yml", Some("free")).unwrap();
     free.validate().unwrap();
     assert!(free.services["api"].limits.is_none());

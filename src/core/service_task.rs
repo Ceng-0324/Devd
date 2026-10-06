@@ -5,7 +5,9 @@ use std::{
 use chrono::Utc;
 use tokio::{sync::watch, task::JoinSet};
 
-use crate::config::{BackoffType, RestartPolicy, RestartPolicyType, ServiceConfig};
+use crate::config::{
+    BackoffType, ResourceLimitAction, RestartPolicy, RestartPolicyType, ServiceConfig,
+};
 use crate::logging::{LogCollector, LogLevel};
 
 use super::{
@@ -38,6 +40,7 @@ enum GenerationEnd {
     Exit(ExitStatus),
     HealthFailure,
     DependencyRecovery(Vec<String>),
+    ResourceLimit(String),
     Error(String),
     Shutdown,
 }
@@ -113,6 +116,29 @@ impl ServiceTask {
             let mut readers = self.drain_output(&mut process);
             self.transition(ServiceState::Running);
             let outcome = self.monitor(&mut process, dependencies).await;
+            if let GenerationEnd::ResourceLimit(ref reason) = outcome {
+                let exhausted = self.state.restart_count >= self.config.restart.max_attempts;
+                let message = if exhausted {
+                    format!(
+                        "resource restart budget exhausted (max-attempts: {}); {reason}",
+                        self.config.restart.max_attempts
+                    )
+                } else {
+                    format!("restarting after {reason}")
+                };
+                self.logs.record(
+                    &self.name,
+                    self.state.restart_count,
+                    if exhausted {
+                        LogLevel::Error
+                    } else {
+                        LogLevel::Warn
+                    },
+                    message.clone(),
+                    false,
+                );
+                self.state.last_error = Some(message);
+            }
             if let GenerationEnd::DependencyRecovery(ref names) = outcome {
                 let reason = format!(
                     "dependencies recovered in new process generations: {}",
@@ -151,7 +177,9 @@ impl ServiceTask {
                     }
                     !status.success()
                 }
-                GenerationEnd::HealthFailure | GenerationEnd::DependencyRecovery(_) => {
+                GenerationEnd::HealthFailure
+                | GenerationEnd::DependencyRecovery(_)
+                | GenerationEnd::ResourceLimit(_) => {
                     self.transition(ServiceState::Stopping);
                     match process.stop(self.options.grace_period).await {
                         Ok(status) => self.record_exit(status),
@@ -192,8 +220,10 @@ impl ServiceTask {
                 && next.restart_count == previous.restart_count
             {
                 next.resources = previous.resources.clone();
+                next.resource_restart_reason = previous.resource_restart_reason.clone();
             } else {
                 next.resources = None;
+                next.resource_restart_reason = None;
             }
             if *previous == next {
                 false
@@ -288,6 +318,11 @@ impl ServiceTask {
     ) -> GenerationEnd {
         let mut health = self.checker.clone().map(HealthMonitor::new);
         let mut updates = self.snapshots.subscribe();
+        let resource_restarts = self
+            .config
+            .limits
+            .as_ref()
+            .is_some_and(|limits| limits.on_exceed == ResourceLimitAction::Restart);
         loop {
             // A resource/peer update is not cancellation of this service's
             // probe. Keep the in-flight check alive across dependency wakes.
@@ -302,7 +337,17 @@ impl ServiceTask {
                 if !self.running() {
                     return GenerationEnd::Shutdown;
                 }
-                let recovered = dependencies.recovered(&updates.borrow_and_update());
+                let (recovered, resource_reason) = {
+                    let snapshot = updates.borrow_and_update();
+                    let current = &snapshot.services[&self.name];
+                    let reason = (resource_restarts
+                        && current.pid == self.state.pid
+                        && current.started_at == self.state.started_at
+                        && current.restart_count == self.state.restart_count)
+                        .then(|| current.resource_restart_reason.clone())
+                        .flatten();
+                    (dependencies.recovered(&snapshot), reason)
+                };
                 tokio::select! {
                     biased;
                     _ = self.control.changed() => return GenerationEnd::Shutdown,
@@ -313,8 +358,11 @@ impl ServiceTask {
                     _ = std::future::ready(()), if !recovered.is_empty() => {
                         return GenerationEnd::DependencyRecovery(recovered);
                     },
+                    _ = std::future::ready(()), if resource_reason.is_some() => {
+                        return GenerationEnd::ResourceLimit(resource_reason.unwrap());
+                    },
                     observation = &mut probe => break observation,
-                    _ = updates.changed(), if dependencies.enabled() => {},
+                    _ = updates.changed(), if dependencies.enabled() || resource_restarts => {},
                 }
             };
             self.state.consecutive_failures = observation.consecutive_failures;
@@ -461,12 +509,24 @@ mod tests {
             memory_bytes: 100_000,
             sampled_at: Utc::now(),
         };
-        snapshots
-            .send_modify(|s| s.services.get_mut("child").unwrap().resources = Some(usage.clone()));
+        snapshots.send_modify(|s| {
+            let service = s.services.get_mut("child").unwrap();
+            service.resources = Some(usage.clone());
+            service.resource_restart_reason = Some("RSS limit exceeded".into());
+        });
         task.transition(ServiceState::Healthy);
         assert_eq!(snapshots.borrow().services["child"].resources, Some(usage));
+        assert_eq!(
+            snapshots.borrow().services["child"]
+                .resource_restart_reason
+                .as_deref(),
+            Some("RSS limit exceeded")
+        );
         task.fail("process observation failed".into());
         assert!(snapshots.borrow().services["child"].resources.is_none());
+        assert!(snapshots.borrow().services["child"]
+            .resource_restart_reason
+            .is_none());
         assert!(snapshots.borrow().services["child"].pid.is_none());
     }
 

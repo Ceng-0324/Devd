@@ -243,7 +243,25 @@ services:
     limits: {cpu: '150%', memory: 512MiB}
 ```
 
-CPU must be a positive integer percentage. Memory accepts a positive integer followed by `B`, `KB`, `MB`, `GB`, `KiB`, `MiB`, or `GiB`; decimal and binary units differ. Each threshold crossing is logged once, including after a process restart. Missing samples and CPU warmup do not clear an active warning. These are sampled alerts, not enforced limits: devd does not throttle or kill services, and descendants are not included.
+CPU must be a positive integer percentage. Memory accepts a positive integer followed by `B`, `KB`, `MB`, `GB`, `KiB`, `MiB`, or `GiB`; decimal and binary units differ. Each threshold crossing is logged once, including after a process restart. Missing samples and CPU warmup do not clear an active warning. Descendants are not included, and these thresholds do not enforce CPU or memory caps.
+
+**Resource restarts require explicit permission per service.** Omitting `limits.on-exceed` defaults to `warn` and leaves the process running. To enable automatic recovery:
+
+```yaml
+services:
+  api:
+    command: ./run-api
+    limits:
+      memory: 512MiB
+      on-exceed: restart
+    restart:
+      policy: on-failure
+      backoff: exponential
+      initial-delay: 1s
+      max-attempts: 3
+```
+
+The same metric must exceed its threshold in 3 consecutive valid samples (roughly one sample per second). A value within range or a missing value resets that metric's count; CPU warmup resets only CPU's count. The decision is retained until that process generation ends. devd stops the process group, drains logs, applies the existing backoff, and rechecks dependencies before starting again. Resource, crash, health, and dependency recovery restarts share the cumulative restart budget; exhaustion fails the service and shuts down the stack. Stop interrupts backoff, and manual restart can supersede it. The reason appears in logs and failure diagnostics. `on-exceed: restart` conflicts with `restart.policy: never` and is rejected before startup. Profiles replace the entire `limits` block, so a replacement that omits `on-exceed` returns to `warn`; `limits: null` disables thresholds. Configuration changes take effect on the next supervisor start, without root privileges or an interactive permission prompt.
 
 The current scope is local process management. `init` creates a starter file; project scanning and interactive templates are planned. Hot reload remains a later module.
 

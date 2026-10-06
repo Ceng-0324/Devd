@@ -241,7 +241,25 @@ services:
     limits: {cpu: '150%', memory: 512MiB}
 ```
 
-CPU 使用正整数百分比；内存使用正整数及 `B`、`KB`、`MB`、`GB`、`KiB`、`MiB` 或 `GiB` 单位，十进制与二进制单位不同。每次跨越阈值只记录一次，进程重启后重新计数。缺失采样及 CPU 预热不会清除既有告警。这是采样告警，不会限速或杀死进程，也不包含子进程用量。
+CPU 使用正整数百分比；内存使用正整数及 `B`、`KB`、`MB`、`GB`、`KiB`、`MiB` 或 `GiB` 单位，十进制与二进制单位不同。每次跨越阈值只记录一次，进程重启后重新计数。缺失采样及 CPU 预热不会清除既有告警。不包含子进程用量，也不提供 CPU 或内存硬限额。
+
+**超限重启需要按服务显式授权。** 省略 `limits.on-exceed` 默认为 `warn`，服务继续运行。需要自动恢复时才开启：
+
+```yaml
+services:
+  api:
+    command: ./run-api
+    limits:
+      memory: 512MiB
+      on-exceed: restart
+    restart:
+      policy: on-failure
+      backoff: exponential
+      initial-delay: 1s
+      max-attempts: 3
+```
+
+同一指标连续 3 次有效采样超限才触发，大约每秒采样一次。恢复到阈值内或缺样会重置该指标的计数；CPU 预热只重置 CPU 计数。触发决定保留到当前进程代次结束。devd 停止进程组、排空日志，沿用现有退避并重新检查依赖后再启动。超限、崩溃、健康检查和依赖恢复重启共用累计预算；耗尽后服务失败并清理全栈。停止可以打断退避，手动重启可以接管等待，动作原因会写入日志和失败诊断。`on-exceed: restart` 与 `restart.policy: never` 冲突，启动前直接报错。profile 整体替换 `limits`，替换时省略 `on-exceed` 会回到 `warn`，`limits: null` 清除阈值。配置修改在下次启动 supervisor 时生效，不需要 root 权限或运行中弹窗确认。
 
 当前范围是本地进程管理。`init` 可生成初始配置；项目扫描、交互式模板和热重载仍在后续模块规划里。
 

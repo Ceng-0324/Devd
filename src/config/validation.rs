@@ -56,6 +56,14 @@ impl DevdConfig {
                 ));
             }
             if let Some(limits) = &service.limits {
+                if limits.on_exceed == super::ResourceLimitAction::Restart
+                    && service.restart.policy == RestartPolicyType::Never
+                {
+                    return Err(invalid(
+                        format!("{prefix}.limits.on-exceed"),
+                        "restart requires an automatic restart policy (on-failure or always), not never",
+                    ));
+                }
                 if limits.cpu.is_none() && limits.memory.is_none() {
                     return Err(invalid(format!("{prefix}.limits"), "set cpu and/or memory"));
                 }
@@ -427,6 +435,19 @@ mod tests {
             );
         }
         validate("  api: {command: api, limits: {cpu: '250%', memory: 1GiB}}\n").unwrap();
+    }
+
+    #[test]
+    fn test_resource_restart_permission_rejects_never_policy() {
+        let error = validate("  api: {command: sleep, restart: {policy: never}, limits: {memory: 1MiB, on-exceed: restart}}\n").unwrap_err();
+        assert!(
+            matches!(error, ConfigValidationError::InvalidField { field, .. } if field == "services.api.limits.on-exceed")
+        );
+        for policy in ["on-failure", "always"] {
+            validate(&format!("  api: {{command: sleep, restart: {{policy: {policy}}}, limits: {{cpu: '50%', on-exceed: restart}}}}\n")).unwrap();
+        }
+        validate("  api: {command: sleep, restart: {policy: never}, limits: {memory: 1MiB}}\n")
+            .unwrap();
     }
 
     #[test]

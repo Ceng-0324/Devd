@@ -768,6 +768,10 @@ fn test_cli_spawn_failure_and_unsupported_config() {
 fn test_cli_rejects_ignored_settings_before_creating_runtime_state() {
     for (service, message) in [
         (
+            "command: touch should-not-exist\n    restart: {policy: never}\n    limits: {memory: 1MiB, on-exceed: restart}",
+            "limits.on-exceed: restart requires an automatic restart policy",
+        ),
+        (
             "command: touch should-not-exist\n    limits: {memory: 0GB}",
             "expected a positive size",
         ),
@@ -795,7 +799,7 @@ fn test_cli_rejects_ignored_settings_before_creating_runtime_state() {
 
 #[test]
 fn test_cli_resource_limit_warns_without_stopping_service() {
-    let project = Project::new("services:\n  worker:\n    command: sleep 60\n    restart: {policy: never}\n    limits: {memory: 1B}\n");
+    let project = Project::new("services:\n  worker:\n    command: sleep 60\n    restart: {policy: on-failure}\n    limits: {memory: 1B}\n");
     success(project.invoke(&["check"]));
     let mut supervisor = Supervisor(
         project
@@ -823,7 +827,7 @@ fn test_cli_resource_limit_warns_without_stopping_service() {
             snapshot.services["worker"]
                 .resources
                 .as_ref()
-                .is_some_and(|usage| usage.sampled_at > sampled_at)
+                .is_some_and(|usage| usage.sampled_at >= sampled_at + chrono::Duration::seconds(3))
         })
     });
     let warnings = success(project.invoke(&["logs", "worker", "--level", "warn"]));
@@ -854,6 +858,45 @@ fn test_cli_resource_limit_warns_without_stopping_service() {
         "RSS limit exceeded",
     ]));
     assert_eq!(stored.lines().count(), 2);
+}
+
+#[test]
+fn test_cli_resource_restart_shares_crash_budget_and_persists_reason() {
+    let project = Project::new("services:\n  worker:\n    command: sh -c 'if [ ! -e crashed ]; then touch crashed; exit 1; fi; exec sleep 60'\n    restart: {policy: on-failure, initial-delay: 10ms, max-attempts: 1}\n    limits: {memory: 1B, on-exceed: restart}\n");
+    success(project.invoke(&["check"]));
+    let mut supervisor = Supervisor(
+        project
+            .command(&["start", "--persist-logs"])
+            .stdout(Stdio::null())
+            .stderr(fs::File::create(project.path().join("stderr")).unwrap())
+            .spawn()
+            .unwrap(),
+    );
+    wait(|| {
+        project.snapshot().filter(|s| {
+            s.services["worker"].restart_count == 1 && s.services["worker"].pid.is_some()
+        })
+    });
+    supervisor.finish(false);
+    let saved: devd::core::service_manager::RuntimeSnapshot = serde_json::from_slice(
+        &fs::read(project.path().join(".devd/devd.yml/services.json")).unwrap(),
+    )
+    .unwrap();
+    let service = &saved.services["worker"];
+    assert_eq!(
+        service.status,
+        devd::core::service_manager::ServiceState::Failed
+    );
+    assert_eq!(service.restart_count, 1);
+    assert!(service.pid.is_none() && service.resource_restart_reason.is_none());
+    assert!(service
+        .last_error
+        .as_ref()
+        .unwrap()
+        .contains("resource restart budget exhausted"));
+    let stored = success(project.invoke(&["logs", "worker", "--stored", "--level", "error"]));
+    assert!(stored.contains("resource restart budget exhausted"));
+    assert!(stored.contains("RSS limit exceeded for 3 consecutive samples"));
 }
 
 #[test]

@@ -199,12 +199,24 @@ pub struct ResourceLimits {
     pub cpu: Option<String>,
     #[serde(default)]
     pub memory: Option<String>,
+    /// Automatic intervention requires explicit per-service authorization.
+    #[serde(default, rename = "on-exceed", alias = "on_exceed")]
+    pub on_exceed: ResourceLimitAction,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ResourceLimitAction {
+    #[default]
+    Warn,
+    Restart,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ResourceThresholds {
     pub cpu_percent: Option<u32>,
     pub memory_bytes: Option<u64>,
+    pub on_exceed: ResourceLimitAction,
 }
 
 impl ResourceLimits {
@@ -220,6 +232,7 @@ impl ResourceLimits {
         (cpu_percent.is_some() || memory_bytes.is_some()).then_some(ResourceThresholds {
             cpu_percent,
             memory_bytes,
+            on_exceed: self.on_exceed,
         })
     }
 }
