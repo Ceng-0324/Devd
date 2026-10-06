@@ -20,7 +20,7 @@ Broken file dependencies still need fixing. devd takes care of the services you 
 
 devd is a local development service manager written in Rust. **v0.2.0-alpha.1 is a prerelease for Linux and macOS**, built on the v0.1 MVP.
 
-The current development checkout also adds CPU and memory samples to `status` and opt-in restarts after dependency recovery; these are not included in the alpha.1 release binaries.
+The current development checkout also adds CPU and memory samples to `status`, opt-in restarts after dependency recovery, and named configuration profiles as the first v0.3 module; these are not included in the alpha.1 release binaries.
 
 Describe your services and their dependencies in `devd.yml`, then run `devd start` in the foreground. Use another terminal to check status, read logs, or restart a service.
 
@@ -113,6 +113,34 @@ This assumes you already have `backend`, `frontend`, their `dev` scripts, and `b
 
 ## Commands
 
+### Named environments
+
+Keep environment differences in the same YAML file:
+
+```yaml
+version: "1"
+services:
+  app:
+    command: npm run dev
+    env: {MODE: dev, LOG_LEVEL: info}
+profiles:
+  staging:
+    services:
+      app:
+        command: npm run staging
+        env: {MODE: staging}
+```
+
+`devd check --profile staging` validates the merged configuration; `devd start --profile staging` runs it. `LOG_LEVEL` is inherited. Use the same `--profile` for `status`, `logs`, `restart`, and `stop`. Omitting it selects the base configuration and a separate instance.
+
+Services merge by name. `env` and `restart` merge by key; other fields, including dependency lists and the entire health check, replace the base value. `null` clears optional fields such as `cwd`, `env-file`, and `healthcheck`; empty maps inherit, while `depends-on: []` clears dependencies. New services need a command. Service deletion and profile inheritance are not supported. All definitions reject unknown fields, including unselected profiles; dependency and readiness validation applies to the selected result. `check` without a profile checks the base result.
+
+Paths retain the usual configuration-directory and service-`cwd` rules. Profile names start with an ASCII letter, digit, or underscore and contain only ASCII letters, digits, `_`, `-`, or `.`. Names are case-sensitive. Runtime files use `.devd/<config-filename>/profiles/<name>/`; uppercase letters are escaped as `~hh` to stay distinct on case-insensitive filesystems. With an explicit `--state-dir`, the same `profiles/<name>/` suffix is appended. This isolates control and state files; service ports and application files still need distinct values when running environments together. `init` rejects `--profile`.
+
+Try the [runnable dev / staging / prod example](examples/profiles/README.md).
+
+### Command reference
+
 | Command | Purpose |
 | --- | --- |
 | `devd start` | Start the stack in the foreground and stream logs |
@@ -124,7 +152,7 @@ This assumes you already have `backend`, `frontend`, their `dev` scripts, and `b
 | `devd graph` | Show dependency edges and parallel startup layers |
 | `devd init [--service NAME] [--command CMD]` | Create a checked starter configuration without overwriting an existing file |
 
-All commands accept `-c / --config <PATH>`, `--state-dir <PATH>`, and `--color auto|always|never`. Options work before or after the subcommand:
+Commands accept `-c / --config <PATH>`, `--profile <NAME>` (except `init`), `--state-dir <PATH>`, and `--color auto|always|never`. Options work before or after the subcommand:
 
 ```bash
 devd start --config ./devd.local.yml

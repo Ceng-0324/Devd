@@ -1,0 +1,33 @@
+version: "1"
+services:
+  worker:
+    command: sh -c 'echo "worker ready ($MODE)"; exec sleep 3600'
+    env:
+      MODE: base
+    restart:
+      policy: on-failure
+      initial-delay: 1s
+      max-attempts: 3
+profiles:
+  dev:
+    services:
+      worker:
+        env:
+          MODE: dev
+        restart:
+          initial-delay: 100ms
+  staging:
+    services:
+      worker:
+        env:
+          MODE: staging
+        restart:
+          backoff: exponential
+          max-delay: 30s
+  prod:
+    services:
+      worker:
+        env:
+          MODE: prod
+        restart:
+          policy: never

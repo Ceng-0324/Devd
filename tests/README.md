@@ -19,6 +19,12 @@ cargo test --locked --test integration
 
 ## Coverage
 
+`config_profiles.rs` covers map inheritance, list/probe replacement, optional-field
+clearing, aliases, duplicate and unknown fields, invalid names, added services,
+and effective dependency errors. CLI tests run base/dev/staging concurrently,
+check cwd/env-file resolution, default/explicit state directory isolation,
+case-sensitive names, and control after configuration corruption/deletion.
+
 | Scenario | Evidence |
 | --- | --- |
 | Single-service lifecycle | Load `simple.yml`, invoke public `check`, `graph`, `start`, `status`, `logs`, and `stop`; verify stdout/stderr prefixes, final state, and process cleanup |

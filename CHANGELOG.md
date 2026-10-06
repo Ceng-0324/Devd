@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add single-file configuration `profiles` and global `--profile` selection for startup, validation, dependency graphs, and live control commands.
+- Merge environment and restart settings by key, replace dependency lists and health checks, support clearing optional fields, and validate effective dependencies before startup.
+- Isolate profile sockets and state even with an explicit state directory and on case-insensitive filesystems; retain live control when the configuration is corrupted or deleted.
 - Add opt-in `restart-on-dep-recovery`: restart a running service when a direct dependency is replaced and dependency readiness is restored, using existing backoff and restart budgets. Same-process health fluctuations do not trigger recovery restarts.
 - Keep health probes in flight across dependency and resource snapshot updates; preserve stop/manual restart control during recovery waits.
 - Add per-service leader CPU and RSS samples to `status`, JSON responses, and runtime snapshots, sampled approximately every second without blocking lifecycle control.

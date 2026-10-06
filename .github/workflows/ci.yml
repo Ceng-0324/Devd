@@ -61,6 +61,12 @@ jobs:
         run: cargo test --locked --all-targets
       - name: Validate MVP fixture
         run: cargo run --locked -- check --config tests/fixtures/simple.yml
+      - name: Validate configuration profiles
+        run: |
+          cargo run --locked -- check --config examples/profiles/devd.yml
+          cargo run --locked -- check --config examples/profiles/devd.yml --profile dev
+          cargo run --locked -- check --config examples/profiles/devd.yml --profile staging
+          cargo run --locked -- check --config examples/profiles/devd.yml --profile prod
       - name: Install Python for the example stack
         uses: actions/setup-python@v5
         with:
