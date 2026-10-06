@@ -31,8 +31,8 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
     version_path = args.output_dir / "VERSION"
     revision_path = args.output_dir / "REVISION"
-    version_path.write_text(version + "\n", encoding="utf-8")
-    revision_path.write_text(revision + "\n", encoding="utf-8")
+    version_path.write_text(version + "\n", encoding="utf-8", newline="\n")
+    revision_path.write_text(revision + "\n", encoding="utf-8", newline="\n")
     subprocess.run([sys.executable, "examples/local-stack/smoke.py", "--binary", str(binary),
                     "--duration", "5", "--restarts", "2"], check=True)
     files = [(binary, binary.name)] + [(Path(name), name) for name in (
@@ -54,7 +54,9 @@ def main():
             assert set(output.getnames()) == {name for _, name in files}
     with archive.open("rb") as source:
         digest = hashlib.file_digest(source, "sha256").hexdigest()
-    Path(str(archive) + ".sha256").write_text(f"{digest}  {archive.name}\n", encoding="utf-8")
+    Path(str(archive) + ".sha256").write_text(
+        f"{digest}  {archive.name}\n", encoding="utf-8", newline="\n"
+    )
     print(f"Verified {archive} ({version}, {revision})")
 
 
