@@ -18,11 +18,11 @@ Broken file dependencies still need fixing. devd takes care of the services you 
 
 ## What it does
 
-devd is a local development service manager written in Rust. **v0.3.0-alpha.1 is a prerelease for Linux and macOS**, built on the v0.1 MVP.
+devd is a local development service manager written in Rust. **This checkout prepares v0.4.0-alpha.1 for Linux, macOS, and Windows.**
 
-The main branch is developing v0.4, with opt-in disk logs, an interactive terminal view, resource controls, and custom script health checks. Install from source to use these features; the v0.3 release binaries do not include them.
+v0.4 brings opt-in disk logs, an interactive terminal view, resource warnings and explicitly enabled recovery, custom script health checks, and Windows process supervision. Install from source to use these features; v0.3 release binaries do not include them. Published assets are listed on [GitHub Releases](https://github.com/Ceng-0324/Devd/releases); the [release checklist](RELEASING.md) requires native CI on all three platforms before publication.
 
-This version adds CPU and memory samples to `status`, opt-in restarts after dependency recovery, named configuration profiles, configuration snapshots, dependency diagram export, and log filters.
+It also includes CPU and memory samples, opt-in restarts after dependency recovery, named configuration profiles, configuration snapshots, dependency diagram export, and log filters.
 
 Describe your services and their dependencies in `devd.yml`, then run `devd start` in the foreground. Use another terminal to check status, read logs, or restart a service.
 
@@ -31,7 +31,7 @@ Describe your services and their dependencies in `devd.yml`, then run `devd star
 - **Handle unexpected exits.** Choose `always`, `on-failure`, or `never`, with fixed or exponential retry delays and a limit on automatic restarts.
 - **Bring the logs together.** Collect stdout / stderr with timestamps, service names, and colors. Query recent output for a specific service.
 - **See what each service uses.** `status` shows CPU usage and resident memory for each service's main process.
-- **Clean up on the way out.** Ctrl+C, SIGTERM, or `devd stop` shuts services down in reverse dependency order and cleans up descendants in their process groups.
+- **Clean up on the way out.** Ctrl+C or `devd stop` shuts services down in reverse dependency order and cleans up owned descendants. Unix also handles SIGTERM; Windows handles Ctrl+Break.
 
 It's for local projects with an API, a frontend, workers, or other processes that need to run together. Your services keep their existing startup commands; devd coordinates them.
 
@@ -43,7 +43,7 @@ You'll need Rust 1.95 or newer. Install from the repository root:
 cargo install --path . --locked
 ```
 
-Run `devd init` in a project directory to create a runnable one-service starter configuration. Use `--service` and `--command` to set its service name and command; `--config` chooses the output path. The command refuses to replace an existing file. For a two-service example, use this configuration:
+Run `devd init` in a project directory to create a runnable one-service starter configuration (using `sh` on Unix and Windows PowerShell on Windows). Use `--service` and `--command` to set its service name and command; `--config` chooses the output path. The command refuses to replace an existing file. For a two-service Unix example, use this configuration:
 
 ```yaml
 version: "1"
@@ -192,7 +192,11 @@ devd --config ./devd.local.yml status --json
 
 ## A few things to know
 
-**It runs in the foreground.** devd manages service tasks with Tokio. Commands in other terminals reach the running instance through a Unix socket. Runtime files default to `.devd/<config-filename>/` inside the configuration directory; add `.devd/` to your project's `.gitignore`. If the socket path is too long, choose a shorter `--state-dir`. Use the same configuration and state directory when addressing the same instance.
+**It runs in the foreground.** devd manages service tasks with Tokio. Commands in other terminals use a Unix socket, or a local Windows named pipe restricted to the current user. Runtime files default to `.devd/<config-filename>/` inside the configuration directory; add `.devd/` to your project's `.gitignore`. If a Unix socket path is too long, choose a shorter `--state-dir`. Use the same configuration and state directory when addressing the same instance.
+
+**Windows uses native process ownership.** Windows 10/11 and Windows Server 2016+ use one Job Object per service generation, covering descendants before the service starts executing. Stop sends Ctrl+Break to that service's console process group, then terminates the job after the grace period; console-less services are terminated directly. Programs must handle Ctrl+Break to shut down gracefully. Closing or killing devd also closes its jobs. TCP, HTTP, script probes, `top`, profiles, snapshots, resource controls, and stored logs work through the same commands. Unix socket probes are rejected by `check` and `start` on Windows; use TCP or a script instead. TUI requires an interactive console.
+
+Commands retain shell-style quoting on Windows. Prefer forward slashes in YAML paths, and quote paths containing spaces, for example `command: "'C:/Program Files/Python/python.exe' app.py"`. Invoke `powershell.exe -NoProfile -File script.ps1` or `cmd.exe /C ...` explicitly when needed. `devd init`, followed by `devd start` in one terminal and `devd status`, `devd top`, or `devd stop` in another, is a Windows quick start without Unix tools.
 
 **Extend health checks with your own command.** When a connection or HTTP status cannot tell you whether a service is ready, use `type: script`. An executable or script in any language can act as the probe; exit code `0` means healthy. For example, given your application's `scripts/check_ready.py`:
 
@@ -218,7 +222,7 @@ services:
 
 Declaring the script probe enables its execution under the same user as devd. It inherits the service's working directory and environment: explicit `env` overrides `env-file`, which overrides the inherited environment. The environment file is read on each probe. Commands use the same argument quoting as service commands and have no implicit shell; use `sh -c '...'` explicitly for pipelines or shell expansion. Standard input is closed, and stdout/stderr are discarded; return status drives health and failure reasons appear in `status`.
 
-Probes start immediately and run serially. Defaults are `interval: 10s`, `timeout: 2s`, and `retries: 3`. A nonzero exit, signal, execution failure, or timeout counts as a failed check; success resets the failure count. The existing restart policy applies when the failure threshold is reached. `script-ready` waits for the first successful check and requires a script probe on the prerequisite. The timeout includes environment loading, execution, and normal process-group cleanup. On timeout, cancellation, service restart, or shutdown, devd sends SIGKILL to the probe's process group; probes must keep their subprocesses in that group. Normal completion also cleans up background group members. `check` and `graph` validate without executing probes. Profiles replace the entire health check as usual.
+Probes start immediately and run serially. Defaults are `interval: 10s`, `timeout: 2s`, and `retries: 3`. A nonzero exit, signal, execution failure, or timeout counts as a failed check; success resets the failure count. The existing restart policy applies when the failure threshold is reached. `script-ready` waits for the first successful check and requires a script probe on the prerequisite. The timeout includes environment loading, execution, and normal process-tree cleanup. On timeout, cancellation, service restart, or shutdown, devd kills the probe's Unix process group or Windows Job. Unix probes must keep subprocesses in that group. Normal completion also cleans up background descendants. `check` and `graph` validate without executing probes. Profiles replace the entire health check as usual.
 
 **Restarts have a defined scope.** A manual restart targets the named service using the configuration loaded at startup. Success means that process has started, not that its health checks or any opted-in dependent restarts have completed. Manual restarts can bypass `never` and the automatic retry limit, but don't reset the cumulative restart count. Terminal failures, such as a startup failure with no retries remaining or an exhausted retry budget, trigger cleanup of the whole stack.
 
@@ -246,7 +250,7 @@ devd start --persist-logs --log-max-size 10 --log-keep 3
 devd logs api --stored --level error --since 1h --tail 50
 ```
 
-The instance's state directory contains `logs/current.jsonl` and `logs/archive-1.jsonl` (newest archive), up to the configured count. Each record preserves UTC time, service, process generation, level, message and truncation status. Defaults are 10 MiB per file and three archives, at most 40 MiB of log data; rotation happens before a complete record would exceed the limit. `--log-max-size` accepts 1–1024 MiB and `--log-keep` accepts 1–100 archives; both require `--persist-logs`. Lower retention removes surplus managed archives on the next persistent start. Lowering the size limit does not rewrite existing archives; they age out through normal rotation. New directories/files use permissions 0700/0600. Logs can contain application secrets; retention also applies across supervisor runs, which append to the current file.
+The instance's state directory contains `logs/current.jsonl` and `logs/archive-1.jsonl` (newest archive), up to the configured count. Each record preserves UTC time, service, process generation, level, message and truncation status. Defaults are 10 MiB per file and three archives, at most 40 MiB of log data; rotation happens before a complete record would exceed the limit. `--log-max-size` accepts 1–1024 MiB and `--log-keep` accepts 1–100 archives; both require `--persist-logs`. Lower retention removes surplus managed archives on the next persistent start. Lowering the size limit does not rewrite existing archives; they age out through normal rotation. New directories/files use permissions 0700/0600 on Unix and inherit directory ACLs on Windows; keep Windows projects/state directories in your user account. Logs can contain application secrets; retention also applies across supervisor runs, which append to the current file.
 
 Use the same `--config`, `--profile` and `--state-dir` as startup. Disk logs are isolated by instance/profile; `--stored` works even if the YAML has been deleted, requires the persistent writer to have stopped, and cannot be combined with `--follow`. A missing directory is an error; an unknown service returns no matching history. Normal `logs` continues to query only the current run's memory. Stored queries apply the same filters and tail limit across retained files.
 

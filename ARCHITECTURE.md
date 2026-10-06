@@ -1,11 +1,17 @@
 # devd - 架构设计文档
 
-## 当前 MVP 控制链路
+## 当前控制链路
+
+v0.4 的平台差异集中在 `platform/`、`cli/transport.rs` 与 stdout 实现中。Unix 保留进程组与 socket；Windows 在 CREATE_SUSPENDED 状态下创建服务、绑定带 KILL_ON_JOB_CLOSE 的独立 Job，再通过 ToolHelp 定位并恢复主线程，避免加入 Job 前逃逸。停止先发送定向 Ctrl+Break，超时后终止 Job；无控制台时直接终止。正常退出等待 Job 活动进程数归零，取消/Drop/父进程强杀通过 Job 句柄关闭清理。Script 与服务共用同一所有权机制。
+
+Windows 控制端点用规范化实例路径的稳定摘要命名，管道拒绝远程客户端，显式 DACL 仅允许当前用户；first-instance 防抢占，接受连接前建立下一实例以持续持有名称。长度上限、I/O 超时和客户端额度由共同协议层保持。profile 目录在 Windows 将所有名称字节编码为十六进制并加前缀，避免设备保留名、大小写和尾点别名；Unix 保持既有路径。
+
+状态和日志使用标准库文件锁（Unix flock、Windows LockFileEx），状态 JSON 同目录替换。安全文件打开层拒绝链接、重解析点、非普通文件与受管日志硬链接；Unix 保留 O_NOFOLLOW/O_NONBLOCK 和 0700/0600，Windows 磁盘文件继承目录 ACL。Windows stdout 用独立有界线程和取消同步 I/O，避免阻塞 Tokio 关闭；控制台通过 UTF-16 输出，重定向保留 UTF-8。Windows `check`/`start` 在执行前拒绝 Unix socket 探测，其余生命周期、资源、健康和日志逻辑跨平台共享。
 
 ```mermaid
 flowchart LR
     start[devd start: foreground] --> lock[Project state lock]
-    lock --> server[Unix socket control server]
+    lock --> server[Local control server: Unix socket / Windows named pipe]
     server --> manager[ServiceManager]
     clients[stop / restart / status / logs / top] --> server
     manager --> actors[Service actors and process groups]
@@ -539,7 +545,7 @@ pub enum BackoffType {
 
 ### Service Task State Machine
 
-当前 Unix MVP 由以下模块实现生命周期所有权：
+当前版本由以下模块实现生命周期所有权：
 
 | 模块 | 所有权与接口 |
 | --- | --- |

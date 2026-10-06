@@ -1,11 +1,19 @@
 # Changelog
 
-## Unreleased — v0.4
+## v0.4.0-alpha.1 — Unreleased
+
+Release candidate for local development on Linux, macOS, and Windows. Native
+CI and release artifacts for the final source SHA remain publication gates.
 
 - Add `devd top` for live service status, resource metrics, bounded logs, asynchronous single-service restart, and confirmed whole-stack stop; quitting the view leaves services running.
 - Add opt-in JSONL persistence with `start --persist-logs`, per-instance/profile storage, size-based rotation, and configurable archive retention (`--log-max-size` in MiB and `--log-keep`).
 - Query offline disk history with `logs --stored`, reusing service, level, time, literal text, and filtered-tail selection without requiring the YAML file.
 - Drain and sync disk logs on graceful shutdown; report bounded-buffer losses, recover interrupted final records, reject linked/non-regular managed files, and stop services on storage failures.
+- Add CPU and RSS threshold warnings with recovery diagnostics. Resource restarts remain off unless a service explicitly sets `limits.on-exceed: restart`; three consecutive valid samples of the same metric must exceed its threshold. Restarts share the existing backoff and cumulative budget.
+- Add external-command script health checks and `script-ready` dependencies, preserving service working directory/environment, serial probe timing, bounded execution, and descendant cleanup on completion or cancellation.
+- Add Windows supervision with Job Objects, assignment before child execution, Ctrl+Break/grace-period shutdown, and tree cleanup when the supervisor exits. Use local named pipes with a current-user DACL for control requests.
+- Enable cross-platform state/storage locks, safe file access, native PowerShell starter configuration, and cancellable Windows console output. Reject Unix socket probes on Windows before starting services.
+- Extend CI and three-service recovery smoke tests to Windows; build Linux/macOS tarballs and a Windows x86_64 MSVC zip with source revision, version, and SHA-256 checksums.
 
 ## v0.3.0-alpha.1 — 2026-10-06
 

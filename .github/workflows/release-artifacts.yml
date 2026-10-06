@@ -16,6 +16,9 @@ jobs:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
@@ -24,6 +27,8 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - os: macos-latest
             target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
     steps:
       - name: Validate source revision
         env:
@@ -50,21 +55,19 @@ jobs:
           key: release-${{ matrix.target }}
       - name: Build
         run: cargo build --locked --release --target '${{ matrix.target }}'
-      - name: Test binary
-        run: ./target/${{ matrix.target }}/release/devd --version > VERSION
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
       - name: Exercise release binary recovery
-        run: python3 examples/local-stack/smoke.py --binary target/${{ matrix.target }}/release/devd --duration 5 --restarts 2
-      - name: Archive binary and license
-        run: tar -czf 'devd-${{ matrix.target }}.tar.gz' -C target/${{ matrix.target }}/release devd -C "$GITHUB_WORKSPACE" LICENSE README.md README.zh-CN.md VERSION REVISION
-      - name: Record checksum
-        run: shasum -a 256 'devd-${{ matrix.target }}.tar.gz' > 'devd-${{ matrix.target }}.tar.gz.sha256'
+        env:
+          DEVD_RELEASE_TARGET: ${{ matrix.target }}
+        run: python scripts/package-release.py "$DEVD_RELEASE_TARGET"
       - uses: actions/upload-artifact@v4
         with:
           name: devd-${{ matrix.target }}
           path: |
-            devd-*.tar.gz
-            devd-*.tar.gz.sha256
+            target/release-artifacts/devd-*.tar.gz
+            target/release-artifacts/devd-*.tar.gz.sha256
+            target/release-artifacts/devd-*.zip
+            target/release-artifacts/devd-*.zip.sha256
           if-no-files-found: error
