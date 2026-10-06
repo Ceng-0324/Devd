@@ -26,8 +26,8 @@ def wait_for(check, timeout=30):
     raise AssertionError("timed out waiting for stack condition")
 
 
-def runtime_diagnostics(directory, port):
-    """Run the fixture API directly so supervisor failures retain actionable evidence."""
+def runtime_diagnostics(pids):
+    """Record the selected interpreter and the state of smoke-owned processes."""
     details = {
         "python_executable": sys.executable,
         "python_path": shutil.which("python3"),
@@ -38,36 +38,9 @@ def runtime_diagnostics(directory, port):
         ).stdout.strip()
     except (OSError, subprocess.SubprocessError) as error:
         details["python_version_error"] = str(error)
-    process = None
-    try:
-        process = subprocess.Popen(
-            ["python3", "-u", "app.py", "api", "--port", str(port)],
-            cwd=directory,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        )
-        try:
-            with urlopen(f"http://[IP地址]:{port}/health", timeout=3) as response:
-                details["direct_health_status"] = response.status
-        except (URLError, OSError) as error:
-            details["direct_health_error"] = str(error)
-        try:
-            stdout, stderr = process.communicate(timeout=3)
-            details["direct_exit_code"] = process.returncode
-        except subprocess.TimeoutExpired:
-            details["direct_exit_code"] = "still-running"
-            process.terminate()
-            stdout, stderr = process.communicate(timeout=5)
-        details["direct_stdout"] = stdout[-4000:]
-        details["direct_stderr"] = stderr[-4000:]
-    except (OSError, subprocess.SubprocessError) as error:
-        details["direct_start_error"] = str(error)
-        if process is not None:
-            process.kill()
-            process.wait()
-    for command in (["ps", "-axo", "pid,ppid,pgid,command"], ["lsof", "-nP", "-iTCP"]):
+    pid_list = ",".join(str(pid) for pid in sorted(pids))
+    for command in (["ps", "-o", "pid,ppid,pgid,state,command", "-p", pid_list],
+                    ["lsof", "-nP", "-a", "-p", pid_list, "-iTCP"]):
         try:
             result = subprocess.run(command, capture_output=True, text=True, timeout=5, check=False)
             details[command[0]] = result.stdout[-8000:] or result.stderr[-2000:]
@@ -137,7 +110,9 @@ def main():
         samples = []
         started = time.monotonic()
         with (directory / "output.log").open("w+") as output:
-            supervisor = subprocess.Popen([binary, "start", "--color", "never"], cwd=directory, stdout=output, stderr=output)
+            supervisor = subprocess.Popen([binary, "start", "--color", "never"], cwd=directory,
+                                          env={**os.environ, "DEVD_SMOKE_DIAGNOSTICS": "1"},
+                                          stdout=output, stderr=output)
             try:
                 initial = wait_for(healthy)
                 startup_seconds = time.monotonic() - started
@@ -193,7 +168,7 @@ def main():
                 except (subprocess.SubprocessError, OSError) as error:
                     print(f"Cannot read service logs: {error}", flush=True)
                 print("Last supervisor status: " + json.dumps(last_status), flush=True)
-                print("Runtime diagnostics: " + json.dumps(runtime_diagnostics(directory, api_port)), flush=True)
+                print("Runtime diagnostics: " + json.dumps(runtime_diagnostics(known_pids | {supervisor.pid})), flush=True)
                 print((directory / "output.log").read_text()[-12000:])
                 raise
             finally:

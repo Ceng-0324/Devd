@@ -1,5 +1,6 @@
 """A small API, web frontend and worker; Python 3.9+ standard library only."""
 import argparse
+import faulthandler
 import json
 import os
 from pathlib import Path
@@ -25,6 +26,8 @@ refresh();setInterval(refresh,1000);</script></html>"""
 
 
 def main():
+    if os.environ.get("DEVD_SMOKE_DIAGNOSTICS"):
+        faulthandler.dump_traceback_later(3, repeat=True)
     parser = argparse.ArgumentParser()
     parser.add_argument("role", choices=["api", "web", "worker"])
     parser.add_argument("--port", type=int, default=8731)
@@ -34,6 +37,7 @@ def main():
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     signal.signal(signal.SIGINT, lambda *_: stop.set())
     if args.role == "worker":
+        faulthandler.cancel_dump_traceback_later()
         print("worker started", flush=True)
         while not stop.is_set():
             try:
@@ -89,6 +93,7 @@ def main():
                 self.send(404, b'{"error":"not found"}')
 
     with ThreadingHTTPServer(("127.0.0.1", args.port), Handler) as server:
+        faulthandler.cancel_dump_traceback_later()
         server.timeout = 0.2
         print(f"{args.role} listening at http://127.0.0.1:{server.server_port}", flush=True)
         while not stop.is_set():
