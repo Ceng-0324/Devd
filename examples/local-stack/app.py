@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import socketserver
 import threading
 from http.client import HTTPException
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -23,6 +24,15 @@ pre{padding:1em;background:#eee;border-radius:8px}</style>
 document.getElementById('status').textContent=JSON.stringify(await r.json(),null,2);
 }catch(e){document.getElementById('status').textContent=String(e)}}
 refresh();setInterval(refresh,1000);</script></html>"""
+
+
+class LocalThreadingHTTPServer(ThreadingHTTPServer):
+    """Bind the fixture without a reverse DNS lookup on the loopback host."""
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = self.server_address[0]
+        self.server_port = self.server_address[1]
 
 
 def main():
@@ -92,7 +102,7 @@ def main():
             else:
                 self.send(404, b'{"error":"not found"}')
 
-    with ThreadingHTTPServer(("127.0.0.1", args.port), Handler) as server:
+    with LocalThreadingHTTPServer(("127.0.0.1", args.port), Handler) as server:
         faulthandler.cancel_dump_traceback_later()
         server.timeout = 0.2
         print(f"{args.role} listening at http://127.0.0.1:{server.server_port}", flush=True)
