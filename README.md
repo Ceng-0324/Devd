@@ -18,9 +18,9 @@ Broken file dependencies still need fixing. devd takes care of the services you 
 
 ## What it does
 
-devd is a local development service manager written in Rust. **v0.2.0-alpha.1 is a prerelease for Linux and macOS**, built on the v0.1 MVP.
+devd is a local development service manager written in Rust. **v0.3.0-alpha.1 is a prerelease for Linux and macOS**, built on the v0.1 MVP.
 
-The current development checkout also adds CPU and memory samples to `status`, opt-in restarts after dependency recovery, named configuration profiles, configuration snapshots, dependency diagram export, and log filters; these are not included in the alpha.1 release binaries.
+This version adds CPU and memory samples to `status`, opt-in restarts after dependency recovery, named configuration profiles, configuration snapshots, dependency diagram export, and log filters.
 
 Describe your services and their dependencies in `devd.yml`, then run `devd start` in the foreground. Use another terminal to check status, read logs, or restart a service.
 

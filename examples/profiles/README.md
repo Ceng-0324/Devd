@@ -1,7 +1,7 @@
 # Named environments
 
-This example needs only `/bin/sh` and `sleep`. It exercises configuration profiles
-in the development checkout; profiles are not in the alpha.1 release binaries.
+This example needs only `/bin/sh` and `sleep`. It uses configuration profiles
+available in v0.3.0-alpha.1 and newer.
 `prod` is a configuration name, not a claim of production supervision support.
 
 From the repository root:

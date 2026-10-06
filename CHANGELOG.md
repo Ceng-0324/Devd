@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## v0.3.0-alpha.1 — 2026-10-06
+
+Prerelease for local development on Linux and macOS. This release includes the
+previously unreleased v0.2 development work as well as the v0.3 modules below.
 
 - Complete the v0.3 documentation with a runnable profile example covering dependency diagrams, filtered logs, configuration snapshots, and isolated instances.
 - Filter `logs` history and live follow by exact level, relative start time, and literal message text; apply `--tail` after filtering.
