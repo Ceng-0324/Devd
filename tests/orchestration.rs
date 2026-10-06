@@ -88,6 +88,64 @@ fn resource_limited(directory: &Path) -> ServiceConfig {
 }
 
 #[tokio::test]
+async fn test_script_health_failure_restarts_then_exhausts_budget() {
+    let directory = tempdir().unwrap();
+    let mut root = service(
+        "rm -f fail-probe; touch running; exec sleep 60",
+        directory.path(),
+    );
+    root.cwd = Some(directory.path().into());
+    root.healthcheck = Some(HealthCheck::Script {
+        command: "sh -c 'test -e running && test ! -e fail-probe'".into(),
+        interval: Duration::from_millis(30),
+        timeout: Duration::from_secs(1),
+        retries: 2,
+    });
+    root.restart.policy = RestartPolicyType::OnFailure;
+    root.restart.max_attempts = 1;
+    let child = recovery_child(directory.path(), "root", DependencyCondition::ScriptReady);
+    let manager = ServiceManager::new(
+        config([("root", root), ("child", child)]),
+        options(&directory),
+    )
+    .unwrap();
+    let mut run = RunningManager::start(manager);
+    let first = run
+        .until(|s| {
+            s.services["root"].status == ServiceState::Healthy && s.services["child"].pid.is_some()
+        })
+        .await;
+    tokio::fs::write(directory.path().join("fail-probe"), "")
+        .await
+        .unwrap();
+    let recovered = run
+        .until(|s| {
+            s.services["root"].status == ServiceState::Healthy
+                && s.services["root"].restart_count == 1
+                && s.services["child"].restart_count == 1
+                && s.services["child"].pid.is_some()
+        })
+        .await;
+    assert_ne!(first.services["root"].pid, recovered.services["root"].pid);
+    reaped(first.services["root"].pid.unwrap()).await;
+    tokio::fs::write(directory.path().join("fail-probe"), "")
+        .await
+        .unwrap();
+    assert!(matches!(
+        run.finish().await,
+        Err(ServiceManagerError::FailedServices { .. })
+    ));
+    let final_state = run.snapshots.borrow().clone();
+    assert!(final_state.services.values().all(|s| s.pid.is_none()));
+    assert_eq!(final_state.services["root"].restart_count, 1);
+    assert!(final_state.services["root"]
+        .last_error
+        .as_ref()
+        .unwrap()
+        .contains("script probe failed"));
+}
+
+#[tokio::test]
 async fn test_resource_restart_exhausts_shared_budget_and_cleans_dependents() {
     let directory = tempdir().unwrap();
     let mut root = resource_limited(directory.path());

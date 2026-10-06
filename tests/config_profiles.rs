@@ -38,6 +38,23 @@ profiles:
 "#;
 
 #[test]
+fn test_profile_script_probe_replaces_network_probe_and_validates_readiness() {
+    let yaml = "version: '1'\nservices:\n  api: {command: sleep 60, healthcheck: {type: tcp, port: 80}}\n  web: {command: sleep 60, depends-on: [api]}\nprofiles:\n  custom:\n    services:\n      api: {healthcheck: {type: script, command: 'sh check.sh'}}\n      web: {depends-on: [{service: api, condition: script-ready}]}\n";
+    let base = ConfigLoader::from_str(yaml, "devd.yml").unwrap();
+    base.validate().unwrap();
+    let custom = ConfigLoader::from_str_profile(yaml, "devd.yml", Some("custom")).unwrap();
+    custom.validate().unwrap();
+    assert!(matches!(
+        custom.services["api"].healthcheck,
+        Some(HealthCheck::Script { .. })
+    ));
+    assert!(matches!(
+        base.services["api"].healthcheck,
+        Some(HealthCheck::Tcp { .. })
+    ));
+}
+
+#[test]
 fn test_profile_limits_replace_base_thresholds_and_can_be_cleared() {
     let yaml = "version: '1'\nservices:\n  api: {command: sleep 60, limits: {cpu: '50%', memory: 1GiB, on-exceed: restart}}\nprofiles:\n  dev:\n    services:\n      api: {limits: {memory: 512MiB}}\n  free:\n    services:\n      api: {limits: null}\n";
     let base = ConfigLoader::from_str(yaml, "devd.yml").unwrap();
@@ -109,6 +126,8 @@ fn test_profiles_reject_invalid_unselected_overrides() {
         "restart: null",
         "restart: {max-attempt: 2}",
         "healthcheck: {type: tcp, port: 80, url: wrong}",
+        "healthcheck: {type: script, command: probe, shell: true}",
+        "healthcheck: {type: script}",
         "depends-on: null",
         "env_file: one\n        env-file: two",
         "restart: {initial_delay: 1s, initial-delay: 2s}",

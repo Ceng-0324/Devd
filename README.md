@@ -20,13 +20,13 @@ Broken file dependencies still need fixing. devd takes care of the services you 
 
 devd is a local development service manager written in Rust. **v0.3.0-alpha.1 is a prerelease for Linux and macOS**, built on the v0.1 MVP.
 
-The main branch is developing v0.4, with opt-in disk logs, an interactive terminal view, and resource threshold alerts. Install from source to use these features; the v0.3 release binaries do not include them.
+The main branch is developing v0.4, with opt-in disk logs, an interactive terminal view, resource controls, and custom script health checks. Install from source to use these features; the v0.3 release binaries do not include them.
 
 This version adds CPU and memory samples to `status`, opt-in restarts after dependency recovery, named configuration profiles, configuration snapshots, dependency diagram export, and log filters.
 
 Describe your services and their dependencies in `devd.yml`, then run `devd start` in the foreground. Use another terminal to check status, read logs, or restart a service.
 
-- **Start in dependency order.** Independent services start concurrently. Dependencies can wait for a process to start or for a TCP / HTTP / Unix socket health check to pass.
+- **Start in dependency order.** Independent services start concurrently. Dependencies can wait for a process to start or for a TCP / HTTP / Unix socket / script health check to pass.
 - **Watch service health.** TCP and Unix socket connection checks and HTTP 2xx probes track consecutive failures and report what went wrong. Socket paths resolve relative to the service working directory; a stale socket file is not healthy.
 - **Handle unexpected exits.** Choose `always`, `on-failure`, or `never`, with fixed or exponential retry delays and a limit on automatic restarts.
 - **Bring the logs together.** Collect stdout / stderr with timestamps, service names, and colors. Query recent output for a specific service.
@@ -193,6 +193,32 @@ devd --config ./devd.local.yml status --json
 ## A few things to know
 
 **It runs in the foreground.** devd manages service tasks with Tokio. Commands in other terminals reach the running instance through a Unix socket. Runtime files default to `.devd/<config-filename>/` inside the configuration directory; add `.devd/` to your project's `.gitignore`. If the socket path is too long, choose a shorter `--state-dir`. Use the same configuration and state directory when addressing the same instance.
+
+**Extend health checks with your own command.** When a connection or HTTP status cannot tell you whether a service is ready, use `type: script`. An executable or script in any language can act as the probe; exit code `0` means healthy. For example, given your application's `scripts/check_ready.py`:
+
+```yaml
+services:
+  api:
+    command: python3 app.py
+    cwd: backend
+    env-file: .env
+    healthcheck:
+      type: script
+      command: python3 scripts/check_ready.py
+      interval: 5s
+      timeout: 2s
+      retries: 3
+  web:
+    command: npm run dev
+    cwd: frontend
+    depends-on:
+      - service: api
+        condition: script-ready
+```
+
+Declaring the script probe enables its execution under the same user as devd. It inherits the service's working directory and environment: explicit `env` overrides `env-file`, which overrides the inherited environment. The environment file is read on each probe. Commands use the same argument quoting as service commands and have no implicit shell; use `sh -c '...'` explicitly for pipelines or shell expansion. Standard input is closed, and stdout/stderr are discarded; return status drives health and failure reasons appear in `status`.
+
+Probes start immediately and run serially. Defaults are `interval: 10s`, `timeout: 2s`, and `retries: 3`. A nonzero exit, signal, execution failure, or timeout counts as a failed check; success resets the failure count. The existing restart policy applies when the failure threshold is reached. `script-ready` waits for the first successful check and requires a script probe on the prerequisite. The timeout includes environment loading, execution, and normal process-group cleanup. On timeout, cancellation, service restart, or shutdown, devd sends SIGKILL to the probe's process group; probes must keep their subprocesses in that group. Normal completion also cleans up background group members. `check` and `graph` validate without executing probes. Profiles replace the entire health check as usual.
 
 **Restarts have a defined scope.** A manual restart targets the named service using the configuration loaded at startup. Success means that process has started, not that its health checks or any opted-in dependent restarts have completed. Manual restarts can bypass `never` and the automatic retry limit, but don't reset the cumulative restart count. Terminal failures, such as a startup failure with no retries remaining or an exhausted retry budget, trigger cleanup of the whole stack.
 

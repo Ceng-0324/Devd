@@ -83,6 +83,7 @@ pub struct ManagedProcess {
     config: ServiceConfig,
     child: Child,
     group: Option<Pid>,
+    capture_output: bool,
 }
 
 impl ManagedProcess {
@@ -93,13 +94,27 @@ impl ManagedProcess {
         service: impl Into<String>,
         config: &ServiceConfig,
     ) -> Result<Self, ProcessError> {
-        let service = service.into();
-        let (child, group) = spawn_child(&service, config).await?;
+        Self::spawn_with_output(service.into(), config, true).await
+    }
+
+    /// Health probes discard output, preventing pipe backpressure and leakage
+    /// into service logs. Process-group ownership is identical to services.
+    pub(super) async fn spawn_probe(config: &ServiceConfig) -> Result<Self, ProcessError> {
+        Self::spawn_with_output("healthcheck".into(), config, false).await
+    }
+
+    async fn spawn_with_output(
+        service: String,
+        config: &ServiceConfig,
+        capture_output: bool,
+    ) -> Result<Self, ProcessError> {
+        let (child, group) = spawn_child(&service, config, capture_output).await?;
         Ok(Self {
             service,
             config: config.clone(),
             child,
             group: Some(group),
+            capture_output,
         })
     }
 
@@ -183,7 +198,7 @@ impl ManagedProcess {
     /// previous generation stopped, with its exit status still available.
     pub async fn restart(&mut self, grace_period: Duration) -> Result<u32, ProcessError> {
         self.stop(grace_period).await?;
-        let (child, group) = spawn_child(&self.service, &self.config).await?;
+        let (child, group) = spawn_child(&self.service, &self.config, self.capture_output).await?;
         self.child = child;
         self.group = Some(group);
         Ok(self.child.id().expect("newly spawned child has a PID"))
@@ -249,14 +264,26 @@ impl Drop for ManagedProcess {
     }
 }
 
-async fn spawn_child(service: &str, config: &ServiceConfig) -> Result<(Child, Pid), ProcessError> {
+async fn spawn_child(
+    service: &str,
+    config: &ServiceConfig,
+    capture_output: bool,
+) -> Result<(Child, Pid), ProcessError> {
     let arguments = parse_command(service, &config.command)?;
     let mut command = Command::new(&arguments[0]);
     command
         .args(&arguments[1..])
         .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stdout(if capture_output {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stderr(if capture_output {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .kill_on_drop(true)
         .process_group(0);
     if let Some(cwd) = &config.cwd {

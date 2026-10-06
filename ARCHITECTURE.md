@@ -24,7 +24,7 @@ v0.3 增加单文件 `profiles` 与全局 `--profile`。`config/profile.rs` 独�
 
 配置快照按完整 YAML 文件保存于基础状态目录的 `snapshots/<name>.yml`，不进入 profile 子目录。保存和恢复复制原始字节，支持未完成编辑的配置；校验仍由 `check` 负责。临时文件先写入同一目录并同步，再通过不覆盖的原子发布创建目标；快照名限制为安全的小写 ASCII，恢复目标只能是原配置目录的新文件名，以维持相对路径语义。配置快照不接触 `services.json`、控制 socket 或进程；恢复不会修改运行中实例，也不会接管遗留 PID。
 
-当前可用命令为 start、stop、restart、status、top、logs（含 --follow）、check、graph、init、snapshot，支持 TCP/HTTP/Unix Socket 健康检查和 fixed/exponential 重启延时。status 提供服务主进程 CPU／RSS 采样。top 仅连接活实例，退出界面不停止服务，停止全栈必须在界面内确认；终端恢复由 RAII 处理。下方总体蓝图仍包含未来的 Script 健康检查、配置监听等扩展，不能视为当前实现。
+当前可用命令为 start、stop、restart、status、top、logs（含 --follow）、check、graph、init、snapshot，支持 TCP/HTTP/Unix Socket/Script 健康检查和 fixed/exponential 重启延时。status 提供服务主进程 CPU／RSS 采样。top 仅连接活实例，退出界面不停止服务，停止全栈必须在界面内确认；终端恢复由 RAII 处理。下方总体蓝图仍包含未来的配置监听等扩展，不能视为当前实现。
 
 资源采集由 `core::resource_monitor` 每秒通过阻塞线程池读取受管主 PID 的 sysinfo 指标，生命周期仍由 service actor 独占。监控 future 随 manager 驱动、退出时停止轮询；在途 OS 读取只持有局部数据，不能在退出后写回状态。采样以 PID、started_at、restart_count 核对进程代次，actor 发布健康状态时保留同代指标，退出时清除。CPU 首次采样只建立基线；不可用指标保持空值。缓存随代次淘汰，Linux 线程枚举关闭；不统计子进程。可选 `limits` 对采样值执行跨阈值告警与恢复日志，不执行强制限制。
 
@@ -644,19 +644,9 @@ Pending -> Starting -> Running -> Healthy / Unhealthy
 
 ### 1. 健康检查插件
 
-```rust
-// 用户可自定义健康检查
-pub trait HealthChecker: Send + Sync {
-    async fn check(&self) -> Result<bool>;
-}
+v0.4 通过 `healthcheck: {type: script, command: ...}` 加载外部命令，退出码 0 表示健康。使用进程退出状态作为扩展接口，不加载动态库或引入插件注册中心。`HealthChecker::for_service` 固定服务 cwd/env/env-file 上下文，并统一解析相对 socket 路径；直接 `new` 的脚本使用当前目录及继承环境。
 
-// 内置实现
-pub struct HttpHealthChecker { ... }
-pub struct TcpHealthChecker { ... }
-pub struct ScriptHealthChecker { ... }
-
-// 用户可通过配置加载自定义脚本
-```
+每次探测复用 `ManagedProcess` 的环境加载、无隐式 shell 的参数解析与独立进程组；stdin/stdout/stderr 均为 null。单次 timeout 覆盖环境读取、执行和正常组清理；超时或取消通过 Drop 向组发送 SIGKILL，Tokio 尽力回收主进程。正常完成等待组清理，保留非零退出、信号和执行错误作为失败原因。探测命令不应自行脱离进程组。串行探测、失败阈值、自动重启和日志排空等仍由既有 monitor/actor 管理；`script-ready` 要求前置服务配置 Script 探测，并复用依赖就绪及恢复语义。静态 check/graph 不执行命令；脚本按当前用户权限运行。
 
 ### 2. 日志处理插件
 

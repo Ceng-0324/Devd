@@ -93,5 +93,6 @@ fn condition_label(condition: &DependencyCondition) -> &'static str {
         DependencyCondition::SocketReady => "socket-ready",
         DependencyCondition::TcpReady => "tcp-ready",
         DependencyCondition::HttpReady => "http-ready",
+        DependencyCondition::ScriptReady => "script-ready",
     }
 }

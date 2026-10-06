@@ -7,7 +7,7 @@ use tokio::{
     time::{Instant, Interval, MissedTickBehavior},
 };
 
-use crate::config::{ConfigValidationError, HealthCheck};
+use crate::config::{ConfigValidationError, HealthCheck, ServiceConfig};
 
 #[derive(Debug, Error)]
 pub enum HealthCheckError {
@@ -35,6 +35,8 @@ pub enum HealthCheckError {
 
 #[derive(Debug, Error)]
 pub enum ProbeFailure {
+    #[error("script probe failed: {message}")]
+    Script { message: String },
     #[error("probe timed out after {timeout:?}")]
     Timeout { timeout: Duration },
     #[error("TCP connection failed: {source}")]
@@ -70,13 +72,14 @@ impl ProbeResult {
 
 #[derive(Debug, Clone)]
 enum Probe {
+    Script { config: Box<ServiceConfig> },
     Tcp { host: String, port: u16 },
     Socket { path: std::path::PathBuf },
     Http { client: Client, url: Url },
 }
 
-/// A validated probe snapshot. Network failures are results, rather than setup
-/// errors. HTTP requests inspect response headers only and do not consume bodies.
+/// A validated probe snapshot. Runtime failures are results, rather than setup
+/// errors. HTTP probes inspect headers; script probes inspect exit status only.
 #[derive(Debug, Clone)]
 pub struct HealthChecker {
     probe: Probe,
@@ -106,11 +109,30 @@ impl HealthChecker {
                 timeout,
                 retries,
                 ..
+            }
+            | HealthCheck::Script {
+                interval,
+                timeout,
+                retries,
+                ..
             } => (*interval, *timeout, *retries),
         };
         checked_deadline(interval, "interval")?;
         checked_deadline(timeout, "timeout")?;
         let probe = match config {
+            HealthCheck::Script { command, .. } => Probe::Script {
+                config: Box::new(ServiceConfig {
+                    command: command.clone(),
+                    cwd: None,
+                    env: Default::default(),
+                    env_file: None,
+                    depends_on: Vec::new(),
+                    restart_on_dep_recovery: false,
+                    healthcheck: None,
+                    restart: Default::default(),
+                    limits: None,
+                }),
+            },
             HealthCheck::Tcp { host, port, .. } => Probe::Tcp {
                 host: host.clone(),
                 port: *port,
@@ -135,11 +157,66 @@ impl HealthChecker {
         })
     }
 
-    /// Perform one bounded probe, including DNS lookup and HTTP/TLS setup.
-    /// Cancellation drops the in-flight connection or request.
+    /// Resolve socket paths and script execution context against the service.
+    /// Environment files retain the same runtime precedence as service spawn.
+    pub fn for_service(
+        config: &HealthCheck,
+        service: &ServiceConfig,
+    ) -> Result<Self, HealthCheckError> {
+        let mut checker = Self::new(config)?;
+        match &mut checker.probe {
+            Probe::Socket { path } if path.is_relative() => {
+                *path = service
+                    .cwd
+                    .as_deref()
+                    .unwrap_or(std::path::Path::new("."))
+                    .join(&*path);
+            }
+            Probe::Script { config } => {
+                config.cwd = service.cwd.clone();
+                config.env = service.env.clone();
+                config.env_file = service.env_file.clone();
+            }
+            _ => {}
+        }
+        Ok(checker)
+    }
+
+    /// Perform one bounded probe, including DNS, HTTP/TLS, or script environment
+    /// loading and process execution. Cancellation closes network requests or
+    /// sends SIGKILL to the script's process group; Tokio reaps its leader.
     pub async fn probe(&self) -> ProbeResult {
         let probe = async {
             match &self.probe {
+                Probe::Script { config } => {
+                    #[cfg(unix)]
+                    {
+                        let mut process =
+                            super::process_manager::ManagedProcess::spawn_probe(config)
+                                .await
+                                .map_err(|error| ProbeFailure::Script {
+                                    message: error.to_string(),
+                                })?;
+                        let status =
+                            process.wait().await.map_err(|error| ProbeFailure::Script {
+                                message: error.to_string(),
+                            })?;
+                        if status.success() {
+                            Ok(())
+                        } else {
+                            Err(ProbeFailure::Script {
+                                message: format!("command exited with {status}"),
+                            })
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        let _ = config;
+                        Err(ProbeFailure::Script {
+                            message: "script probes are not supported on this platform".into(),
+                        })
+                    }
+                }
                 Probe::Tcp { host, port } => TcpStream::connect((host.as_str(), *port))
                     .await
                     .map(|_| ())

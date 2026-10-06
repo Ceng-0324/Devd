@@ -131,6 +131,10 @@ impl DevdConfig {
                 (condition, &target.healthcheck),
                 (DependencyCondition::Started, _)
                     | (
+                        DependencyCondition::ScriptReady,
+                        Some(HealthCheck::Script { .. })
+                    )
+                    | (
                         DependencyCondition::HttpReady,
                         Some(HealthCheck::Http { .. })
                     )
@@ -157,6 +161,20 @@ impl HealthCheck {
     pub fn validate(&self) -> Result<(), ConfigValidationError> {
         let prefix = "healthcheck";
         let (interval, timeout, retries) = match self {
+            HealthCheck::Script {
+                command,
+                interval,
+                timeout,
+                retries,
+            } => {
+                if command.contains('\0')
+                    || !shell_words::split(command)
+                        .is_ok_and(|args| args.first().is_some_and(|arg| !arg.is_empty()))
+                {
+                    return Err(invalid("healthcheck.command", "expected a non-empty command with valid shell-style quoting and no NUL bytes"));
+                }
+                (interval, timeout, retries)
+            }
             HealthCheck::Http {
                 url,
                 interval,
@@ -391,6 +409,33 @@ mod tests {
     #[test]
     fn test_config_validation_accepts_valid_healthchecks_and_readiness() {
         validate("  db: {command: db, healthcheck: {type: socket, path: /tmp/db.sock}}\n  cache: {command: cache, healthcheck: {type: tcp, host: '::1', port: 6379}}\n  api:\n    command: api\n    healthcheck: {type: http, url: 'https://localhost:3000/health'}\n    depends-on:\n      - {service: db, condition: socket-ready}\n      - {service: cache, condition: tcp-ready}\n  web:\n    command: web\n    depends-on: [{service: api, condition: http-ready}]\n").unwrap();
+    }
+
+    #[test]
+    fn test_script_validation_checks_command_timing_and_readiness_type() {
+        for (fields, field) in [
+            ("command: ''", "command"),
+            ("command: \"''\"", "command"),
+            ("command: \"sh '\"", "command"),
+            ("command: \"sh \\0\"", "command"),
+            ("command: probe, interval: 0s", "interval"),
+            ("command: probe, timeout: 0s", "timeout"),
+            ("command: probe, retries: 0", "retries"),
+        ] {
+            let error = validate(&format!(
+                "  api: {{command: api, healthcheck: {{type: script, {fields}}}}}\n"
+            ))
+            .unwrap_err();
+            assert!(
+                matches!(error, ConfigValidationError::InvalidField { field: actual, .. } if actual == format!("services.api.healthcheck.{field}")),
+                "{fields}"
+            );
+        }
+        validate("  api: {command: api, healthcheck: {type: script, command: 'sh check.sh'}}\n  web: {command: web, depends-on: [{service: api, condition: script-ready}]}\n").unwrap();
+        for condition in ["tcp-ready", "http-ready", "socket-ready"] {
+            assert!(validate(&format!("  api: {{command: api, healthcheck: {{type: script, command: probe}}}}\n  web: {{command: web, depends-on: [{{service: api, condition: {condition}}}]}}\n")).is_err());
+        }
+        assert!(validate("  api: {command: api, healthcheck: {type: tcp, port: 80}}\n  web: {command: web, depends-on: [{service: api, condition: script-ready}]}\n").is_err());
     }
 
     #[test]

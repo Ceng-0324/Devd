@@ -81,6 +81,7 @@ pub(super) fn dependency_ready(state: &ServiceSnapshot, condition: &DependencyCo
                 ServiceState::Running | ServiceState::Healthy | ServiceState::Unhealthy
             ),
             DependencyCondition::HttpReady
+            | DependencyCondition::ScriptReady
             | DependencyCondition::TcpReady
             | DependencyCondition::SocketReady => state.status == ServiceState::Healthy,
         }
@@ -116,6 +117,7 @@ mod tests {
         for condition in [
             DependencyCondition::Started,
             DependencyCondition::HttpReady,
+            DependencyCondition::ScriptReady,
             DependencyCondition::TcpReady,
             DependencyCondition::SocketReady,
         ] {
@@ -137,6 +139,7 @@ mod tests {
         for condition in [
             DependencyCondition::Started,
             DependencyCondition::HttpReady,
+            DependencyCondition::ScriptReady,
             DependencyCondition::TcpReady,
             DependencyCondition::SocketReady,
         ] {

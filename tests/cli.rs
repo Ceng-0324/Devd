@@ -7,6 +7,61 @@ use support::{failure, success, wait, Project, Supervisor};
 const RUNNING: &str = "services:\n  worker:\n    command: sh -c 'echo hello; echo problem >&2; exec sleep 60'\n    restart:\n      policy: never\n";
 
 #[test]
+fn test_cli_script_ready_uses_service_context_and_static_checks_do_not_execute() {
+    let project = Project::new("services:\n  worker:\n    command: sleep 60\n    cwd: service\n    env-file: .env\n    env: {OVERRIDE: explicit}\n    restart: {policy: never}\n    healthcheck: {type: script, command: 'sh probe.sh', interval: 50ms, timeout: 1s, retries: 2}\n  web:\n    command: sh -c 'echo web-ready; exec sleep 60'\n    restart: {policy: never}\n    depends-on: [{service: worker, condition: script-ready}]\n");
+    fs::create_dir(project.path().join("service")).unwrap();
+    fs::write(
+        project.path().join("service/.env"),
+        "FILE_VALUE=loaded\nOVERRIDE=wrong\n",
+    )
+    .unwrap();
+    fs::write(project.path().join("service/probe.sh"), "echo probe-secret\necho probe-secret >&2\ntouch probed\ntest \"$FILE_VALUE\" = loaded && test \"$OVERRIDE\" = explicit && test -f ready\n").unwrap();
+    success(project.invoke(&["check"]));
+    for format in ["text", "dot", "mermaid"] {
+        let label = if format == "text" {
+            "ScriptReady"
+        } else {
+            "script-ready"
+        };
+        assert!(success(project.invoke(&["graph", "--format", format])).contains(label));
+    }
+    assert!(!project.path().join("service/probed").exists());
+    let mut supervisor = Supervisor(
+        project
+            .command(&["start"])
+            .current_dir("/tmp")
+            .arg("--config")
+            .arg(project.path().join("devd.yml"))
+            .stdout(fs::File::create(project.path().join("stdout")).unwrap())
+            .stderr(fs::File::create(project.path().join("stderr")).unwrap())
+            .spawn()
+            .unwrap(),
+    );
+    let initial = wait(|| {
+        project.snapshot().filter(|s| {
+            s.services["worker"].status == devd::core::service_manager::ServiceState::Unhealthy
+        })
+    });
+    assert!(initial.services["web"].pid.is_none());
+    fs::write(project.path().join("service/ready"), "").unwrap();
+    let ready = wait(|| {
+        project.snapshot().filter(|s| {
+            s.services["web"].pid.is_some()
+                && s.services["worker"].status == devd::core::service_manager::ServiceState::Healthy
+        })
+    });
+    assert_eq!(ready.services["worker"].pid, initial.services["worker"].pid);
+    wait(|| {
+        success(project.invoke(&["logs", "web"]))
+            .contains("web-ready")
+            .then_some(())
+    });
+    assert!(!success(project.invoke(&["logs"])).contains("probe-secret"));
+    success(project.invoke(&["stop"]));
+    supervisor.finish(true);
+}
+
+#[test]
 fn test_cli_v03_example_profiles_graph_logs_and_snapshots() {
     let example = include_str!("../examples/profiles/devd.yml");
     let project = Project::from_document(example);
@@ -767,6 +822,10 @@ fn test_cli_spawn_failure_and_unsupported_config() {
 #[test]
 fn test_cli_rejects_ignored_settings_before_creating_runtime_state() {
     for (service, message) in [
+        (
+            "command: touch should-not-exist\n    healthcheck: {type: script, command: ''}",
+            "healthcheck.command",
+        ),
         (
             "command: touch should-not-exist\n    restart: {policy: never}\n    limits: {memory: 1MiB, on-exceed: restart}",
             "limits.on-exceed: restart requires an automatic restart policy",

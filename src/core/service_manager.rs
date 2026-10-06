@@ -196,19 +196,10 @@ impl ServiceManager {
                 format!("services.{name}.restart.initial-delay"),
                 service.restart.initial_delay,
             )?;
-            let mut healthcheck = service.healthcheck.clone();
-            if let Some(crate::config::HealthCheck::Socket { path, .. }) = &mut healthcheck {
-                if path.is_relative() {
-                    *path = service
-                        .cwd
-                        .as_deref()
-                        .unwrap_or(std::path::Path::new("."))
-                        .join(&*path);
-                }
-            }
-            let checker = healthcheck
+            let checker = service
+                .healthcheck
                 .as_ref()
-                .map(HealthChecker::new)
+                .map(|check| HealthChecker::for_service(check, service))
                 .transpose()
                 .map_err(|source| ServiceManagerError::Health {
                     service: name.into(),

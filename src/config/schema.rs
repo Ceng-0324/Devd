@@ -77,11 +77,28 @@ pub enum DependencyCondition {
     SocketReady,
     TcpReady,
     HttpReady,
+    ScriptReady,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum HealthCheck {
+    #[serde(rename = "script")]
+    Script {
+        command: String,
+        #[serde(
+            default = "default_health_interval",
+            deserialize_with = "deserialize_duration"
+        )]
+        interval: Duration,
+        #[serde(
+            default = "default_health_timeout",
+            deserialize_with = "deserialize_duration"
+        )]
+        timeout: Duration,
+        #[serde(default = "default_health_retries")]
+        retries: u32,
+    },
     #[serde(rename = "http")]
     Http {
         url: String,
