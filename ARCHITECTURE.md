@@ -18,11 +18,13 @@ flowchart LR
 
 `cli/mod.rs` 负责 clap 参数、配置路径和命令输出；`cli/protocol.rs` 提供有界长度前缀 JSON；`cli/server.rs` 在同一状态锁下管理 socket、编排器与客户端；`cli/stdout.rs` 支持可取消的终端/管道写入。命令通过活实例操作，离线 status 报错，不信任旧快照 PID。
 
-默认状态目录为 `<config-dir>/.devd/<config-name>/`，可用 `--state-dir` 覆盖。服务 cwd 相对配置目录；环境文件相对服务 cwd。stop 的响应表示请求已接受，前台 supervisor 负责完成反向依赖关闭。手动 restart 通过 manager channel 停止旧 actor 并重建，保留计数/日志代次、重新检查依赖，不联动重启其他服务。
+默认状态目录为 `<config-dir>/.devd/<config-name>/`，可用 `--state-dir` 覆盖。服务 cwd 相对配置目录；环境文件相对服务 cwd。stop 的响应表示请求已接受，前台 supervisor 负责完成反向依赖关闭。手动 restart 通过 manager channel 停止旧 actor 并重建，保留计数/日志代次、重新检查依赖；仅当下游显式开启 `restart-on-dep-recovery` 时，目标恢复会触发后续联动。命令成功只表示指定目标的新进程已启动。
 
 当前可用命令为 start、stop、restart、status、logs（含 --follow）、check、graph、init，支持 TCP/HTTP/Unix Socket 健康检查和 fixed/exponential 重启延时。当前开发分支的 status 增加服务主进程 CPU／RSS 采样。下方总体蓝图仍包含未来的 Script 健康检查、配置监听等扩展，不能视为当前实现。
 
 资源采集由 `core::resource_monitor` 每秒通过阻塞线程池读取受管主 PID 的 sysinfo 指标，生命周期仍由 service actor 独占。监控 future 随 manager 驱动、退出时停止轮询；在途 OS 读取只持有局部数据，不能在退出后写回状态。采样以 PID、started_at、restart_count 核对进程代次，actor 发布健康状态时保留同代指标，退出时清除。CPU 首次采样只建立基线；不可用指标保持空值。缓存随代次淘汰，Linux 线程枚举关闭；不统计子进程、不执行资源限制。
+
+依赖联动由 `core::dependency_recovery` 比较依赖进程代次：actor 在通过启动就绪检查的同一个快照读锁内记录直接依赖的 PID、started_at、restart_count。运行期间只在代次变化且所有依赖满足各自条件时停止旧进程组，复用自动重启的退避、预算、依赖等待和日志排空。基线随下一次就绪检查更新，不依赖 watch 保留每次中间事件；单纯健康波动不会触发。每个服务独立恢复，非全图原子操作。监听其他服务状态时保留在途健康探测 future，防止频繁快照更新取消探测。开启联动要求存在依赖且自动策略不是 never；次数耗尽沿用 Failed 与全栈清理语义。
 
 ## 系统架构图
 
@@ -538,7 +540,7 @@ Pending -> Starting -> Running -> Healthy / Unhealthy
 关闭 -> 全栈 Quiescing -> 反向分层 Stopping -> Stopped
 ```
 
-状态快照保存 PID、开始时间、累计重启次数、连续失败次数和退出/错误诊断。watch 状态只保留最新值，不是可靠的历史事件队列；管道读取侧先拼成完整 LogEntry，再写入有界历史和 broadcast，消费者处理 Lagged。没有健康配置的存活服务为 Running。MVP 仅实现 fixed 重启，v0.2 开发版增加 Unix Socket 探测和有上限、可取消的指数退避；依赖联动重启仍为后续设计。当前使用边界见 [README](README.zh-CN.md#用之前知道这几件事)。
+状态快照保存 PID、开始时间、累计重启次数、连续失败次数和退出/错误诊断。watch 状态只保留最新值，不是可靠的历史事件队列；管道读取侧先拼成完整 LogEntry，再写入有界历史和 broadcast，消费者处理 Lagged。没有健康配置的存活服务为 Running。MVP 仅实现 fixed 重启，v0.2 开发版增加 Unix Socket 探测、有上限且可取消的指数退避，以及可选的依赖进程恢复联动重启。当前使用边界见 [README](README.zh-CN.md#用之前知道这几件事)。
 
 ---
 

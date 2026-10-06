@@ -7,6 +7,67 @@ use support::{failure, success, wait, Project, Supervisor};
 const RUNNING: &str = "services:\n  worker:\n    command: sh -c 'echo hello; echo problem >&2; exec sleep 60'\n    restart:\n      policy: never\n";
 
 #[test]
+fn test_cli_dependency_recovery_restarts_opted_in_service_and_retains_logs() {
+    let project = Project::new("services:\n  db:\n    command: sleep 60\n    restart: {policy: never}\n  worker:\n    command: sh -c 'echo worker-started; exec sleep 60'\n    depends-on: [db]\n    restart-on-dep-recovery: true\n    restart: {policy: on-failure, initial-delay: 20ms, max-attempts: 3}\n  unchanged:\n    command: sleep 60\n    depends-on: [db]\n    restart: {policy: never}\n");
+    success(project.invoke(&["check"]));
+    let mut supervisor = project.start();
+    let initial = wait(|| {
+        project
+            .snapshot()
+            .filter(|s| s.services.values().all(|s| s.pid.is_some()))
+    });
+    wait(|| {
+        success(project.invoke(&["logs", "worker"]))
+            .contains("worker-started")
+            .then_some(())
+    });
+    success(project.invoke(&["restart", "db"]));
+    let recovered = wait(|| {
+        project.snapshot().filter(|s| {
+            s.services["worker"].restart_count == 1 && s.services["worker"].pid.is_some()
+        })
+    });
+    assert_ne!(
+        initial.services["worker"].pid,
+        recovered.services["worker"].pid
+    );
+    assert_eq!(
+        initial.services["unchanged"].pid,
+        recovered.services["unchanged"].pid
+    );
+    wait(|| {
+        (success(project.invoke(&["logs", "worker"]))
+            .matches("worker-started")
+            .count()
+            == 2)
+            .then_some(())
+    });
+    success(project.invoke(&["stop"]));
+    supervisor.finish(true);
+    let saved: devd::core::service_manager::RuntimeSnapshot = serde_json::from_slice(
+        &fs::read(project.path().join(".devd/devd.yml/services.json")).unwrap(),
+    )
+    .unwrap();
+    assert!(saved
+        .services
+        .values()
+        .all(|s| s.pid.is_none() && s.resources.is_none()));
+    assert_eq!(saved.services["worker"].restart_count, 1);
+}
+
+#[test]
+fn test_cli_dependency_recovery_rejects_conflicting_policy_before_start() {
+    let project = Project::new("services:\n  db: {command: sleep 60}\n  worker:\n    command: sleep 60\n    depends-on: [db]\n    restart-on-dep-recovery: true\n    restart: {policy: never}\n");
+    for command in ["check", "start"] {
+        failure(
+            project.invoke(&[command]),
+            "requires an automatic restart policy",
+        );
+    }
+    assert!(!project.path().join(".devd").exists());
+}
+
+#[test]
 fn test_cli_resource_samples_follow_busy_process_restart_and_shutdown() {
     let project = Project::new("services:\n  worker:\n    command: sh -c 'while :; do :; done'\n    restart: {policy: never}\n");
     let mut supervisor = project.start();

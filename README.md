@@ -20,7 +20,7 @@ Broken file dependencies still need fixing. devd takes care of the services you 
 
 devd is a local development service manager written in Rust. **v0.2.0-alpha.1 is a prerelease for Linux and macOS**, built on the v0.1 MVP.
 
-The current development checkout also adds CPU and memory samples to `status`; this is not included in the alpha.1 release binaries.
+The current development checkout also adds CPU and memory samples to `status` and opt-in restarts after dependency recovery; these are not included in the alpha.1 release binaries.
 
 Describe your services and their dependencies in `devd.yml`, then run `devd start` in the foreground. Use another terminal to check status, read logs, or restart a service.
 
@@ -135,7 +135,21 @@ devd --config ./devd.local.yml status --json
 
 **It runs in the foreground.** devd manages service tasks with Tokio. Commands in other terminals reach the running instance through a Unix socket. Runtime files default to `.devd/<config-filename>/` inside the configuration directory; add `.devd/` to your project's `.gitignore`. If the socket path is too long, choose a shorter `--state-dir`. Use the same configuration and state directory when addressing the same instance.
 
-**Restarts have a defined scope.** A manual restart affects only the named service and uses the configuration loaded at startup. Success means the new process has started; it may still be waiting to pass its health check. Manual restarts can bypass `never` and the automatic retry limit, but don't reset the cumulative restart count. Terminal failures, such as a startup failure with no retries remaining or an exhausted retry budget, trigger cleanup of the whole stack.
+**Restarts have a defined scope.** A manual restart targets the named service using the configuration loaded at startup. Success means that process has started, not that its health checks or any opted-in dependent restarts have completed. Manual restarts can bypass `never` and the automatic retry limit, but don't reset the cumulative restart count. Terminal failures, such as a startup failure with no retries remaining or an exhausted retry budget, trigger cleanup of the whole stack.
+
+**A service can restart when its dependencies come back.** Add the following to a service that already declares `depends-on`:
+
+```yaml
+restart-on-dep-recovery: true
+restart:
+  policy: on-failure
+  initial-delay: 1s
+  max-attempts: 3
+```
+
+The default is off. An opted-in running service restarts when a direct dependency has a new process generation and all its dependencies satisfy their configured readiness conditions. Both manual and automatic dependency restarts count; health recovery within the same process does not. The service keeps running while dependencies are unavailable. Initial startup and already completed services do not trigger extra restarts. Each link in a chain must opt in to propagate recovery further.
+
+Recovery restarts use the service's backoff and share its cumulative `max-attempts` budget with other restarts; exhaustion cleans up the stack. Enabling this with `policy: never`, or without dependencies, is a configuration error. Recoveries observed before the next startup readiness check completes are combined into one restart. A dependency that changes again after that point can trigger another; this is per-service recovery, not an atomic restart of an entire dependency graph. Stop interrupts the wait, and a manual restart of the dependent can supersede its pending backoff.
 
 **Logs live in memory.** By default, devd retains the latest 1000 entries across the stack, with a 16 KiB limit per line. They can't be queried through `logs` after shutdown. `logs --follow` starts with the requested tail and then streams new entries until Ctrl+C or supervisor shutdown; a lagging follower exits with an error. Up to 16 followers can connect at once, leaving room for control commands. Slow foreground output can lose live entries, with a warning; a broken foreground output pipe triggers service cleanup.
 

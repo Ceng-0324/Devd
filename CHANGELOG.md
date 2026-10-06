@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add opt-in `restart-on-dep-recovery`: restart a running service when a direct dependency is replaced and dependency readiness is restored, using existing backoff and restart budgets. Same-process health fluctuations do not trigger recovery restarts.
+- Keep health probes in flight across dependency and resource snapshot updates; preserve stop/manual restart control during recovery waits.
 - Add per-service leader CPU and RSS samples to `status`, JSON responses, and runtime snapshots, sampled approximately every second without blocking lifecycle control.
 - Reset CPU baselines on restart, discard late samples from previous generations, and clear metrics on exit or unavailable observations.
 - Require Rust 1.95 or newer for the resource-monitoring dependency.

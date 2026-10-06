@@ -81,6 +81,19 @@ services:
 "#;
 
     #[test]
+    fn test_config_dependency_recovery_is_opt_in_and_requires_boolean() {
+        let config = ConfigLoader::from_str(MINIMAL_CONFIG, "test.yml").unwrap();
+        assert!(!config.services["api"].restart_on_dep_recovery);
+        for key in ["restart-on-dep-recovery", "restart_on_dep_recovery"] {
+            let yaml = format!("{MINIMAL_CONFIG}    {key}: true\n");
+            let config = ConfigLoader::from_str(&yaml, "test.yml").unwrap();
+            assert!(config.services["api"].restart_on_dep_recovery);
+            let invalid = format!("{MINIMAL_CONFIG}    {key}: sometimes\n");
+            assert!(ConfigLoader::from_str(&invalid, "test.yml").is_err());
+        }
+    }
+
+    #[test]
     fn test_config_loader_from_str_with_minimal_service() {
         let config = ConfigLoader::from_str(MINIMAL_CONFIG, "devd.yml").unwrap();
 

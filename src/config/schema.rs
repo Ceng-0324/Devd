@@ -22,6 +22,13 @@ pub struct ServiceConfig {
     pub env_file: Option<PathBuf>,
     #[serde(default, rename = "depends-on", alias = "depends_on")]
     pub depends_on: Vec<Dependency>,
+    /// Restart this service after a dependency recovers; disabled by default.
+    #[serde(
+        default,
+        rename = "restart-on-dep-recovery",
+        alias = "restart_on_dep_recovery"
+    )]
+    pub restart_on_dep_recovery: bool,
     #[serde(default)]
     pub healthcheck: Option<HealthCheck>,
     #[serde(default)]

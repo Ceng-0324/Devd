@@ -5,12 +5,11 @@ use std::{
 use chrono::Utc;
 use tokio::{sync::watch, task::JoinSet};
 
-use crate::config::{
-    BackoffType, DependencyCondition, RestartPolicy, RestartPolicyType, ServiceConfig,
-};
+use crate::config::{BackoffType, RestartPolicy, RestartPolicyType, ServiceConfig};
 use crate::logging::{LogCollector, LogLevel};
 
 use super::{
+    dependency_recovery::{dependency_ready, DependencyRecovery},
     health_check::{HealthChecker, HealthMonitor, HealthState, ProbeResult},
     process_manager::ManagedProcess,
     service_manager::{ManagerOptions, RuntimeSnapshot, ServiceSnapshot, ServiceState},
@@ -38,6 +37,7 @@ pub(super) struct ServiceTask {
 enum GenerationEnd {
     Exit(ExitStatus),
     HealthFailure,
+    DependencyRecovery(Vec<String>),
     Error(String),
     Shutdown,
 }
@@ -68,9 +68,9 @@ impl ServiceTask {
     pub async fn run(mut self) {
         let mut restarting = false;
         loop {
-            match self.wait_dependencies().await {
-                Ok(true) => {}
-                Ok(false) => {
+            let dependencies = match self.wait_dependencies().await {
+                Ok(Some(dependencies)) => dependencies,
+                Ok(None) => {
                     self.wait_stop().await;
                     self.mark_stopped();
                     break;
@@ -79,7 +79,7 @@ impl ServiceTask {
                     self.fail(error);
                     break;
                 }
-            }
+            };
             if restarting {
                 self.state.restart_count = self.state.restart_count.saturating_add(1);
             }
@@ -112,7 +112,23 @@ impl ServiceTask {
             self.state.last_error = None;
             let mut readers = self.drain_output(&mut process);
             self.transition(ServiceState::Running);
-            let outcome = self.monitor(&mut process).await;
+            let outcome = self.monitor(&mut process, dependencies).await;
+            if let GenerationEnd::DependencyRecovery(ref names) = outcome {
+                let reason = format!(
+                    "dependencies recovered in new process generations: {}",
+                    names.join(", ")
+                );
+                self.state.last_error = Some(
+                    if self.state.restart_count >= self.config.restart.max_attempts {
+                        format!(
+                            "dependency restart budget exhausted (max-attempts: {}); {reason}",
+                            self.config.restart.max_attempts
+                        )
+                    } else {
+                        format!("restarting after {reason}")
+                    },
+                );
+            }
             let failed = match outcome {
                 GenerationEnd::Shutdown => {
                     self.wait_stop().await;
@@ -135,7 +151,7 @@ impl ServiceTask {
                     }
                     !status.success()
                 }
-                GenerationEnd::HealthFailure => {
+                GenerationEnd::HealthFailure | GenerationEnd::DependencyRecovery(_) => {
                     self.transition(ServiceState::Stopping);
                     match process.stop(self.options.grace_period).await {
                         Ok(status) => self.record_exit(status),
@@ -229,14 +245,14 @@ impl ServiceTask {
         }
     }
 
-    async fn wait_dependencies(&mut self) -> Result<bool, String> {
+    async fn wait_dependencies(&mut self) -> Result<Option<DependencyRecovery>, String> {
         let mut updates = self.snapshots.subscribe();
         let deadline = tokio::time::Instant::now() + self.options.dependency_timeout;
         loop {
             if !self.running() {
-                return Ok(false);
+                return Ok(None);
             }
-            let ready = {
+            {
                 let snapshot = updates.borrow_and_update();
                 let mut ready = true;
                 for edge in &self.config.depends_on {
@@ -250,72 +266,71 @@ impl ServiceTask {
                             edge.service, dependency.status
                         ));
                     }
-                    let condition = match edge.condition {
-                        DependencyCondition::Started => {
-                            dependency.pid.is_some()
-                                && matches!(
-                                    dependency.status,
-                                    ServiceState::Running
-                                        | ServiceState::Healthy
-                                        | ServiceState::Unhealthy
-                                )
-                        }
-                        DependencyCondition::HttpReady
-                        | DependencyCondition::TcpReady
-                        | DependencyCondition::SocketReady => {
-                            dependency.pid.is_some() && dependency.status == ServiceState::Healthy
-                        }
-                    };
-                    ready &= condition;
+                    ready &= dependency_ready(dependency, &edge.condition);
                 }
-                ready
-            };
-            if ready {
-                return Ok(true);
+                if ready {
+                    return Ok(Some(DependencyRecovery::capture(&self.config, &snapshot)));
+                }
             }
             tokio::select! {
                 biased;
-                _ = self.control.changed() => return Ok(false),
+                _ = self.control.changed() => return Ok(None),
                 _ = tokio::time::sleep_until(deadline) => return Err(format!("dependency readiness timed out after {:?}", self.options.dependency_timeout)),
                 _ = updates.changed() => {},
             }
         }
     }
 
-    async fn monitor(&mut self, process: &mut ManagedProcess) -> GenerationEnd {
+    async fn monitor(
+        &mut self,
+        process: &mut ManagedProcess,
+        dependencies: DependencyRecovery,
+    ) -> GenerationEnd {
         let mut health = self.checker.clone().map(HealthMonitor::new);
+        let mut updates = self.snapshots.subscribe();
         loop {
-            if !self.running() {
-                return GenerationEnd::Shutdown;
-            }
-            tokio::select! {
-                biased;
-                _ = self.control.changed() => return GenerationEnd::Shutdown,
-                result = process.wait() => return match result {
-                    Ok(status) => GenerationEnd::Exit(status),
-                    Err(error) => GenerationEnd::Error(error.to_string()),
-                },
-                observation = async {
-                    match &mut health {
-                        Some(monitor) => monitor.next_check().await,
-                        None => pending().await,
-                    }
-                } => {
-                    self.state.consecutive_failures = observation.consecutive_failures;
-                    self.state.last_error = match observation.result {
-                        ProbeResult::Healthy => None,
-                        ProbeResult::Unhealthy(error) => Some(error.to_string()),
-                    };
-                    self.transition(match observation.state {
-                        HealthState::Healthy => ServiceState::Healthy,
-                        HealthState::Retrying => ServiceState::Running,
-                        HealthState::Unhealthy => ServiceState::Unhealthy,
-                    });
-                    if observation.state == HealthState::Unhealthy
-                        && self.config.restart.policy != RestartPolicyType::Never {
-                        return GenerationEnd::HealthFailure;
-                    }
-                },
+            // A resource/peer update is not cancellation of this service's
+            // probe. Keep the in-flight check alive across dependency wakes.
+            let probe = async {
+                match &mut health {
+                    Some(monitor) => monitor.next_check().await,
+                    None => pending().await,
+                }
+            };
+            tokio::pin!(probe);
+            let observation = loop {
+                if !self.running() {
+                    return GenerationEnd::Shutdown;
+                }
+                let recovered = dependencies.recovered(&updates.borrow_and_update());
+                tokio::select! {
+                    biased;
+                    _ = self.control.changed() => return GenerationEnd::Shutdown,
+                    result = process.wait() => return match result {
+                        Ok(status) => GenerationEnd::Exit(status),
+                        Err(error) => GenerationEnd::Error(error.to_string()),
+                    },
+                    _ = std::future::ready(()), if !recovered.is_empty() => {
+                        return GenerationEnd::DependencyRecovery(recovered);
+                    },
+                    observation = &mut probe => break observation,
+                    _ = updates.changed(), if dependencies.enabled() => {},
+                }
+            };
+            self.state.consecutive_failures = observation.consecutive_failures;
+            self.state.last_error = match observation.result {
+                ProbeResult::Healthy => None,
+                ProbeResult::Unhealthy(error) => Some(error.to_string()),
+            };
+            self.transition(match observation.state {
+                HealthState::Healthy => ServiceState::Healthy,
+                HealthState::Retrying => ServiceState::Running,
+                HealthState::Unhealthy => ServiceState::Unhealthy,
+            });
+            if observation.state == HealthState::Unhealthy
+                && self.config.restart.policy != RestartPolicyType::Never
+            {
+                return GenerationEnd::HealthFailure;
             }
         }
     }

@@ -1,4 +1,6 @@
 pub mod dependency;
+#[cfg(unix)]
+mod dependency_recovery;
 pub mod health_check;
 #[cfg(unix)]
 pub mod process_manager;

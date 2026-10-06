@@ -72,6 +72,301 @@ fn dependency(service: &str, condition: DependencyCondition) -> Dependency {
     }
 }
 
+fn recovery_child(directory: &Path, parent: &str, condition: DependencyCondition) -> ServiceConfig {
+    let mut child = sleeper(directory);
+    child.depends_on.push(dependency(parent, condition));
+    child.restart_on_dep_recovery = true;
+    child.restart.policy = RestartPolicyType::OnFailure;
+    child
+}
+
+#[tokio::test]
+async fn test_dependency_recovery_waits_for_replacement_readiness_and_cascades_opt_in_chain() {
+    let directory = tempdir().unwrap();
+    let server = HttpServer::start(200).await;
+    let mut root = sleeper(directory.path());
+    root.healthcheck = Some(server.healthcheck());
+    let child = recovery_child(directory.path(), "root", DependencyCondition::HttpReady);
+    let leaf = recovery_child(directory.path(), "child", DependencyCondition::Started);
+    let mut disabled = sleeper(directory.path());
+    disabled
+        .depends_on
+        .push(dependency("root", DependencyCondition::HttpReady));
+    let manager = ServiceManager::new(
+        config([
+            ("root", root),
+            ("child", child),
+            ("leaf", leaf),
+            ("disabled", disabled),
+        ]),
+        options(&directory),
+    )
+    .unwrap();
+    let controller = manager.controller();
+    let mut run = RunningManager::start(manager);
+    let initial = run
+        .until(|s| s.services.values().all(|s| s.pid.is_some()))
+        .await;
+
+    // Same-process unhealthy -> healthy is not a dependency restart.
+    server.status.store(503, Ordering::SeqCst);
+    run.until(|s| s.services["root"].consecutive_failures >= 3)
+        .await;
+    server.status.store(200, Ordering::SeqCst);
+    run.until(|s| s.services["root"].status == ServiceState::Healthy)
+        .await;
+    assert_eq!(
+        run.snapshots.borrow().services["child"].pid,
+        initial.services["child"].pid
+    );
+    assert_eq!(run.snapshots.borrow().services["child"].restart_count, 0);
+
+    server.status.store(503, Ordering::SeqCst);
+    run.until(|s| s.services["root"].status == ServiceState::Unhealthy)
+        .await;
+    bounded(controller.restart("root".into())).await.unwrap();
+    let not_ready = run
+        .until(|s| {
+            s.services["root"].restart_count == 1 && s.services["root"].consecutive_failures >= 3
+        })
+        .await;
+    assert_eq!(
+        not_ready.services["child"].pid,
+        initial.services["child"].pid
+    );
+    assert_eq!(not_ready.services["leaf"].pid, initial.services["leaf"].pid);
+    server.status.store(200, Ordering::SeqCst);
+    let recovered = run
+        .until(|s| s.services["leaf"].restart_count == 1 && s.services["leaf"].pid.is_some())
+        .await;
+    for name in ["root", "child", "leaf"] {
+        assert_ne!(recovered.services[name].pid, initial.services[name].pid);
+        assert_eq!(recovered.services[name].restart_count, 1);
+        reaped(initial.services[name].pid.unwrap()).await;
+    }
+    assert_eq!(
+        recovered.services["disabled"].pid,
+        initial.services["disabled"].pid
+    );
+    run.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_dependency_recovery_after_automatic_crash_restart() {
+    let directory = tempdir().unwrap();
+    let mut root = sleeper(directory.path());
+    root.restart.policy = RestartPolicyType::OnFailure;
+    let child = recovery_child(directory.path(), "root", DependencyCondition::Started);
+    let mut run = RunningManager::start(
+        ServiceManager::new(
+            config([("root", root), ("child", child)]),
+            options(&directory),
+        )
+        .unwrap(),
+    );
+    let initial = run.until(|s| s.services["child"].pid.is_some()).await;
+    kill(
+        Pid::from_raw(initial.services["root"].pid.unwrap() as i32),
+        Signal::SIGKILL,
+    )
+    .unwrap();
+    let recovered = run
+        .until(|s| s.services["child"].restart_count == 1 && s.services["child"].pid.is_some())
+        .await;
+    assert_eq!(recovered.services["root"].restart_count, 1);
+    reaped(initial.services["root"].pid.unwrap()).await;
+    reaped(initial.services["child"].pid.unwrap()).await;
+    run.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_dependency_recovery_peer_updates_do_not_cancel_in_flight_health_probe() {
+    let directory = tempdir().unwrap();
+    let noisy = HttpServer::start(503).await;
+    let slow = HttpServer::start_with_delay(200, Duration::from_millis(80)).await;
+    let mut root = sleeper(directory.path());
+    root.healthcheck = Some(noisy.healthcheck());
+    let mut child = recovery_child(directory.path(), "root", DependencyCondition::Started);
+    let mut check = slow.healthcheck();
+    if let HealthCheck::Http { timeout, .. } = &mut check {
+        *timeout = Duration::from_secs(1);
+    }
+    child.healthcheck = Some(check);
+    let mut run = RunningManager::start(
+        ServiceManager::new(
+            config([("root", root), ("child", child)]),
+            options(&directory),
+        )
+        .unwrap(),
+    );
+    let observed = run
+        .until(|s| {
+            s.services["child"].status == ServiceState::Healthy
+                && s.services["root"].consecutive_failures >= 3
+        })
+        .await;
+    assert_eq!(observed.services["child"].restart_count, 0);
+    run.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_dependency_recovery_coalesces_replacements_while_waiting_for_other_dependencies() {
+    let directory = tempdir().unwrap();
+    let server = HttpServer::start(200).await;
+    let mut gate = sleeper(directory.path());
+    gate.healthcheck = Some(server.healthcheck());
+    let mut child = recovery_child(directory.path(), "root", DependencyCondition::Started);
+    child
+        .depends_on
+        .push(dependency("gate", DependencyCondition::HttpReady));
+    child.restart.initial_delay = Duration::from_millis(250);
+    let manager = ServiceManager::new(
+        config([
+            ("root", sleeper(directory.path())),
+            ("gate", gate),
+            ("child", child),
+        ]),
+        options(&directory),
+    )
+    .unwrap();
+    let controller = manager.controller();
+    let mut run = RunningManager::start(manager);
+    run.until(|s| s.services["child"].pid.is_some()).await;
+    bounded(controller.restart("root".into())).await.unwrap();
+    run.until(|s| {
+        s.services["child"].status == ServiceState::Restarting && s.services["child"].pid.is_none()
+    })
+    .await;
+    server.status.store(503, Ordering::SeqCst);
+    run.until(|s| s.services["gate"].consecutive_failures >= 3)
+        .await;
+    bounded(controller.restart("root".into())).await.unwrap();
+    bounded(controller.restart("gate".into())).await.unwrap();
+    run.until(|s| s.services["gate"].consecutive_failures >= 3)
+        .await;
+    assert_eq!(run.snapshots.borrow().services["child"].restart_count, 0);
+    assert!(run.snapshots.borrow().services["child"].pid.is_none());
+    server.status.store(200, Ordering::SeqCst);
+    run.until(|s| s.services["child"].restart_count == 1 && s.services["child"].pid.is_some())
+        .await;
+    let final_state = run.shutdown().await.unwrap();
+    assert_eq!(final_state.services["child"].restart_count, 1);
+    assert_eq!(final_state.services["root"].restart_count, 2);
+}
+
+#[tokio::test]
+async fn test_dependency_recovery_stop_interrupts_backoff_without_new_generation() {
+    let directory = tempdir().unwrap();
+    let mut child = recovery_child(directory.path(), "root", DependencyCondition::Started);
+    child.restart.initial_delay = Duration::from_secs(60);
+    child.restart.backoff = BackoffType::Exponential;
+    let manager = ServiceManager::new(
+        config([("root", sleeper(directory.path())), ("child", child)]),
+        options(&directory),
+    )
+    .unwrap();
+    let controller = manager.controller();
+    let mut run = RunningManager::start(manager);
+    let first = run.until(|s| s.services["child"].pid.is_some()).await;
+    bounded(controller.restart("root".into())).await.unwrap();
+    let waiting = run
+        .until(|s| {
+            s.services["child"].status == ServiceState::Restarting
+                && s.services["child"].pid.is_none()
+        })
+        .await;
+    assert!(waiting.services["child"]
+        .last_error
+        .as_ref()
+        .unwrap()
+        .contains("dependencies recovered"));
+    let final_state = run.shutdown().await.unwrap();
+    assert_eq!(final_state.services["child"].restart_count, 0);
+    assert!(final_state.services.values().all(|s| s.pid.is_none()));
+    reaped(first.services["child"].pid.unwrap()).await;
+}
+
+#[tokio::test]
+async fn test_dependency_recovery_manual_restart_supersedes_pending_backoff() {
+    let directory = tempdir().unwrap();
+    let mut child = recovery_child(directory.path(), "root", DependencyCondition::Started);
+    child.restart.initial_delay = Duration::from_secs(60);
+    let manager = ServiceManager::new(
+        config([("root", sleeper(directory.path())), ("child", child)]),
+        options(&directory),
+    )
+    .unwrap();
+    let controller = manager.controller();
+    let mut run = RunningManager::start(manager);
+    run.until(|s| s.services["child"].pid.is_some()).await;
+    bounded(controller.restart("root".into())).await.unwrap();
+    run.until(|s| {
+        s.services["child"].status == ServiceState::Restarting && s.services["child"].pid.is_none()
+    })
+    .await;
+    let manual = bounded(controller.restart("child".into())).await.unwrap();
+    assert!(manual.pid.is_some());
+    assert_eq!(manual.restart_count, 1);
+    let final_state = run.shutdown().await.unwrap();
+    assert_eq!(final_state.services["child"].restart_count, 1);
+}
+
+#[tokio::test]
+async fn test_dependency_recovery_budget_exhaustion_preserves_cause_and_cleans_stack() {
+    let directory = tempdir().unwrap();
+    let mut child = recovery_child(directory.path(), "root", DependencyCondition::Started);
+    child.restart.max_attempts = 1;
+    let manager = ServiceManager::new(
+        config([("root", sleeper(directory.path())), ("child", child)]),
+        options(&directory),
+    )
+    .unwrap();
+    let controller = manager.controller();
+    let mut run = RunningManager::start(manager);
+    run.until(|s| s.services["child"].pid.is_some()).await;
+    bounded(controller.restart("root".into())).await.unwrap();
+    let once = run
+        .until(|s| s.services["child"].pid.is_some() && s.services["child"].restart_count == 1)
+        .await;
+    // The stack may fail before the CLI receives the second root restart reply.
+    let _ = bounded(controller.restart("root".into())).await;
+    let result = run.finish().await;
+    assert!(matches!(
+        result,
+        Err(ServiceManagerError::FailedServices { .. })
+    ));
+    let final_state = run.snapshots.borrow().clone();
+    assert_eq!(final_state.services["child"].status, ServiceState::Failed);
+    assert_eq!(final_state.services["child"].restart_count, 1);
+    assert!(final_state.services["child"]
+        .last_error
+        .as_ref()
+        .unwrap()
+        .contains("dependency restart budget exhausted"));
+    assert!(final_state.services.values().all(|s| s.pid.is_none()));
+    reaped(once.services["child"].pid.unwrap()).await;
+}
+
+#[tokio::test]
+async fn test_dependency_recovery_does_not_resurrect_completed_services() {
+    let directory = tempdir().unwrap();
+    let mut child = recovery_child(directory.path(), "root", DependencyCondition::Started);
+    child.command = "sh -c 'exit 0'".into();
+    let manager = ServiceManager::new(
+        config([("root", sleeper(directory.path())), ("child", child)]),
+        options(&directory),
+    )
+    .unwrap();
+    let controller = manager.controller();
+    let mut run = RunningManager::start(manager);
+    run.until(|s| s.services["child"].status == ServiceState::Stopped)
+        .await;
+    bounded(controller.restart("root".into())).await.unwrap();
+    let final_state = run.shutdown().await.unwrap();
+    assert_eq!(final_state.services["child"].status, ServiceState::Stopped);
+    assert_eq!(final_state.services["child"].restart_count, 0);
+}
+
 fn options(directory: &TempDir) -> ManagerOptions {
     let mut options = ManagerOptions::new(directory.path().join("state/services.json"));
     options.grace_period = Duration::from_millis(100);
@@ -269,13 +564,20 @@ struct HttpServer {
 
 impl HttpServer {
     async fn start(status: u16) -> Self {
+        Self::start_with_delay(status, Duration::ZERO).await
+    }
+
+    async fn start_with_delay(status: u16, delay: Duration) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let status = Arc::new(AtomicU16::new(status));
         let app = Router::new()
             .route(
                 "/health",
-                get(|State(status): State<Arc<AtomicU16>>| async move {
+                get(move |State(status): State<Arc<AtomicU16>>| async move {
+                    if !delay.is_zero() {
+                        tokio::time::sleep(delay).await;
+                    }
                     StatusCode::from_u16(status.load(Ordering::SeqCst)).unwrap()
                 }),
             )

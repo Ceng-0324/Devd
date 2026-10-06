@@ -4,7 +4,7 @@ use thiserror::Error;
 
 use crate::core::dependency::{DependencyError, DependencyGraph};
 
-use super::{BackoffType, DependencyCondition, DevdConfig, HealthCheck};
+use super::{BackoffType, DependencyCondition, DevdConfig, HealthCheck, RestartPolicyType};
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ConfigValidationError {
@@ -60,6 +60,20 @@ impl DevdConfig {
                     format!("{prefix}.limits"),
                     "resource limits are not implemented; remove 'limits' before starting services",
                 ));
+            }
+            if service.restart_on_dep_recovery {
+                if service.depends_on.is_empty() {
+                    return Err(invalid(
+                        format!("{prefix}.restart-on-dep-recovery"),
+                        "requires at least one dependency",
+                    ));
+                }
+                if service.restart.policy == RestartPolicyType::Never {
+                    return Err(invalid(
+                        format!("{prefix}.restart-on-dep-recovery"),
+                        "requires an automatic restart policy (on-failure or always), not never",
+                    ));
+                }
             }
             if service.restart.backoff == BackoffType::Exponential
                 && service.restart.max_delay < service.restart.initial_delay
@@ -200,6 +214,26 @@ mod tests {
         ConfigLoader::from_str(&format!("version: '1'\nservices:\n{services}"), "test.yml")
             .unwrap()
             .validate()
+    }
+
+    #[test]
+    fn test_config_dependency_recovery_rejects_missing_dependencies_and_never_policy() {
+        for fields in [
+            "restart-on-dep-recovery: true",
+            "depends-on: [db], restart-on-dep-recovery: true, restart: {policy: never}",
+        ] {
+            let error = validate(&format!(
+                "  db: {{command: db}}\n  api: {{command: api, {fields}}}\n"
+            ))
+            .unwrap_err();
+            assert!(
+                matches!(error, ConfigValidationError::InvalidField { field, .. }
+                if field == "services.api.restart-on-dep-recovery")
+            );
+        }
+        for policy in ["on-failure", "always"] {
+            validate(&format!("  db: {{command: db}}\n  api: {{command: api, depends-on: [db], restart-on-dep-recovery: true, restart: {{policy: {policy}}}}}\n")).unwrap();
+        }
     }
 
     #[test]
