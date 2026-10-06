@@ -20,7 +20,7 @@ Broken file dependencies still need fixing. devd takes care of the services you 
 
 devd is a local development service manager written in Rust. **v0.2.0-alpha.1 is a prerelease for Linux and macOS**, built on the v0.1 MVP.
 
-The current development checkout also adds CPU and memory samples to `status`, opt-in restarts after dependency recovery, named configuration profiles, and configuration snapshots; these are not included in the alpha.1 release binaries.
+The current development checkout also adds CPU and memory samples to `status`, opt-in restarts after dependency recovery, named configuration profiles, configuration snapshots, dependency diagram export, and log filters; these are not included in the alpha.1 release binaries.
 
 Describe your services and their dependencies in `devd.yml`, then run `devd start` in the foreground. Use another terminal to check status, read logs, or restart a service.
 
@@ -137,7 +137,7 @@ Services merge by name. `env` and `restart` merge by key; other fields, includin
 
 Paths retain the usual configuration-directory and service-`cwd` rules. Profile names start with an ASCII letter, digit, or underscore and contain only ASCII letters, digits, `_`, `-`, or `.`. Names are case-sensitive. Runtime files use `.devd/<config-filename>/profiles/<name>/`; uppercase letters are escaped as `~hh` to stay distinct on case-insensitive filesystems. With an explicit `--state-dir`, the same `profiles/<name>/` suffix is appended. This isolates control and state files; service ports and application files still need distinct values when running environments together. `init` rejects `--profile`.
 
-Try the [runnable dev / staging / prod example](examples/profiles/README.md).
+Try the [runnable dev / staging / prod example](examples/profiles/README.md), which also walks through graph export, filtered logs, and snapshot restoration.
 
 ### Configuration snapshots
 

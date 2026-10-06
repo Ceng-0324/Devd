@@ -8,6 +8,11 @@ services:
       policy: on-failure
       initial-delay: 1s
       max-attempts: 3
+  reporter:
+    command: sh -c 'echo "reporter ready"; exec sleep 3600'
+    depends-on: [worker]
+    restart:
+      policy: never
 profiles:
   dev:
     services:

@@ -18,7 +18,7 @@
 
 devd 是用 Rust 编写的本地开发服务管理器。**v0.2.0-alpha.1 是基于 v0.1 MVP 的预发布版，支持 Linux 和 macOS**。
 
-当前开发分支还增加了 `status` 的 CPU／内存采样、可选的依赖恢复联动重启，以及 v0.3 的多环境配置和配置快照；这些能力尚未包含在 alpha.1 发布的二进制中。
+当前开发分支还增加了 `status` 的 CPU／内存采样、可选的依赖恢复联动重启，以及 v0.3 的多环境配置、配置快照、依赖图导出和日志筛选；这些能力尚未包含在 alpha.1 发布的二进制中。
 
 一份 `devd.yml` 描述服务和依赖，`devd start` 在前台管理它们。你可以继续在另一个终端查状态、翻日志或重启某个服务。
 
@@ -129,13 +129,13 @@ profiles:
         env: {MODE: staging}
 ```
 
-`devd check --profile staging` 检查合并后的配置，`devd start --profile staging` 启动它。这里的 `LOG_LEVEL` 会从基础配置继承。查看状态、读日志、重启、停止时，使用同一个 `--profile`；不指定时选择基础配置及其独立实例。这是 v0.3 开发中的第一个模块，alpha.1 发布二进制尚未包含。
+`devd check --profile staging` 检查合并后的配置，`devd start --profile staging` 启动它。这里的 `LOG_LEVEL` 会从基础配置继承。查看状态、读日志、重启、停止时，使用同一个 `--profile`；不指定时选择基础配置及其独立实例。alpha.1 发布二进制尚未包含此功能。
 
 服务按名称合并。`env` 和 `restart` 按字段覆盖，其余字段整体替换，包括依赖列表和健康检查。`cwd`、`env-file`、`healthcheck` 等可选字段可以用 `null` 清除；空映射表示继承，`depends-on: []` 则清空依赖。新增服务必须有命令；暂不支持删除服务或 profile 之间的继承。未选中的 profile 也会检查未知字段，依赖及就绪条件按所选结果校验。不带 profile 的 `check` 检查基础配置。
 
 路径仍沿用配置目录和服务 `cwd` 的相对路径规则。profile 名称以 ASCII 字母、数字或下划线开头，只允许 ASCII 字母、数字、`_`、`-`、`.`，区分大小写。默认运行目录为 `.devd/<配置文件名>/profiles/<名称>/`，大写字母转义为 `~hh`，避免大小写不敏感文件系统上的实例碰撞；显式 `--state-dir` 同样追加 `profiles/<名称>/`。隔离的是控制端点和状态文件，服务端口、应用文件仍需自行配置不同值。`init` 不接受 `--profile`。
 
-可以直接试 [dev / staging / prod 示例](examples/profiles/README.md)。
+可以直接试 [dev / staging / prod 示例](examples/profiles/README.md)，其中也有依赖图导出、日志筛选和快照恢复的完整步骤。
 
 ### 配置快照
 

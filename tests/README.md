@@ -27,6 +27,9 @@ case-sensitive names, and control after configuration corruption/deletion.
 `snapshots.rs` verifies exact YAML round trips, deleted/invalid source recovery,
 new-file-only behavior, safe path handling, symlink rejection, and unchanged live
 supervisor process ownership.
+The runnable `examples/profiles/devd.yml` also has an end-to-end CLI test for
+profile validation, graph export, exact snapshot recovery, filtered logs, and
+concurrent instance isolation.
 
 | Scenario | Evidence |
 | --- | --- |

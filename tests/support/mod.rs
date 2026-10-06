@@ -19,16 +19,16 @@ pub struct Project {
 
 impl Project {
     pub fn new(yaml: &str) -> Self {
+        Self::from_document(&format!("version: '1'\n{yaml}"))
+    }
+
+    pub fn from_document(yaml: &str) -> Self {
         // Keep Unix socket paths short on macOS, whose default TMPDIR is long.
         let directory = tempfile::Builder::new()
             .prefix("devd-test-")
             .tempdir_in("/tmp")
             .unwrap();
-        fs::write(
-            directory.path().join("devd.yml"),
-            format!("version: '1'\n{yaml}"),
-        )
-        .unwrap();
+        fs::write(directory.path().join("devd.yml"), yaml).unwrap();
         Self { directory }
     }
 

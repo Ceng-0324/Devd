@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Complete the v0.3 documentation with a runnable profile example covering dependency diagrams, filtered logs, configuration snapshots, and isolated instances.
 - Filter `logs` history and live follow by exact level, relative start time, and literal message text; apply `--tail` after filtering.
 - Export validated dependency graphs as DOT or Mermaid with readiness labels and isolated-service nodes; keep the existing text view as the default.
 - Add byte-preserving configuration snapshots with `snapshot save` and `snapshot restore --output`; include all profiles, create new files atomically without overwriting, and keep runtime state and processes untouched.

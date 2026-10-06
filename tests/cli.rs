@@ -7,6 +7,73 @@ use support::{failure, success, wait, Project, Supervisor};
 const RUNNING: &str = "services:\n  worker:\n    command: sh -c 'echo hello; echo problem >&2; exec sleep 60'\n    restart:\n      policy: never\n";
 
 #[test]
+fn test_cli_v03_example_profiles_graph_logs_and_snapshots() {
+    let example = include_str!("../examples/profiles/devd.yml");
+    let project = Project::from_document(example);
+    for profile in ["dev", "staging", "prod"] {
+        success(project.invoke(&["check", "--profile", profile]));
+    }
+    let dot = success(project.invoke(&["graph", "--profile", "dev", "--format", "dot"]));
+    assert!(dot.contains("\"worker\" -> \"reporter\" [label=\"started\"]"));
+    let mermaid =
+        success(project.invoke(&["graph", "--profile", "staging", "--format", "mermaid"]));
+    assert!(mermaid.contains("s1 -->|started| s0"));
+
+    success(project.invoke(&["snapshot", "save", "before-edit"]));
+    success(project.invoke(&[
+        "snapshot",
+        "restore",
+        "before-edit",
+        "--output",
+        "restored.yml",
+    ]));
+    assert_eq!(
+        fs::read_to_string(project.path().join("restored.yml")).unwrap(),
+        example
+    );
+
+    let mut supervisors = Vec::new();
+    for profile in ["dev", "staging"] {
+        supervisors.push(Supervisor(
+            project
+                .command(&["start", "--profile", profile])
+                .stdout(fs::File::create(project.path().join(format!("stdout-{profile}"))).unwrap())
+                .stderr(fs::File::create(project.path().join(format!("stderr-{profile}"))).unwrap())
+                .spawn()
+                .unwrap(),
+        ));
+        wait(|| {
+            let output = project.invoke(&["logs", "worker", "--profile", profile]);
+            (output.status.success()
+                && String::from_utf8_lossy(&output.stdout)
+                    .contains(&format!("worker ready ({profile})")))
+            .then_some(())
+        });
+    }
+    let filtered = success(project.invoke(&[
+        "logs",
+        "worker",
+        "--profile",
+        "dev",
+        "--level",
+        "info",
+        "--since",
+        "5m",
+        "--grep",
+        "ready",
+        "--tail",
+        "1",
+    ]));
+    assert!(filtered.contains("worker ready (dev)"));
+    assert!(!filtered.contains("staging"));
+    success(project.invoke(&["stop", "--profile", "dev"]));
+    supervisors[0].finish(true);
+    success(project.invoke(&["status", "--profile", "staging"]));
+    success(project.invoke(&["stop", "--profile", "staging"]));
+    supervisors[1].finish(true);
+}
+
+#[test]
 fn test_cli_profiles_isolate_instances_and_keep_controls_after_config_removal() {
     use devd::core::service_manager::RuntimeSnapshot;
     for explicit_state_dir in [false, true] {
