@@ -348,9 +348,18 @@ flowchart TD
     entry --> live[Broadcast: 256 complete entries]
     history --> query[LogHistory.recent: optional service filter]
     live --> writer[Single async writer: prefixes and colors]
+    live --> disk[Opt-in blocking disk writer: bounded subscription]
+    disk --> files[JSONL current file + size-rotated archives]
+    files --> offline[Offline filtered tail: logs --stored]
 ```
 
-完整条目在读取管道侧生成，历史插入与 live 分发顺序一致。单行默认最多保留 16 KiB，超长行标记截断；EOF、取消和读取错误记录尾部一次。慢终端只丢失完整 live 条目并报告 WARN，不阻塞采集或服务管理。CLI start 输出实时日志；logs 在 supervisor 端按服务、级别、固定时间下界和字面关键词筛选，`--tail` 对匹配结果计数，follow 的历史快照与订阅仍在同一锁内完成，并沿用相同条件筛选实时条目。磁盘日志持久化和轮转属于 v0.4。
+完整条目在读取管道侧生成，历史插入与 live 分发顺序一致。单行默认最多保留 16 KiB，超长行标记截断；EOF、取消和读取错误记录尾部一次。慢终端只丢失完整 live 条目并报告 WARN，不阻塞采集或服务管理。CLI start 输出实时日志；logs 在 supervisor 端按服务、级别、固定时间下界和字面关键词筛选，`--tail` 对匹配结果计数，follow 的历史快照与订阅仍在同一锁内完成，并沿用相同条件筛选实时条目。
+
+v0.4 的 `start --persist-logs` 在实例状态目录的 `logs/` 写 JSONL，不改变默认内存模式。CLI 在持有状态锁且启动服务前打开存储；独立 blocking writer 持有磁盘独占锁及状态锁租约，消费同一个有界 broadcast，落后时写入 WARN 缺口记录，I/O 失败触发有序关停。正常退出等待磁盘队列排空和 `sync_data`，不使用终端 writer 的一秒超时。强杀不保证未同步数据。
+
+当前文件为 `current.jsonl`；轮转通过逆序 rename 保留 `archive-1.jsonl`（最新）至 `archive-N.jsonl`，默认单文件 10 MiB、3 份归档。跨运行追加，降低保留数会删除多余归档；完整记录不跨文件。新目录/文件权限为 0700/0600，拒绝日志目录符号链接、受管文件符号链接/硬链接及非普通文件。异常中断的当前文件尾部在有界扫描后截掉，并追加诊断；不会静默忽略完整损坏记录。轮转不是多文件事务，强杀期间可能留下编号缺口，读取按已有文件顺序进行。
+
+`logs --stored` 通过 blocking pool 获取磁盘共享锁，按最旧归档至当前文件流式读取，复用 LogFilter 并用有界队列保留匹配的最新条目。它不读 YAML、不接管进程；持久化 writer 仍运行时明确报错，不能搭配 follow。正常 `logs` 继续读取本次运行内存，不隐式切换数据源。磁盘查询每条 JSON 也有大小上限，避免损坏文件导致无界分配。
 
 ---
 
@@ -383,10 +392,11 @@ devd/
 │   │   ├── restart_policy.rs  # Restart strategy
 │   │   └── process_manager.rs # Process spawn/kill/signal
 │   │
-│   ├── logging/               # Implemented: log collection + output
+│   ├── logging/               # Implemented: collection, output and persistence
 │   │   ├── mod.rs             # LogEntry, LogLevel, public interfaces
 │   │   ├── collector.rs       # Bounded line framing + ring history
-│   │   └── output.rs          # Serial async writer + colors
+│   │   ├── output.rs          # Serial async writer + colors
+│   │   └── storage.rs         # Bounded JSONL rotation and offline queries
 │   │
 │   ├── config/                # Configuration
 │   │   ├── mod.rs

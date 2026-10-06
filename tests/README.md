@@ -48,6 +48,14 @@ concurrent instance isolation.
 Graph CLI checks also compare default and explicit text output, verify deterministic DOT/Mermaid nodes and condition-labeled edges, apply the selected profile, and reject invalid formats and dependencies without creating runtime state.
 Log filter checks cover matching order and inclusive time boundaries, filtered tail counts, live follow after a restart, and invalid level or duration values.
 
+`persistent_logs.rs` exercises opt-in startup, default memory-only behavior,
+offline queries after YAML deletion, cross-run append, profile isolation with
+an explicit state directory, final partial-line drain, real size rotation,
+invalid arguments, setup failure without process side effects, and storage
+failure followed by ordered process cleanup. Storage unit tests cover retention,
+filter-before-tail, JSON escaping, interrupted tails, corrupt/oversized records,
+file locks, permissions, symlink/hard-link rejection, and explicit lag diagnostics.
+
 ## Fixture ownership and determinism
 
 - Each scenario copies YAML and `workload.sh` into its own short temporary directory. The workload records start/stop events and publishes each generation's leader and descendant PIDs atomically. `crash-<service>` files inject a one-shot failure.

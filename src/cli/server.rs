@@ -4,7 +4,10 @@ use crate::{
         service_manager::{ManagerOptions, ServiceManager},
         state_store::StateStore,
     },
-    logging::{write_logs, LogFormatter},
+    logging::{
+        storage::{LogStorage, StorageOptions},
+        write_logs, LogFormatter,
+    },
 };
 use anyhow::{bail, Context, Result};
 use std::{
@@ -33,6 +36,7 @@ pub(super) async fn start(
     options: ManagerOptions,
     socket: PathBuf,
     formatter: LogFormatter,
+    storage_options: Option<StorageOptions>,
 ) -> Result<()> {
     let mut interrupt = signal(SignalKind::interrupt())?;
     let mut terminate = signal(SignalKind::terminate())?;
@@ -60,6 +64,24 @@ pub(super) async fn start(
     let history = manager.log_history();
     let controller = manager.controller();
     let logs = manager.subscribe_logs();
+    // Open under the state lock, before polling the manager and spawning any
+    // services. Each blocking writer owns its disk lock until drain completes.
+    let storage = if let Some(options) = storage_options {
+        let directory = socket.parent().unwrap().join("logs");
+        let lease = store.clone();
+        Some(
+            tokio::task::spawn_blocking(move || {
+                let _lease = lease;
+                LogStorage::open(&directory, options)
+            })
+            .await
+            .context("disk log setup task failed")?
+            .context("cannot open persistent logs")?,
+        )
+    } else {
+        None
+    };
+    let disk_logs = storage.as_ref().map(|_| manager.subscribe_logs());
     let (shutdown, mut stopping) = watch::channel(false);
     let mut run = Box::pin(manager.run_with_store(
         async move {
@@ -72,6 +94,14 @@ pub(super) async fn start(
         store.clone(),
     ));
     let stdout = super::stdout::Stdout::new()?;
+    let mut disk_writer = JoinSet::new();
+    if let Some((storage, logs)) = storage.zip(disk_logs) {
+        let lease = store.clone();
+        disk_writer.spawn_blocking(move || {
+            let _lease = lease;
+            storage.run(logs)
+        });
+    }
     let mut writer = JoinSet::new();
     writer.spawn(write_logs(stdout, logs, formatter));
     let mut writer_done = false;
@@ -85,10 +115,16 @@ pub(super) async fn start(
             result = &mut run => break result,
             _ = interrupt.recv() => { shutdown.send_replace(true); },
             _ = terminate.recv() => { shutdown.send_replace(true); },
+            Some(result) = disk_writer.join_next() => {
+                if let Err(error) = result.context("disk log writer task failed").and_then(|r| r.context("cannot write persistent logs")) {
+                    failure.get_or_insert(error);
+                    shutdown.send_replace(true);
+                }
+            },
             Some(result) = writer.join_next(), if !writer_done => {
                 writer_done = true;
                 if let Err(error) = result.context("log writer task failed").and_then(|r| r.context("cannot write service logs")) {
-                    failure = Some(error);
+                    failure.get_or_insert(error);
                     shutdown.send_replace(true);
                 }
             },
@@ -96,7 +132,7 @@ pub(super) async fn start(
             accepted = listener.accept(), if clients.len() < 32 && !*shutdown.borrow() => {
                 let (mut stream, _) = match accepted {
                     Ok(client) => client,
-                    Err(error) => { failure = Some(error.into()); shutdown.send_replace(true); continue; }
+                    Err(error) => { failure.get_or_insert(error.into()); shutdown.send_replace(true); continue; }
                 };
                 let snapshots = snapshots.clone();
                 let history = history.clone();
@@ -168,6 +204,16 @@ pub(super) async fn start(
         }
     };
     drop(run);
+    // Disk persistence is not subject to the terminal writer's one-second
+    // timeout: drain all accepted entries and sync before releasing state.
+    if let Some(result) = disk_writer.join_next().await {
+        if let Err(error) = result
+            .context("disk log writer task failed")
+            .and_then(|r| r.context("cannot write persistent logs"))
+        {
+            failure.get_or_insert(error);
+        }
+    }
     let _ = tokio::time::timeout(Duration::from_secs(1), async {
         while clients.join_next().await.is_some() {}
     })
@@ -176,7 +222,12 @@ pub(super) async fn start(
     if !writer_done {
         match tokio::time::timeout(Duration::from_secs(1), writer.join_next()).await {
             Ok(Some(result)) => {
-                result.context("log writer task failed")??;
+                if let Err(error) = result
+                    .context("log writer task failed")
+                    .and_then(|r| r.context("cannot write service logs"))
+                {
+                    failure.get_or_insert(error);
+                }
             }
             Err(_) => {
                 writer.shutdown().await;
@@ -184,9 +235,9 @@ pub(super) async fn start(
             Ok(None) => {}
         }
     }
-    result?;
     if let Some(error) = failure {
         return Err(error);
     }
+    result?;
     Ok(())
 }

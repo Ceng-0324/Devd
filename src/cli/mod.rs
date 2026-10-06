@@ -18,7 +18,7 @@ use tokio::io::AsyncWriteExt;
 use crate::{
     config::{parse_duration, validate_profile_name, ConfigLoader, DevdConfig},
     core::service_manager::{ManagerOptions, ServiceManager},
-    logging::{ColorMode, LogFilter, LogFormatter, LogLevel},
+    logging::{storage::StorageOptions, ColorMode, LogFilter, LogFormatter, LogLevel},
 };
 use protocol::{Request, Response};
 
@@ -50,7 +50,17 @@ enum Color {
 #[derive(Subcommand)]
 enum Command {
     /// Start all services in the foreground; Ctrl+C stops the stack.
-    Start,
+    Start {
+        /// Persist JSONL logs in the instance's state directory.
+        #[arg(long)]
+        persist_logs: bool,
+        /// Maximum size of new log files in MiB (1–1024).
+        #[arg(long, requires = "persist_logs", value_parser = clap::value_parser!(u16).range(1..=1024))]
+        log_max_size: Option<u16>,
+        /// Number of rotated log files to retain, in addition to the current file.
+        #[arg(long, requires = "persist_logs", value_parser = clap::value_parser!(u16).range(1..=100))]
+        log_keep: Option<u16>,
+    },
     /// Request ordered shutdown of the running supervisor.
     Stop,
     /// Stop and start one service using the running configuration.
@@ -60,7 +70,7 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Print buffered logs (memory only, oldest first).
+    /// Print buffered logs, or query stored logs after shutdown (oldest first).
     Logs {
         service: Option<String>,
         #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u16).range(1..=1000))]
@@ -77,6 +87,9 @@ enum Command {
         /// Continue printing new entries until Ctrl+C or the supervisor stops.
         #[arg(short, long)]
         follow: bool,
+        /// Read disk logs after the persistent supervisor stops; no YAML needed.
+        #[arg(long, conflicts_with = "follow")]
+        stored: bool,
     },
     /// Validate configuration and supported MVP settings without starting services.
     Check,
@@ -183,10 +196,18 @@ impl Cli {
                     output(&format!("Restored configuration to {}\n", path.display()))?;
                 }
             },
-            Command::Start => {
+            Command::Start {
+                persist_logs,
+                log_max_size,
+                log_keep,
+            } => {
                 let config = load_config(&config_path, self.profile.as_deref()).await?;
                 let manager = ServiceManager::new(config, options.clone())?;
-                server::start(manager, options, socket, formatter).await?;
+                let storage = persist_logs.then(|| StorageOptions {
+                    max_file_bytes: u64::from(log_max_size.unwrap_or(10)) * 1024 * 1024,
+                    keep: log_keep.unwrap_or(3),
+                });
+                server::start(manager, options, socket, formatter, storage).await?;
             }
             Command::Check => {
                 ServiceManager::new(
@@ -271,7 +292,36 @@ impl Cli {
                 level,
                 since,
                 grep,
+                stored: true,
+                ..
+            } => {
+                let filter = log_filter(level, since, grep)?;
+                let directory = state_dir.join("logs");
+                let entries = tokio::task::spawn_blocking(move || {
+                    crate::logging::storage::read_stored(
+                        &directory,
+                        service.as_deref(),
+                        &filter,
+                        tail.into(),
+                    )
+                })
+                .await
+                .context("stored log reader task failed")?
+                .context("cannot read stored logs; enable persistence at startup and query after shutdown")?;
+                let text: String = entries
+                    .iter()
+                    .map(|entry| formatter.format(entry))
+                    .collect();
+                output(&text)?;
+            }
+            Command::Logs {
+                service,
+                tail,
+                level,
+                since,
+                grep,
                 follow,
+                ..
             } if follow => {
                 let filter = log_filter(level, since, grep)?;
                 let mut stream = protocol::connect(&socket).await?;

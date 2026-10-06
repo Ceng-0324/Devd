@@ -20,6 +20,8 @@ devd 是用 Rust 编写的本地开发服务管理器。**v0.3.0-alpha.1 是基�
 
 此版本增加了 `status` 的 CPU／内存采样、可选的依赖恢复联动重启，以及多环境配置、配置快照、依赖图导出和日志筛选。
 
+main 分支正在开发 v0.4，第一个模块是可选的磁盘日志和轮转。下文新增命令需要从源码安装，v0.3 发布制品尚不包含这些能力。
+
 一份 `devd.yml` 描述服务和依赖，`devd start` 在前台管理它们。你可以继续在另一个终端查状态、翻日志或重启某个服务。
 
 - **按依赖启动**：独立服务并发启动；依赖可以等待进程启动，也可以等待 TCP / HTTP / Unix Socket 健康检查通过。
@@ -167,11 +169,11 @@ devd graph --profile staging --format mermaid > dependencies.mmd
 
 | 命令 | 用途 |
 | --- | --- |
-| `devd start` | 前台启动全栈并实时输出日志 |
+| `devd start [--persist-logs] [--log-max-size MiB] [--log-keep N]` | 前台启动全栈，可选保留磁盘日志 |
 | `devd stop` | 请求有序关闭，前台进程完成清理后退出 |
 | `devd restart <service>` | 用启动时的配置重启一个服务，重新检查依赖 |
 | `devd status [--json]` | 查看实时状态、PID、CPU／RSS、重启次数和诊断信息 |
-| `devd logs [service] [--tail N] [--level info|warn|error] [--since DURATION] [--grep TEXT] [--follow]` | 查询或跟随经过筛选的内存日志 |
+| `devd logs [service] [--tail N] [--level info|warn|error] [--since DURATION] [--grep TEXT] [--follow \| --stored]` | 查询内存或离线磁盘日志，跟随实时输出 |
 | `devd check` | 校验配置、命令引号、依赖关系及当前支持的设置 |
 | `devd graph [--format text|dot|mermaid]` | 显示依赖边与启动层，或导出依赖图 |
 | `devd init [--service NAME] [--command CMD]` | 创建通过校验的初始配置，不覆盖现有文件 |
@@ -205,7 +207,21 @@ restart:
 
 联动复用服务的退避设置，与其他重启共用累计 `max-attempts` 预算；耗尽后清理全栈。与 `policy: never` 同时启用、或未声明依赖，会在配置检查时明确报错。下一次启动就绪检查完成前观察到的多次恢复合并为一次重启；之后依赖再次变化，仍可能再触发一次，各服务独立恢复，不是整张依赖图的原子重启。停止可打断等待，手动重启当前服务可接管待执行的联动退避。
 
-**日志保存在内存里。** 默认保留全栈最近 1000 条，单行最多 16 KiB，停止后不能再通过 `logs` 查询。`logs --follow` 先输出指定条数的历史日志，再持续接收新日志，按 Ctrl+C 或 supervisor 停止时退出；跟随者落后过多会报错退出。最多同时连接 16 个跟随者，为控制命令保留连接槽位。前台输出过慢时会丢弃部分实时条目并告警；前台输出管道断开会触发服务清理。
+**日志默认保存在内存里。** 保留全栈最近 1000 条，单行最多 16 KiB；没有开启持久化时，停止后无法再查询。`logs --follow` 先输出指定条数的历史日志，再持续接收新日志，按 Ctrl+C 或 supervisor 停止时退出；跟随者落后过多会报错退出。最多同时连接 16 个跟随者，为控制命令保留连接槽位。前台输出过慢时会丢弃部分实时条目并告警；前台输出管道断开会触发服务清理。
+
+**需要留案底，就显式写盘。** 用 `devd start --persist-logs` 启动，退出后用 `devd logs --stored` 查询：
+
+```bash
+devd start --persist-logs --log-max-size 10 --log-keep 3
+# 前台 supervisor 停止后：
+devd logs api --stored --level error --since 1h --tail 50
+```
+
+实例状态目录下保存 `logs/current.jsonl` 和 `logs/archive-1.jsonl`（最新归档），归档数量由配置控制。每条记录保留 UTC 时间、服务名、进程代次、级别、消息和截断标记。默认单文件 10 MiB，保留 3 份归档，日志数据最多 40 MiB；完整记录将超过上限时先轮转。`--log-max-size` 支持 1–1024 MiB，`--log-keep` 支持 1–100 份归档，均要求 `--persist-logs`。减小保留数后，下次持久化启动会删除多余的受管归档。减小文件大小上限不会重写已有归档，它们会随正常轮转淘汰。新目录和文件权限为 0700／0600。日志可能含应用密钥；多次启动会追加到当前文件，共用这套保留上限。
+
+查询时使用与启动相同的 `--config`、`--profile` 和 `--state-dir`。不同实例/profile 的日志隔离；YAML 被删除后仍可用 `--stored` 查询，但必须先停止持久化 writer，且不能与 `--follow` 同用。日志目录不存在时报错，服务名没有历史记录时返回空结果。普通 `logs` 仍只读本次运行的内存。磁盘查询在全部保留文件上使用相同过滤条件，再取最新的 tail 条。
+
+磁盘写入使用独立的有界订阅，不阻塞服务采集。磁盘过慢可能丢失完整条目，文件中会留下包含丢失数量的 `devd` WARN。写盘失败会有序停止全栈并返回错误。正常关闭会排空已接收条目并同步磁盘；强杀或断电可能丢失尚未同步的数据。离线查询忽略异常中断留下的最后半条 JSONL，下次持久化启动会清掉它并记录警告；损坏的完整记录会让查询报错。这是有上限的开发日志，不是审计日志。
 
 `--level`、`--since`、`--grep` 可单独使用或组合，用于筛选历史和实时日志。例如 `devd logs api --level error --since 5m --grep database --tail 50 --follow` 先显示最多 50 条匹配的内存历史，再持续接收匹配的新日志。级别精确匹配；`--grep` 对原始消息做区分大小写的字面匹配。`--since` 支持 `ms`、`s`、`m`、`h`（如 `500ms`、`2h`），在命令发起时固定截止时间。筛选无法找回已从内存淘汰的日志。
 
@@ -213,7 +229,7 @@ restart:
 
 **资源指标只统计服务主进程。** supervisor 大约每秒采样一次，不累加 shell 或包管理器启动的子进程。CPU 以一个核心满载为 100%，多线程进程可以超过 100%；内存为 RSS，终端以 MiB 显示。不可用的指标显示 `-`，CPU 在启动或重启后需要两次成功采样。JSON 的可选 `resources` 包含 `cpu_percent`（预热时为 `null`）、`memory_bytes` 和 `sampled_at`。进程退出后清除指标；采样只用于观察，`limits` 仍不支持。
 
-当前范围是本地进程管理。`init` 可生成初始配置；项目扫描和交互式模板仍在规划。热重载、磁盘日志和 TUI 也在后续规划里。
+当前范围是本地进程管理。`init` 可生成初始配置；项目扫描和交互式模板仍在规划。热重载和 TUI 也在后续模块规划里。
 
 配置会拒绝未知字段和未实现的 `limits`。YAML 值按字面使用，尚未实现 `${VAR}` 替换。`backoff: exponential` 从 `initial-delay` 开始，随累计重启次数翻倍，到 `max-delay` 封顶（默认 60s，不能小于初始延时）；健康检查成功不会重置计数。fixed 不使用 `max-delay`；两种等待均可被停止操作中断。
 
