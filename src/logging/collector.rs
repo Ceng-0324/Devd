@@ -11,7 +11,7 @@ use tokio::{
     sync::broadcast,
 };
 
-use super::{LogEntry, LogLevel};
+use super::{LogEntry, LogFilter, LogLevel};
 
 #[derive(Debug, Clone, Copy)]
 pub struct LogOptions {
@@ -48,11 +48,21 @@ pub struct LogHistory {
 impl LogHistory {
     /// Return up to `limit` newest matching entries, ordered oldest first.
     pub fn recent(&self, service: Option<&str>, limit: usize) -> Vec<Arc<LogEntry>> {
+        self.recent_filtered(service, &LogFilter::default(), limit)
+    }
+
+    /// Apply predicates before selecting the newest `limit` entries.
+    pub fn recent_filtered(
+        &self,
+        service: Option<&str>,
+        filter: &LogFilter,
+        limit: usize,
+    ) -> Vec<Arc<LogEntry>> {
         let store = self
             .entries
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
-        Self::filtered(&store, service, limit)
+        Self::filtered(&store, service, filter, limit)
     }
 
     /// Subscribe and snapshot under the same lock used by publishers.
@@ -60,6 +70,16 @@ impl LogHistory {
     pub fn subscribe_with_recent(
         &self,
         service: Option<&str>,
+        limit: usize,
+    ) -> (Vec<Arc<LogEntry>>, broadcast::Receiver<Arc<LogEntry>>) {
+        self.subscribe_with_filtered(service, &LogFilter::default(), limit)
+    }
+
+    /// Snapshot matching history and start a live subscription atomically.
+    pub fn subscribe_with_filtered(
+        &self,
+        service: Option<&str>,
+        filter: &LogFilter,
         limit: usize,
     ) -> (Vec<Arc<LogEntry>>, broadcast::Receiver<Arc<LogEntry>>) {
         let store = self
@@ -70,18 +90,21 @@ impl LogHistory {
             Some(sender) => sender.subscribe(),
             None => broadcast::channel(1).1,
         };
-        (Self::filtered(&store, service, limit), receiver)
+        (Self::filtered(&store, service, filter, limit), receiver)
     }
 
     fn filtered(
         store: &VecDeque<Arc<LogEntry>>,
         service: Option<&str>,
+        filter: &LogFilter,
         limit: usize,
     ) -> Vec<Arc<LogEntry>> {
         let mut entries: Vec<_> = store
             .iter()
             .rev()
-            .filter(|entry| service.is_none_or(|service| entry.service == service))
+            .filter(|entry| {
+                service.is_none_or(|service| entry.service == service) && filter.matches(entry)
+            })
             .take(limit)
             .cloned()
             .collect();
@@ -425,6 +448,62 @@ mod tests {
         assert_eq!(history.recent(Some("a"), 1)[0].message, "fourth");
         assert!(history.recent(Some("missing"), 10).is_empty());
         assert!(history.recent(None, 0).is_empty());
+    }
+
+    #[test]
+    fn test_logging_history_filters_before_tail_with_inclusive_since() {
+        use chrono::{TimeZone, Utc};
+
+        let at = Utc.with_ymd_and_hms(2026, 1, 1, 12, 0, 0).unwrap();
+        let entries: VecDeque<_> = [
+            (
+                "api",
+                LogLevel::Error,
+                "database old",
+                at - chrono::Duration::seconds(1),
+            ),
+            ("api", LogLevel::Error, "database first", at),
+            ("web", LogLevel::Error, "database other", at),
+            ("api", LogLevel::Info, "database info", at),
+            (
+                "api",
+                LogLevel::Error,
+                "database second",
+                at + chrono::Duration::seconds(1),
+            ),
+            (
+                "api",
+                LogLevel::Error,
+                "unrelated",
+                at + chrono::Duration::seconds(2),
+            ),
+        ]
+        .into_iter()
+        .map(|(service, level, message, timestamp)| {
+            Arc::new(LogEntry {
+                timestamp,
+                service: service.into(),
+                generation: 0,
+                level,
+                message: message.into(),
+                truncated: false,
+            })
+        })
+        .collect();
+        let filter = LogFilter {
+            level: Some(LogLevel::Error),
+            since: Some(at),
+            grep: Some("database".into()),
+        };
+        let matches = LogHistory::filtered(&entries, Some("api"), &filter, 2);
+        assert_eq!(
+            matches
+                .iter()
+                .map(|entry| entry.message.as_str())
+                .collect::<Vec<_>>(),
+            ["database first", "database second"]
+        );
+        assert!(LogHistory::filtered(&entries, Some("api"), &filter, 0).is_empty());
     }
 
     #[tokio::test]

@@ -9,7 +9,7 @@ use tokio::{
 
 use crate::{
     core::service_manager::{RuntimeSnapshot, ServiceSnapshot},
-    logging::LogEntry,
+    logging::{LogEntry, LogFilter},
 };
 
 const MAX_REQUEST: usize = 4096;
@@ -27,10 +27,14 @@ pub(super) enum Request {
     Logs {
         service: Option<String>,
         tail: usize,
+        #[serde(default)]
+        filter: LogFilter,
     },
     FollowLogs {
         service: Option<String>,
         tail: usize,
+        #[serde(default)]
+        filter: LogFilter,
     },
 }
 
@@ -118,6 +122,44 @@ pub(super) async fn next_response(stream: &mut UnixStream) -> Result<Option<Resp
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_cli_protocol_log_filter_defaults_and_rejects_unknown_fields() {
+        let old: Request =
+            serde_json::from_str(r#"{"command":"logs","service":null,"tail":10}"#).unwrap();
+        assert!(matches!(
+            old,
+            Request::Logs {
+                filter: LogFilter {
+                    level: None,
+                    since: None,
+                    grep: None
+                },
+                ..
+            }
+        ));
+
+        let filtered: Request = serde_json::from_str(
+            r#"{"command":"follow-logs","service":"api","tail":3,"filter":{"level":"Error","grep":"database"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            filtered,
+            Request::FollowLogs {
+                filter: LogFilter {
+                    level: Some(crate::logging::LogLevel::Error),
+                    grep: Some(_),
+                    ..
+                },
+                ..
+            }
+        ));
+
+        assert!(serde_json::from_str::<Request>(
+            r#"{"command":"logs","service":null,"tail":10,"filter":{"regex":".*"}}"#
+        )
+        .is_err());
+    }
 
     #[tokio::test(start_paused = true)]
     async fn test_cli_log_stream_bounds_partial_frames_but_allows_silence() {

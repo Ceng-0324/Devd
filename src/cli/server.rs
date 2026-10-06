@@ -112,16 +112,16 @@ pub(super) async fn start(
                             shutdown.send_replace(true);
                             return result;
                         }
-                        Ok(Request::Logs { service, tail }) => {
+                        Ok(Request::Logs { service, tail, filter }) => {
                             if service.as_ref().is_some_and(|name| !snapshots.borrow().services.contains_key(name)) {
                                 Response::Error(format!("unknown service '{}'", service.unwrap()))
                             } else if !(1..=1000).contains(&tail) {
                                 Response::Error("tail must be between 1 and 1000".into())
                             } else {
-                                Response::Logs(history.recent(service.as_deref(), tail).iter().map(|entry| (**entry).clone()).collect())
+                                Response::Logs(history.recent_filtered(service.as_deref(), &filter, tail).iter().map(|entry| (**entry).clone()).collect())
                             }
                         }
-                        Ok(Request::FollowLogs { service, tail }) => {
+                        Ok(Request::FollowLogs { service, tail, filter }) => {
                             if service.as_ref().is_some_and(|name| !snapshots.borrow().services.contains_key(name)) {
                                 return protocol::write(&mut stream, &Response::Error(format!("unknown service '{}'", service.unwrap()))).await;
                             }
@@ -131,7 +131,7 @@ pub(super) async fn start(
                             let Ok(_permit) = followers.try_acquire_owned() else {
                                 return protocol::write(&mut stream, &Response::Error("too many log followers (maximum 16)".into())).await;
                             };
-                            let (entries, mut live) = history.subscribe_with_recent(service.as_deref(), tail);
+                            let (entries, mut live) = history.subscribe_with_filtered(service.as_deref(), &filter, tail);
                             protocol::write(&mut stream, &Response::Logs(entries.iter().map(|entry| (**entry).clone()).collect())).await?;
                             loop {
                                 let mut unexpected = [0];
@@ -143,7 +143,7 @@ pub(super) async fn start(
                                     entry = live.recv() => entry,
                                 };
                                 match entry {
-                                    Ok(entry) if service.as_ref().is_none_or(|name| entry.service == *name) => {
+                                    Ok(entry) if service.as_ref().is_none_or(|name| entry.service == *name) && filter.matches(&entry) => {
                                         protocol::write(&mut stream, &Response::Log((*entry).clone())).await?;
                                     }
                                     Ok(_) => {}

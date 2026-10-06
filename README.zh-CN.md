@@ -171,7 +171,7 @@ devd graph --profile staging --format mermaid > dependencies.mmd
 | `devd stop` | 请求有序关闭，前台进程完成清理后退出 |
 | `devd restart <service>` | 用启动时的配置重启一个服务，重新检查依赖 |
 | `devd status [--json]` | 查看实时状态、PID、CPU／RSS、重启次数和诊断信息 |
-| `devd logs [service] [--tail N] [--follow]` | 查询内存日志（默认 100 条，N 为 1–1000），可持续接收新日志 |
+| `devd logs [service] [--tail N] [--level info|warn|error] [--since DURATION] [--grep TEXT] [--follow]` | 查询或跟随经过筛选的内存日志 |
 | `devd check` | 校验配置、命令引号、依赖关系及当前支持的设置 |
 | `devd graph [--format text|dot|mermaid]` | 显示依赖边与启动层，或导出依赖图 |
 | `devd init [--service NAME] [--command CMD]` | 创建通过校验的初始配置，不覆盖现有文件 |
@@ -206,6 +206,8 @@ restart:
 联动复用服务的退避设置，与其他重启共用累计 `max-attempts` 预算；耗尽后清理全栈。与 `policy: never` 同时启用、或未声明依赖，会在配置检查时明确报错。下一次启动就绪检查完成前观察到的多次恢复合并为一次重启；之后依赖再次变化，仍可能再触发一次，各服务独立恢复，不是整张依赖图的原子重启。停止可打断等待，手动重启当前服务可接管待执行的联动退避。
 
 **日志保存在内存里。** 默认保留全栈最近 1000 条，单行最多 16 KiB，停止后不能再通过 `logs` 查询。`logs --follow` 先输出指定条数的历史日志，再持续接收新日志，按 Ctrl+C 或 supervisor 停止时退出；跟随者落后过多会报错退出。最多同时连接 16 个跟随者，为控制命令保留连接槽位。前台输出过慢时会丢弃部分实时条目并告警；前台输出管道断开会触发服务清理。
+
+`--level`、`--since`、`--grep` 可单独使用或组合，用于筛选历史和实时日志。例如 `devd logs api --level error --since 5m --grep database --tail 50 --follow` 先显示最多 50 条匹配的内存历史，再持续接收匹配的新日志。级别精确匹配；`--grep` 对原始消息做区分大小写的字面匹配。`--since` 支持 `ms`、`s`、`m`、`h`（如 `500ms`、`2h`），在命令发起时固定截止时间。筛选无法找回已从内存淘汰的日志。
 
 **诊断反映当前实例。** `status` 离线时返回错误，遗留状态文件仅用于诊断。配置内容被改坏后，仍可通过活实例执行 `stop`、`status`、`logs` 和 `restart`。`check` 做静态校验，可执行文件、环境文件和探测端点是否可用，要到运行时确认。命令失败返回非零退出码。
 

@@ -588,6 +588,71 @@ fn test_cli_follow_logs_replays_tail_then_streams_until_shutdown() {
 }
 
 #[test]
+fn test_cli_logs_filters_history_and_follow_with_the_same_predicate() {
+    let project = Project::new(RUNNING);
+    let mut supervisor = project.start();
+    project.running();
+    wait(|| {
+        success(project.invoke(&["logs"]))
+            .contains("problem")
+            .then_some(())
+    });
+
+    let filtered = success(project.invoke(&[
+        "logs", "worker", "--level", "error", "--since", "1h", "--grep", "problem", "--tail", "1",
+    ]));
+    assert_eq!(filtered.lines().count(), 1);
+    assert!(filtered.contains("problem"));
+    assert!(!filtered.contains("hello"));
+    assert!(success(project.invoke(&["logs", "--level", "warn"])).is_empty());
+    assert!(success(project.invoke(&["logs", "--grep", "PROBLEM"])).is_empty());
+    assert!(success(project.invoke(&["logs", "--since", "0s"])).is_empty());
+
+    let output = project.path().join("filtered-follow.log");
+    let mut follower = Supervisor(
+        project
+            .command(&[
+                "logs", "worker", "--follow", "--level", "error", "--grep", "problem", "--tail",
+                "1",
+            ])
+            .stdout(fs::File::create(&output).unwrap())
+            .stderr(fs::File::create(project.path().join("filtered-follow.err")).unwrap())
+            .spawn()
+            .unwrap(),
+    );
+    wait(|| {
+        (fs::read_to_string(&output)
+            .unwrap()
+            .matches("problem")
+            .count()
+            == 1)
+            .then_some(())
+    });
+    success(project.invoke(&["restart", "worker"]));
+    wait(|| {
+        (fs::read_to_string(&output)
+            .unwrap()
+            .matches("problem")
+            .count()
+            == 2)
+            .then_some(())
+    });
+    assert!(!fs::read_to_string(&output).unwrap().contains("hello"));
+
+    for args in [
+        &["logs", "--level", "fatal"][..],
+        &["logs", "--since", "5d"],
+        &["logs", "--since", "9999999999h"],
+        &["logs", "--since", "9999999999999999999h"],
+    ] {
+        assert!(!project.invoke(args).status.success(), "{args:?}");
+    }
+    success(project.invoke(&["stop"]));
+    supervisor.finish(true);
+    follower.finish(true);
+}
+
+#[test]
 fn test_cli_relative_cwd_env_file_and_deleted_config() {
     let project = Project::new("services:\n  worker:\n    command: sh -c 'echo $MARKER; pwd; exec sleep 60'\n    cwd: service\n    env-file: local.env\n    restart: {policy: never}\n");
     fs::create_dir(project.path().join("service")).unwrap();

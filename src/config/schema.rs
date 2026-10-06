@@ -248,7 +248,7 @@ where
     }
 }
 
-fn parse_duration(value: &str) -> Result<Duration, String> {
+pub(crate) fn parse_duration(value: &str) -> Result<Duration, String> {
     let value = value.trim();
     let (number, unit) = value.split_at(
         value

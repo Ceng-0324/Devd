@@ -350,7 +350,7 @@ flowchart TD
     live --> writer[Single async writer: prefixes and colors]
 ```
 
-完整条目在读取管道侧生成，历史插入与 live 分发顺序一致。单行默认最多保留 16 KiB，超长行标记截断；EOF、取消和读取错误记录尾部一次。慢终端只丢失完整 live 条目并报告 WARN，不阻塞采集或服务管理。CLI start 输出实时日志，logs 查询内存快照；磁盘日志持久化和轮转属于 v0.4。
+完整条目在读取管道侧生成，历史插入与 live 分发顺序一致。单行默认最多保留 16 KiB，超长行标记截断；EOF、取消和读取错误记录尾部一次。慢终端只丢失完整 live 条目并报告 WARN，不阻塞采集或服务管理。CLI start 输出实时日志；logs 在 supervisor 端按服务、级别、固定时间下界和字面关键词筛选，`--tail` 对匹配结果计数，follow 的历史快照与订阅仍在同一锁内完成，并沿用相同条件筛选实时条目。磁盘日志持久化和轮转属于 v0.4。
 
 ---
 

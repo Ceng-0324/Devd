@@ -43,6 +43,7 @@ supervisor process ownership.
 
 `cli.rs` covers command options, malformed input, duplicate supervisors, configuration deletion, control protocol errors, and terminal backpressure. Lower-level lifecycle, orchestration, health, configuration, dependency, and logging suites retain their focused checks.
 Graph CLI checks also compare default and explicit text output, verify deterministic DOT/Mermaid nodes and condition-labeled edges, apply the selected profile, and reject invalid formats and dependencies without creating runtime state.
+Log filter checks cover matching order and inclusive time boundaries, filtered tail counts, live follow after a restart, and invalid level or duration values.
 
 ## Fixture ownership and determinism
 

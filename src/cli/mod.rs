@@ -10,14 +10,15 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
+use chrono::Utc;
 use clap::{Parser, Subcommand, ValueEnum};
 use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 
 use crate::{
-    config::{validate_profile_name, ConfigLoader, DevdConfig},
+    config::{parse_duration, validate_profile_name, ConfigLoader, DevdConfig},
     core::service_manager::{ManagerOptions, ServiceManager},
-    logging::{ColorMode, LogFormatter},
+    logging::{ColorMode, LogFilter, LogFormatter, LogLevel},
 };
 use protocol::{Request, Response};
 
@@ -64,6 +65,15 @@ enum Command {
         service: Option<String>,
         #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u16).range(1..=1000))]
         tail: u16,
+        /// Match one exact log level.
+        #[arg(long, value_enum)]
+        level: Option<LogLevel>,
+        /// Include entries from the last duration (for example, 5m or 2h).
+        #[arg(long, value_parser = parse_duration)]
+        since: Option<std::time::Duration>,
+        /// Match this literal, case-sensitive text in the raw message.
+        #[arg(long)]
+        grep: Option<String>,
         /// Continue printing new entries until Ctrl+C or the supervisor stops.
         #[arg(short, long)]
         follow: bool,
@@ -258,14 +268,19 @@ impl Cli {
             Command::Logs {
                 service,
                 tail,
+                level,
+                since,
+                grep,
                 follow,
             } if follow => {
+                let filter = log_filter(level, since, grep)?;
                 let mut stream = protocol::connect(&socket).await?;
                 protocol::write(
                     &mut stream,
                     &Request::FollowLogs {
                         service,
                         tail: tail.into(),
+                        filter,
                     },
                 )
                 .await?;
@@ -313,12 +328,21 @@ impl Cli {
                     result = stdout.flush() => result?,
                 }
             }
-            Command::Logs { service, tail, .. } => {
+            Command::Logs {
+                service,
+                tail,
+                level,
+                since,
+                grep,
+                ..
+            } => {
+                let filter = log_filter(level, since, grep)?;
                 let Response::Logs(entries) = protocol::request(
                     &socket,
                     Request::Logs {
                         service,
                         tail: tail.into(),
+                        filter,
                     },
                 )
                 .await?
@@ -334,6 +358,23 @@ impl Cli {
         }
         Ok(())
     }
+}
+
+fn log_filter(
+    level: Option<LogLevel>,
+    since: Option<std::time::Duration>,
+    grep: Option<String>,
+) -> Result<LogFilter> {
+    let since = since
+        .map(|duration| {
+            let duration =
+                chrono::Duration::from_std(duration).context("--since duration is too large")?;
+            Utc::now()
+                .checked_sub_signed(duration)
+                .context("--since duration is too large")
+        })
+        .transpose()?;
+    Ok(LogFilter { level, since, grep })
 }
 
 async fn absolute_config(path: &Path) -> Result<PathBuf> {

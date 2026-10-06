@@ -173,7 +173,7 @@ Diagram arrows point from each prerequisite to the service that depends on it; e
 | `devd stop` | Request ordered shutdown; the foreground process exits after cleanup |
 | `devd restart <service>` | Restart one service using the configuration loaded at startup, rechecking dependencies |
 | `devd status [--json]` | Show live state, PIDs, CPU / RSS, restart counts, and diagnostics |
-| `devd logs [service] [--tail N] [--follow]` | Query buffered logs (default 100, N from 1–1000); optionally stream new entries |
+| `devd logs [service] [--tail N] [--level info|warn|error] [--since DURATION] [--grep TEXT] [--follow]` | Query or follow filtered in-memory logs |
 | `devd check` | Validate configuration, command quoting, dependencies, and supported settings |
 | `devd graph [--format text|dot|mermaid]` | Show dependency edges and startup layers, or export a diagram |
 | `devd init [--service NAME] [--command CMD]` | Create a checked starter configuration without overwriting an existing file |
@@ -208,6 +208,8 @@ The default is off. An opted-in running service restarts when a direct dependenc
 Recovery restarts use the service's backoff and share its cumulative `max-attempts` budget with other restarts; exhaustion cleans up the stack. Enabling this with `policy: never`, or without dependencies, is a configuration error. Recoveries observed before the next startup readiness check completes are combined into one restart. A dependency that changes again after that point can trigger another; this is per-service recovery, not an atomic restart of an entire dependency graph. Stop interrupts the wait, and a manual restart of the dependent can supersede its pending backoff.
 
 **Logs live in memory.** By default, devd retains the latest 1000 entries across the stack, with a 16 KiB limit per line. They can't be queried through `logs` after shutdown. `logs --follow` starts with the requested tail and then streams new entries until Ctrl+C or supervisor shutdown; a lagging follower exits with an error. Up to 16 followers can connect at once, leaving room for control commands. Slow foreground output can lose live entries, with a warning; a broken foreground output pipe triggers service cleanup.
+
+Filter history or a live stream with `--level`, `--since`, and `--grep`, alone or together. For example, `devd logs api --level error --since 5m --grep database --tail 50 --follow` first shows up to 50 matching retained entries, then matching new ones. Level matches exactly; `--grep` is literal and case-sensitive against the raw message. `--since` accepts `ms`, `s`, `m`, or `h` (for example `500ms` or `2h`) and fixes its cutoff when the command starts. Filtering cannot recover entries evicted from memory.
 
 **Diagnostics describe the running instance.** `status` returns an error when the supervisor is offline; leftover state files are for diagnosis. If you break the configuration file while devd is running, you can still use `stop`, `status`, `logs`, and `restart`. `check` performs static validation; executable availability, environment files, and probe endpoints are checked at runtime. Failed commands return a nonzero exit code.
 
