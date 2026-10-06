@@ -402,6 +402,58 @@ fn test_cli_help_validation_graph_and_failures() {
 }
 
 #[test]
+fn test_cli_graph_diagrams_include_all_services_and_readiness_conditions() {
+    let project = Project::new(
+        "services:\n  api:\n    command: sleep 60\n    depends-on:\n      - db\n      - {service: http-probe, condition: http-ready}\n      - {service: tcp1, condition: tcp-ready}\n      - {service: socket_probe, condition: socket-ready}\n  db: {command: sleep 60}\n  http-probe:\n    command: sleep 60\n    healthcheck: {type: http, url: 'http://127.0.0.1:8080/health'}\n  idle.node: {command: sleep 60}\n  socket_probe:\n    command: sleep 60\n    healthcheck: {type: socket, path: ./service.sock}\n  tcp1:\n    command: sleep 60\n    healthcheck: {type: tcp, port: 8080}\n",
+    );
+    let default = success(project.invoke(&["graph"]));
+    assert_eq!(
+        default,
+        success(project.invoke(&["graph", "--format", "text"]))
+    );
+    assert!(default.contains("api -> db (Started)"));
+    assert!(default.contains("api -> http-probe (HttpReady)"));
+    assert!(default.contains("api -> socket_probe (SocketReady)"));
+    assert!(default.contains("api -> tcp1 (TcpReady)"));
+
+    assert_eq!(
+        success(project.invoke(&["graph", "--format", "dot"])),
+        "digraph devd {\n  rankdir=LR;\n  \"api\";\n  \"db\";\n  \"http-probe\";\n  \"idle.node\";\n  \"socket_probe\";\n  \"tcp1\";\n  \"db\" -> \"api\" [label=\"started\"];\n  \"http-probe\" -> \"api\" [label=\"http-ready\"];\n  \"socket_probe\" -> \"api\" [label=\"socket-ready\"];\n  \"tcp1\" -> \"api\" [label=\"tcp-ready\"];\n}\n"
+    );
+    assert_eq!(
+        success(project.invoke(&["graph", "--format", "mermaid"])),
+        "flowchart LR\n  s0[\"api\"]\n  s1[\"db\"]\n  s2[\"http-probe\"]\n  s3[\"idle.node\"]\n  s4[\"socket_probe\"]\n  s5[\"tcp1\"]\n  s1 -->|started| s0\n  s2 -->|http-ready| s0\n  s4 -->|socket-ready| s0\n  s5 -->|tcp-ready| s0\n"
+    );
+    assert!(!project.path().join(".devd").exists());
+}
+
+#[test]
+fn test_cli_graph_formats_use_selected_profile_and_reject_invalid_config() {
+    let project = Project::new("services:\n  app: {command: sleep 60}\nprofiles:\n  dev:\n    services:\n      db: {command: sleep 60}\n      app: {depends-on: [db]}\n");
+    let base = success(project.invoke(&["graph", "--format", "dot"]));
+    assert!(base.contains("\"app\";"));
+    assert!(!base.contains("\"db\""));
+    let dev = success(project.invoke(&["graph", "--profile", "dev", "--format", "mermaid"]));
+    assert!(dev.contains("s0[\"app\"]\n  s1[\"db\"]"));
+    assert!(dev.contains("s1 -->|started| s0"));
+    failure(
+        project.invoke(&["graph", "--format", "svg"]),
+        "invalid value 'svg'",
+    );
+
+    fs::write(
+        project.path().join("devd.yml"),
+        "version: '1'\nservices:\n  app: {command: sleep 60, depends-on: [missing]}\n",
+    )
+    .unwrap();
+    for format in ["text", "dot", "mermaid"] {
+        let output = project.invoke(&["graph", "--format", format]);
+        failure(output, "unknown dependency 'missing'");
+    }
+    assert!(!project.path().join(".devd").exists());
+}
+
+#[test]
 fn test_cli_init_creates_valid_config_and_preserves_existing_file() {
     let project = Project::new("services:\n  old:\n    command: sleep 60\n");
     let path = project.path().join("starter.yml");

@@ -1,3 +1,4 @@
+mod graph;
 mod protocol;
 mod server;
 mod snapshot;
@@ -15,10 +16,7 @@ use tokio::io::AsyncWriteExt;
 
 use crate::{
     config::{validate_profile_name, ConfigLoader, DevdConfig},
-    core::{
-        dependency::DependencyGraph,
-        service_manager::{ManagerOptions, ServiceManager},
-    },
+    core::service_manager::{ManagerOptions, ServiceManager},
     logging::{ColorMode, LogFormatter},
 };
 use protocol::{Request, Response};
@@ -72,8 +70,12 @@ enum Command {
     },
     /// Validate configuration and supported MVP settings without starting services.
     Check,
-    /// Display dependencies and parallel startup layers.
-    Graph,
+    /// Display dependencies and parallel startup layers, or export a diagram.
+    Graph {
+        /// Output format. Diagram arrows run from prerequisites to dependents.
+        #[arg(long, value_enum, default_value_t = graph::GraphFormat::Text)]
+        format: graph::GraphFormat,
+    },
     /// Create a starter configuration without replacing an existing file.
     Init {
         /// Name of the first service.
@@ -190,30 +192,10 @@ impl Cli {
                     config_path.display()
                 ))?;
             }
-            Command::Graph => {
+            Command::Graph { format } => {
                 let config = load_config(&config_path, self.profile.as_deref()).await?;
                 ServiceManager::new(config.clone(), options)?;
-                let graph = DependencyGraph::from_config(&config)?;
-                let mut text = String::from("Dependencies (service -> prerequisite):\n");
-                for name in graph.service_names() {
-                    let service = &config.services[name];
-                    if service.depends_on.is_empty() {
-                        text.push_str(&format!("  {name}\n"));
-                    }
-                    let mut edges: Vec<_> = service.depends_on.iter().collect();
-                    edges.sort_by(|a, b| a.service.cmp(&b.service));
-                    for edge in edges {
-                        text.push_str(&format!(
-                            "  {name} -> {} ({:?})\n",
-                            edge.service, edge.condition
-                        ));
-                    }
-                }
-                text.push_str("Startup layers:\n");
-                for (index, layer) in graph.startup_layers()?.iter().enumerate() {
-                    text.push_str(&format!("  {}: {}\n", index + 1, layer.join(", ")));
-                }
-                output(&text)?;
+                output(&graph::render(&config, format)?)?;
             }
             Command::Status { json } => {
                 let Response::Status(snapshot) =

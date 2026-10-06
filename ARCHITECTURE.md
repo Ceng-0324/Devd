@@ -16,7 +16,7 @@ flowchart LR
     check[check / graph] --> config[Configuration validation and DAG]
 ```
 
-`cli/mod.rs` 负责 clap 参数、配置路径和命令输出；`cli/protocol.rs` 提供有界长度前缀 JSON；`cli/server.rs` 在同一状态锁下管理 socket、编排器与客户端；`cli/snapshot.rs` 负责离线配置副本；`cli/stdout.rs` 支持可取消的终端/管道写入。运行控制命令通过活实例操作，离线 status 报错，不信任旧状态文件中的 PID。
+`cli/mod.rs` 负责 clap 参数、配置路径和命令输出；`cli/graph.rs` 将已校验的依赖图确定性地渲染为文本、DOT 或 Mermaid，图边从前置服务指向依赖者并标注就绪条件；`cli/protocol.rs` 提供有界长度前缀 JSON；`cli/server.rs` 在同一状态锁下管理 socket、编排器与客户端；`cli/snapshot.rs` 负责离线配置副本；`cli/stdout.rs` 支持可取消的终端/管道写入。运行控制命令通过活实例操作，离线 status 报错，不信任旧状态文件中的 PID。
 
 默认状态目录为 `<config-dir>/.devd/<config-name>/`，可用 `--state-dir` 覆盖。服务 cwd 相对配置目录；环境文件相对服务 cwd。stop 的响应表示请求已接受，前台 supervisor 负责完成反向依赖关闭。手动 restart 通过 manager channel 停止旧 actor 并重建，保留计数/日志代次、重新检查依赖；仅当下游显式开启 `restart-on-dep-recovery` 时，目标恢复会触发后续联动。命令成功只表示指定目标的新进程已启动。
 
@@ -369,6 +369,7 @@ devd/
 │   │
 │   ├── cli/                   # Implemented CLI layer
 │   │   ├── mod.rs             # clap, paths, commands and presentation
+│   │   ├── graph.rs           # Text, DOT and Mermaid dependency views
 │   │   ├── protocol.rs        # Bounded local request/response transport
 │   │   ├── server.rs          # Foreground runtime and client lifecycle
 │   │   └── stdout.rs          # Cancellable terminal and pipe writes

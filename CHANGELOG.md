@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Export validated dependency graphs as DOT or Mermaid with readiness labels and isolated-service nodes; keep the existing text view as the default.
 - Add byte-preserving configuration snapshots with `snapshot save` and `snapshot restore --output`; include all profiles, create new files atomically without overwriting, and keep runtime state and processes untouched.
 - Ignore macOS `.DS_Store` files in the repository.
 - Add single-file configuration `profiles` and global `--profile` selection for startup, validation, dependency graphs, and live control commands.

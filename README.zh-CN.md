@@ -151,6 +151,18 @@ devd check --config devd.recovered.yml
 
 `--output` 只能是原配置目录里的新文件名，这样相对 `cwd` 和环境文件路径不会变义。保存和恢复都不覆盖已有文件。快照保留原始字节，不做配置校验；使用恢复文件前请运行 `check`。它不保存运行状态，不热重载正在运行的 supervisor，也不启动或接管旧进程。快照包含全部 profile，因此 `snapshot` 不接受 `--profile`。
 
+### 依赖图
+
+`graph` 默认输出依赖列表和并行启动层。需要可视化时，可以导出 Graphviz DOT 或 Mermaid 源码：
+
+```bash
+devd graph --format dot > dependencies.dot
+dot -Tsvg dependencies.dot -o dependencies.svg # 已安装 Graphviz 时
+devd graph --profile staging --format mermaid > dependencies.mmd
+```
+
+图中的箭头从前置服务指向依赖它的服务，边上的标签是就绪条件；没有依赖边的服务也会显示。`graph` 会校验配置，但不启动服务或创建运行状态。DOT 和 Mermaid 输出是供相应渲染器使用的源码，不是图片文件。
+
 ### 命令速查
 
 | 命令 | 用途 |
@@ -161,7 +173,7 @@ devd check --config devd.recovered.yml
 | `devd status [--json]` | 查看实时状态、PID、CPU／RSS、重启次数和诊断信息 |
 | `devd logs [service] [--tail N] [--follow]` | 查询内存日志（默认 100 条，N 为 1–1000），可持续接收新日志 |
 | `devd check` | 校验配置、命令引号、依赖关系及当前支持的设置 |
-| `devd graph` | 显示依赖边和并行启动层 |
+| `devd graph [--format text|dot|mermaid]` | 显示依赖边与启动层，或导出依赖图 |
 | `devd init [--service NAME] [--command CMD]` | 创建通过校验的初始配置，不覆盖现有文件 |
 | `devd snapshot save <NAME>` | 保存磁盘上整份 YAML 到项目状态目录 |
 | `devd snapshot restore <NAME> --output <FILENAME>` | 恢复成原配置目录中的新文件 |

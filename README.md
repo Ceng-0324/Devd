@@ -153,6 +153,18 @@ The snapshot is an exact copy of the on-disk YAML, including every profile. It l
 
 `--output` must be a new filename in the original configuration directory, so relative `cwd` and environment-file paths keep their meaning. Neither save nor restore overwrites an existing file. Snapshots copy configuration bytes without validation; run `check` on the restored file before using it. They do not save runtime state, reload a running supervisor, or start or adopt processes. Since the YAML contains all profiles, `snapshot` does not accept `--profile`.
 
+### Dependency diagrams
+
+`graph` defaults to a text list of dependencies and parallel startup layers. Export the selected configuration as Graphviz DOT or Mermaid when a visual map is easier to scan:
+
+```bash
+devd graph --format dot > dependencies.dot
+dot -Tsvg dependencies.dot -o dependencies.svg # Graphviz, if installed
+devd graph --profile staging --format mermaid > dependencies.mmd
+```
+
+Diagram arrows point from each prerequisite to the service that depends on it; edge labels show the readiness condition. Services without dependencies also appear. `graph` validates the configuration but does not start services or create runtime state. DOT and Mermaid output are source text for their respective renderers, not image files.
+
 ### Command reference
 
 | Command | Purpose |
@@ -163,7 +175,7 @@ The snapshot is an exact copy of the on-disk YAML, including every profile. It l
 | `devd status [--json]` | Show live state, PIDs, CPU / RSS, restart counts, and diagnostics |
 | `devd logs [service] [--tail N] [--follow]` | Query buffered logs (default 100, N from 1–1000); optionally stream new entries |
 | `devd check` | Validate configuration, command quoting, dependencies, and supported settings |
-| `devd graph` | Show dependency edges and parallel startup layers |
+| `devd graph [--format text|dot|mermaid]` | Show dependency edges and startup layers, or export a diagram |
 | `devd init [--service NAME] [--command CMD]` | Create a checked starter configuration without overwriting an existing file |
 | `devd snapshot save <NAME>` | Save the complete on-disk YAML under the project state directory |
 | `devd snapshot restore <NAME> --output <FILENAME>` | Restore it to a new file beside the original configuration |
