@@ -481,6 +481,7 @@ mod tests {
         App::new(
             RuntimeSnapshot {
                 supervisor_pid: 42,
+                event_run_id: None,
                 services,
             },
             Vec::new(),
@@ -498,6 +499,7 @@ mod tests {
         assert_eq!(app.selected_name().as_deref(), Some("worker"));
         app.update_snapshot(RuntimeSnapshot {
             supervisor_pid: 42,
+            event_run_id: None,
             services: [("worker".into(), ServiceSnapshot::default())].into(),
         });
         assert_eq!(app.selected_name().as_deref(), Some("worker"));

@@ -14,6 +14,9 @@ use crate::logging::{LogCollector, LogEntry, LogHistory, LogOptions, LogOptionsE
 
 use super::{
     dependency::DependencyGraph,
+    events::{
+        EventData, EventHistory, EventRecorder, LifecycleEvent, ResourceEvidence, ShutdownReason,
+    },
     health_check::{HealthCheckError, HealthChecker},
     process_manager::{parse_command, ProcessError},
     resource_monitor::{self, ResourceUsage},
@@ -51,6 +54,12 @@ pub struct ServiceSnapshot {
     /// Pending automatic restart decision for this live generation only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resource_restart_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_restart_evidence: Option<ResourceEvidence>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resource_restart_event: Option<u64>,
 }
 
 impl Default for ServiceSnapshot {
@@ -66,6 +75,9 @@ impl Default for ServiceSnapshot {
             last_error: None,
             resources: None,
             resource_restart_reason: None,
+            event_generation: None,
+            resource_restart_evidence: None,
+            resource_restart_event: None,
         }
     }
 }
@@ -73,6 +85,9 @@ impl Default for ServiceSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct RuntimeSnapshot {
     pub supervisor_pid: u32,
+    /// None when reading state files produced before lifecycle events existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_run_id: Option<String>,
     pub services: BTreeMap<String, ServiceSnapshot>,
 }
 
@@ -82,6 +97,8 @@ pub struct ManagerOptions {
     pub grace_period: Duration,
     pub dependency_timeout: Duration,
     pub logging: LogOptions,
+    /// Selected configuration profile, for lifecycle provenance.
+    pub profile: Option<String>,
 }
 
 impl ManagerOptions {
@@ -92,6 +109,7 @@ impl ManagerOptions {
             grace_period: Duration::from_secs(5),
             dependency_timeout: Duration::from_secs(30),
             logging: LogOptions::default(),
+            profile: None,
         }
     }
 }
@@ -137,6 +155,7 @@ pub struct ServiceManager {
     checkers: BTreeMap<String, Option<HealthChecker>>,
     snapshots: watch::Sender<RuntimeSnapshot>,
     logs: LogCollector,
+    events: EventRecorder,
     resource_limits: BTreeMap<String, ResourceThresholds>,
     commands: mpsc::Receiver<RestartRequest>,
     controller: ServiceController,
@@ -218,8 +237,10 @@ impl ServiceManager {
                 })
             })
             .collect();
+        let events = EventRecorder::new(options.state_path.clone(), options.profile.clone());
         let initial = RuntimeSnapshot {
             supervisor_pid: std::process::id(),
+            event_run_id: Some(events.run_id().to_owned()),
             services: graph
                 .service_names()
                 .map(|name| (name.into(), ServiceSnapshot::default()))
@@ -235,6 +256,7 @@ impl ServiceManager {
             checkers,
             snapshots,
             logs,
+            events,
             resource_limits,
             commands,
             controller: ServiceController(sender),
@@ -251,6 +273,17 @@ impl ServiceManager {
 
     pub fn log_history(&self) -> LogHistory {
         self.logs.history()
+    }
+
+    /// Return the bounded lifecycle history for this supervisor run.
+    pub fn event_history(&self) -> EventHistory {
+        self.events.history()
+    }
+
+    /// Subscribe to structured lifecycle events. Subscribers may lag; the
+    /// bounded history remains the source for a fresh snapshot.
+    pub fn subscribe_events(&self) -> broadcast::Receiver<Arc<LifecycleEvent>> {
+        self.events.subscribe()
     }
 
     pub fn controller(&self) -> ServiceController {
@@ -283,6 +316,12 @@ impl ServiceManager {
     ) -> Result<RuntimeSnapshot, ServiceManagerError> {
         let initial = self.snapshots.borrow().clone();
         store.write(&initial).await?;
+        self.events
+            .record(None, None, None, EventData::SupervisorStarted);
+        let mut event_guard = RunEventGuard {
+            events: self.events.clone(),
+            finished: false,
+        };
         tokio::pin!(shutdown);
         let shutdown_requested = tokio::select! {
             biased;
@@ -300,7 +339,7 @@ impl ServiceManager {
                 Control::Running
             });
             controls.insert(name.clone(), control);
-            let id = self.spawn_actor(name, receiver, &store, &mut tasks);
+            let id = self.spawn_actor(name, receiver, &store, &mut tasks, None);
             names.insert(id, name.clone());
         }
         let mut restarting: BTreeMap<String, oneshot::Sender<Result<ServiceSnapshot, String>>> =
@@ -308,16 +347,22 @@ impl ServiceManager {
         let mut starting: BTreeMap<String, oneshot::Sender<Result<ServiceSnapshot, String>>> =
             BTreeMap::new();
         let mut error = None;
+        let mut shutdown_reason = if shutdown_requested {
+            ShutdownReason::Requested
+        } else {
+            ShutdownReason::Completed
+        };
         let monitor = resource_monitor::run(
             self.snapshots.clone(),
             self.logs.clone(),
             self.resource_limits.clone(),
+            self.events.clone(),
         );
         tokio::pin!(monitor);
         while !shutdown_requested && !tasks.is_empty() {
             tokio::select! {
                 biased;
-                _ = &mut shutdown => break,
+                _ = &mut shutdown => { shutdown_reason = ShutdownReason::Requested; break; },
                 _ = &mut monitor => {},
                 Some(request) = self.commands.recv() => {
                     let name = request.service;
@@ -329,7 +374,13 @@ impl ServiceManager {
                     if let Some(error) = rejection {
                         let _ = request.reply.send(Err(error));
                     } else {
-                        controls[&name].send_replace(Control::Restarting);
+                        let cause = self.events.record(
+                            Some(&name),
+                            self.snapshots.borrow().services[&name].event_generation,
+                            None,
+                            EventData::ManualRestartRequested,
+                        );
+                        controls[&name].send_replace(Control::Restarting(cause));
                         restarting.insert(name, request.reply);
                     }
                 },
@@ -347,15 +398,18 @@ impl ServiceManager {
                     }
                     if let Err(failure) = store.write(&snapshot).await {
                         error = Some(failure);
+                        shutdown_reason = ShutdownReason::StateWriteFailed;
                         break;
                     }
                     if snapshot.services.values().any(|s| s.status == ServiceState::Failed) {
+                        shutdown_reason = ShutdownReason::ServiceFailed;
                         break;
                     }
                 },
                 Some(result) = tasks.join_next_with_id() => {
-                    if let Some(failure) = collect_task(result, &mut names, &self.snapshots) {
+                    if let Some(failure) = collect_task(result, &mut names, &self.snapshots, &self.events) {
                         error = Some(failure);
+                        shutdown_reason = ShutdownReason::ActorFailed;
                         break;
                     }
                 },
@@ -371,23 +425,47 @@ impl ServiceManager {
                     state.status = ServiceState::Restarting;
                     state.restart_count = state.restart_count.saturating_add(1);
                 });
+                let cause = match *controls[&name].borrow() {
+                    Control::Restarting(cause) => Some(cause),
+                    _ => None,
+                };
                 let (control, receiver) = watch::channel(Control::Running);
                 controls.insert(name.clone(), control);
-                let id = self.spawn_actor(&name, receiver, &store, &mut tasks);
+                let id = self.spawn_actor(&name, receiver, &store, &mut tasks, cause);
                 names.insert(id, name.clone());
                 starting.insert(name.clone(), restarting.remove(&name).unwrap());
             }
         }
+        if shutdown_reason == ShutdownReason::Completed
+            && self
+                .snapshots
+                .borrow()
+                .services
+                .values()
+                .any(|s| s.status == ServiceState::Failed)
+        {
+            shutdown_reason = ShutdownReason::ServiceFailed;
+        }
+        let stop_cause = self.events.record(
+            None,
+            None,
+            None,
+            EventData::SupervisorStopping {
+                reason: shutdown_reason,
+            },
+        );
         for control in controls.values() {
             control.send_replace(Control::Quiescing);
         }
         for layer in self.layers.iter().rev() {
             for name in layer {
-                controls[name].send_replace(Control::Stopping);
+                controls[name].send_replace(Control::Stopping(Some(stop_cause)));
             }
             while names.values().any(|name| layer.contains(name)) {
                 if let Some(result) = tasks.join_next_with_id().await {
-                    if let Some(failure) = collect_task(result, &mut names, &self.snapshots) {
+                    if let Some(failure) =
+                        collect_task(result, &mut names, &self.snapshots, &self.events)
+                    {
                         error.get_or_insert(failure);
                     }
                 }
@@ -405,6 +483,19 @@ impl ServiceManager {
                 .unwrap_or_else(|| "supervisor stopped before restart completed".into());
             let _ = reply.send(Err(message));
         }
+        event_guard.finished = true;
+        self.events.record(
+            None,
+            None,
+            None,
+            EventData::SupervisorStopped {
+                failed: error.is_some()
+                    || snapshot
+                        .services
+                        .values()
+                        .any(|s| s.status == ServiceState::Failed),
+            },
+        );
         if let Some(error) = error {
             return Err(error);
         }
@@ -434,6 +525,7 @@ impl ServiceManager {
         receiver: watch::Receiver<Control>,
         store: &Arc<StateStore>,
         tasks: &mut JoinSet<()>,
+        cause: Option<u64>,
     ) -> Id {
         let actor = ServiceTask::new(
             name.into(),
@@ -443,6 +535,8 @@ impl ServiceManager {
             receiver,
             self.snapshots.clone(),
             self.logs.clone(),
+            self.events.clone(),
+            cause,
         );
         let lease = store.clone();
         tasks
@@ -451,6 +545,19 @@ impl ServiceManager {
                 actor.run().await
             })
             .id()
+    }
+}
+
+struct RunEventGuard {
+    events: EventRecorder,
+    finished: bool,
+}
+impl Drop for RunEventGuard {
+    fn drop(&mut self) {
+        if !self.finished {
+            self.events
+                .record(None, None, None, EventData::SupervisorCancelled);
+        }
     }
 }
 
@@ -466,6 +573,7 @@ fn collect_task(
     result: Result<(Id, ()), JoinError>,
     names: &mut BTreeMap<Id, String>,
     snapshots: &watch::Sender<RuntimeSnapshot>,
+    events: &EventRecorder,
 ) -> Option<ServiceManagerError> {
     match result {
         Ok((id, _)) => {
@@ -480,6 +588,16 @@ fn collect_task(
                     service.pid = None;
                     service.resources = None;
                     service.resource_restart_reason = None;
+                    service.resource_restart_evidence = None;
+                    service.resource_restart_event = None;
+                    events.record(
+                        Some(&name),
+                        service.event_generation,
+                        None,
+                        EventData::ActorFailed {
+                            cancelled: error.is_cancelled(),
+                        },
+                    );
                     service.last_error = Some(error.to_string());
                 });
             }
@@ -492,10 +610,32 @@ fn collect_task(
 mod tests {
     use super::*;
 
+    #[test]
+    fn test_legacy_snapshot_without_event_fields_remains_readable() {
+        let snapshot: RuntimeSnapshot = serde_json::from_value(serde_json::json!({
+            "supervisor_pid": 1,
+            "services": {
+                "worker": {
+                    "status": "running", "pid": 123, "started_at": null,
+                    "restart_count": 0, "consecutive_failures": 0,
+                    "last_exit_code": null, "last_exit_signal": null, "last_error": null
+                }
+            }
+        }))
+        .unwrap();
+        assert!(snapshot.event_run_id.is_none());
+        assert!(snapshot.services["worker"].event_generation.is_none());
+        assert!(snapshot.services["worker"]
+            .resource_restart_evidence
+            .is_none());
+        assert!(snapshot.services["worker"].resource_restart_event.is_none());
+    }
+
     #[tokio::test]
     async fn test_failed_actor_clears_pending_resource_restart() {
         let (snapshots, _) = watch::channel(RuntimeSnapshot {
             supervisor_pid: std::process::id(),
+            event_run_id: None,
             services: [(
                 "worker".into(),
                 ServiceSnapshot {
@@ -513,7 +653,8 @@ mod tests {
         assert!(collect_task(
             tasks.join_next_with_id().await.unwrap(),
             &mut names,
-            &snapshots
+            &snapshots,
+            &EventRecorder::new("unused".into(), None)
         )
         .is_some());
         let snapshot = snapshots.borrow();

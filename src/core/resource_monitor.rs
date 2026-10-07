@@ -12,7 +12,10 @@ use crate::{
     logging::{LogCollector, LogLevel},
 };
 
-use super::service_manager::{RuntimeSnapshot, ServiceSnapshot, ServiceState};
+use super::{
+    events::{EventData, EventRecorder, ResourceEvidence, ResourceValue},
+    service_manager::{RuntimeSnapshot, ServiceSnapshot, ServiceState},
+};
 
 const RESTART_SAMPLES: u8 = 3;
 
@@ -30,6 +33,7 @@ struct Generation {
     pid: u32,
     started_at: DateTime<Utc>,
     restart_count: u32,
+    event_generation: Option<u64>,
 }
 
 impl Generation {
@@ -38,6 +42,7 @@ impl Generation {
             pid: state.pid?,
             started_at: state.started_at?,
             restart_count: state.restart_count,
+            event_generation: state.event_generation,
         })
     }
 }
@@ -180,6 +185,7 @@ impl Alarms {
         &mut self,
         snapshot: &mut RuntimeSnapshot,
         limits: &BTreeMap<String, ResourceThresholds>,
+        events: Option<&EventRecorder>,
     ) -> Vec<Alert> {
         self.0.retain(|name, alarm| {
             snapshot
@@ -231,6 +237,26 @@ impl Alarms {
                 };
                 if exceeded != alarm.cpu {
                     alarm.cpu = exceeded;
+                    if let Some(events) = events {
+                        events.record(
+                            Some(name),
+                            state.event_generation,
+                            None,
+                            EventData::ResourceChanged {
+                                exceeded,
+                                evidence: ResourceEvidence {
+                                    value: ResourceValue::Cpu {
+                                        percent: value,
+                                        limit_percent: limit,
+                                    },
+                                    sampled_at: usage.sampled_at,
+                                    consecutive_samples: alarm.cpu_samples,
+                                    restart_authorized: thresholds.on_exceed
+                                        == ResourceLimitAction::Restart,
+                                },
+                            },
+                        );
+                    }
                     alerts.push(Alert {
                         service: name.clone(),
                         generation: state.restart_count,
@@ -261,6 +287,26 @@ impl Alarms {
                 };
                 if exceeded != alarm.memory {
                     alarm.memory = exceeded;
+                    if let Some(events) = events {
+                        events.record(
+                            Some(name),
+                            state.event_generation,
+                            None,
+                            EventData::ResourceChanged {
+                                exceeded,
+                                evidence: ResourceEvidence {
+                                    value: ResourceValue::Memory {
+                                        bytes: usage.memory_bytes,
+                                        limit_bytes: limit,
+                                    },
+                                    sampled_at: usage.sampled_at,
+                                    consecutive_samples: alarm.memory_samples,
+                                    restart_authorized: thresholds.on_exceed
+                                        == ResourceLimitAction::Restart,
+                                },
+                            },
+                        );
+                    }
                     alerts.push(Alert {
                         service: name.clone(),
                         generation: state.restart_count,
@@ -291,6 +337,35 @@ impl Alarms {
                 } else {
                     None
                 };
+                if reason.is_some() {
+                    let evidence = ResourceEvidence {
+                        value: if alarm.cpu_samples == RESTART_SAMPLES {
+                            ResourceValue::Cpu {
+                                percent: usage.cpu_percent.unwrap(),
+                                limit_percent: thresholds.cpu_percent.unwrap(),
+                            }
+                        } else {
+                            ResourceValue::Memory {
+                                bytes: usage.memory_bytes,
+                                limit_bytes: thresholds.memory_bytes.unwrap(),
+                            }
+                        },
+                        sampled_at: usage.sampled_at,
+                        consecutive_samples: RESTART_SAMPLES,
+                        restart_authorized: true,
+                    };
+                    if let Some(events) = events {
+                        state.resource_restart_event = Some(events.record(
+                            Some(name),
+                            state.event_generation,
+                            None,
+                            EventData::ResourceRestartRequested {
+                                evidence: evidence.clone(),
+                            },
+                        ));
+                    }
+                    state.resource_restart_evidence = Some(evidence);
+                }
                 state.resource_restart_reason = reason;
             }
         }
@@ -302,6 +377,7 @@ pub(super) async fn run(
     snapshots: watch::Sender<RuntimeSnapshot>,
     logs: LogCollector,
     limits: BTreeMap<String, ResourceThresholds>,
+    events: EventRecorder,
 ) -> ! {
     let mut sampler = Sampler::default();
     let mut alarms = Alarms::default();
@@ -318,7 +394,7 @@ pub(super) async fn run(
                 let mut alerts = Vec::new();
                 snapshots.send_modify(|snapshot| {
                     apply(snapshot, samples);
-                    alerts = alarms.evaluate(snapshot, &limits);
+                    alerts = alarms.evaluate(snapshot, &limits, Some(&events));
                 });
                 for alert in alerts {
                     logs.record(
@@ -340,7 +416,7 @@ pub(super) async fn run(
                         changed |= state.resources.take().is_some();
                     }
                     // Missing observations break every consecutive streak.
-                    alarms.evaluate(snapshot, &limits);
+                    alarms.evaluate(snapshot, &limits, Some(&events));
                     changed
                 });
             }
@@ -357,6 +433,7 @@ mod tests {
     fn snapshot() -> RuntimeSnapshot {
         RuntimeSnapshot {
             supervisor_pid: std::process::id(),
+            event_run_id: None,
             services: [(
                 "worker".into(),
                 ServiceSnapshot {
@@ -392,36 +469,36 @@ mod tests {
         let mut state = snapshot();
         state.services.get_mut("worker").unwrap().resources = Some(usage());
         let mut alarms = Alarms::default();
-        let first = alarms.evaluate(&mut state, &limits);
+        let first = alarms.evaluate(&mut state, &limits, None);
         assert_eq!(first.len(), 2);
         assert!(first.iter().all(|alert| alert.level == LogLevel::Warn));
-        assert!(alarms.evaluate(&mut state, &limits).is_empty());
+        assert!(alarms.evaluate(&mut state, &limits, None).is_empty());
         state.services.get_mut("worker").unwrap().resources = None;
-        assert!(alarms.evaluate(&mut state, &limits).is_empty());
+        assert!(alarms.evaluate(&mut state, &limits, None).is_empty());
         state.services.get_mut("worker").unwrap().resources = Some(ResourceUsage {
             cpu_percent: None,
             ..usage()
         });
-        assert!(alarms.evaluate(&mut state, &limits).is_empty());
+        assert!(alarms.evaluate(&mut state, &limits, None).is_empty());
         let service = state.services.get_mut("worker").unwrap();
         service.resources = Some(ResourceUsage {
             cpu_percent: Some(100.0),
             memory_bytes: 40_000,
             sampled_at: Utc::now(),
         });
-        let recovered = alarms.evaluate(&mut state, &limits);
+        let recovered = alarms.evaluate(&mut state, &limits, None);
         assert_eq!(recovered.len(), 2);
         assert!(recovered.iter().all(|alert| alert.level == LogLevel::Info));
         let service = state.services.get_mut("worker").unwrap();
         service.restart_count += 1;
         service.resources = Some(usage());
-        assert_eq!(alarms.evaluate(&mut state, &limits).len(), 2);
+        assert_eq!(alarms.evaluate(&mut state, &limits, None).len(), 2);
         state.services.get_mut("worker").unwrap().restart_count += 1;
-        let restarted = alarms.evaluate(&mut state, &limits);
+        let restarted = alarms.evaluate(&mut state, &limits, None);
         assert_eq!(restarted.len(), 2);
         assert!(restarted.iter().all(|alert| alert.generation == 2));
         state.services.get_mut("worker").unwrap().pid = None;
-        assert!(alarms.evaluate(&mut state, &limits).is_empty());
+        assert!(alarms.evaluate(&mut state, &limits, None).is_empty());
         assert!(alarms.0.is_empty());
     }
 
@@ -438,7 +515,7 @@ mod tests {
             memory_bytes,
             sampled_at: service.started_at.unwrap() + chrono::Duration::seconds(tick),
         });
-        alarms.evaluate(state, limits);
+        alarms.evaluate(state, limits, None);
     }
 
     #[test]
@@ -465,7 +542,7 @@ mod tests {
                     observe(&mut alarms, &mut state, &limits, tick, values);
                     // Duplicate snapshots cannot count as fresh samples.
                     for _ in 0..5 {
-                        alarms.evaluate(&mut state, &limits);
+                        alarms.evaluate(&mut state, &limits, None);
                     }
                     assert!(state.services["worker"].resource_restart_reason.is_none());
                 }
@@ -563,7 +640,7 @@ mod tests {
             )]
             .into()
         ));
-        alarms.evaluate(&mut state, &limits);
+        alarms.evaluate(&mut state, &limits, None);
         assert!(state.services["worker"].resource_restart_reason.is_none());
         state.services.get_mut("worker").unwrap().status = ServiceState::Stopping;
         for tick in 3..=6 {

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Add bounded structured lifecycle events with per-run identity, service
+  generations, causal restart evidence, safe failure details, and live
+  subscribers. Legacy runtime snapshots remain readable.
+
 ## v0.4.0-alpha.1 — 2026-10-06
 
 Prerelease for local development on Linux, macOS, and Windows. Native CI and

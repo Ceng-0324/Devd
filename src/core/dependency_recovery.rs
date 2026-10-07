@@ -4,7 +4,10 @@ use chrono::{DateTime, Utc};
 
 use crate::config::{DependencyCondition, ServiceConfig};
 
-use super::service_manager::{RuntimeSnapshot, ServiceSnapshot, ServiceState};
+use super::{
+    events::DependencyChange,
+    service_manager::{RuntimeSnapshot, ServiceSnapshot, ServiceState},
+};
 
 /// The identity consumed by one dependent generation, not a transient watch
 /// event: coalescing state updates must not hide a fast dependency restart.
@@ -13,6 +16,7 @@ struct Generation {
     pid: Option<u32>,
     started_at: Option<DateTime<Utc>>,
     restart_count: u32,
+    event_generation: Option<u64>,
 }
 
 impl From<&ServiceSnapshot> for Generation {
@@ -21,6 +25,7 @@ impl From<&ServiceSnapshot> for Generation {
             pid: state.pid,
             started_at: state.started_at,
             restart_count: state.restart_count,
+            event_generation: state.event_generation,
         }
     }
 }
@@ -58,7 +63,7 @@ impl DependencyRecovery {
     /// Wait for every direct dependency before interrupting a running service.
     /// A new generation captures fresh baselines, coalescing recoveries seen
     /// during cleanup, backoff, and startup readiness into that one restart.
-    pub fn recovered(&self, snapshot: &RuntimeSnapshot) -> Vec<String> {
+    pub fn recovered(&self, snapshot: &RuntimeSnapshot) -> Vec<DependencyChange> {
         let mut recovered = Vec::new();
         for (name, (condition, previous)) in &self.baseline {
             let current = &snapshot.services[name];
@@ -66,7 +71,11 @@ impl DependencyRecovery {
                 return Vec::new();
             }
             if Generation::from(current) != *previous {
-                recovered.push(name.clone());
+                recovered.push(DependencyChange {
+                    service: name.clone(),
+                    previous_generation: previous.event_generation,
+                    current_generation: current.event_generation,
+                });
             }
         }
         recovered
@@ -98,6 +107,7 @@ mod tests {
         config.depends_on[0].condition = condition;
         let snapshot = RuntimeSnapshot {
             supervisor_pid: 1,
+            event_run_id: None,
             services: [(
                 "db".into(),
                 ServiceSnapshot {
@@ -199,7 +209,14 @@ mod tests {
         let db = snapshot.services.get_mut("db").unwrap();
         db.restart_count += 2;
         db.status = ServiceState::Healthy;
-        assert_eq!(recovery.recovered(&snapshot), ["cache", "db"]);
+        assert_eq!(
+            recovery
+                .recovered(&snapshot)
+                .iter()
+                .map(|change| change.service.as_str())
+                .collect::<Vec<_>>(),
+            ["cache", "db"]
+        );
         let fresh = DependencyRecovery::capture(&config, &snapshot);
         assert!(fresh.recovered(&snapshot).is_empty());
         config.restart_on_dep_recovery = false;

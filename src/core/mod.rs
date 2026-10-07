@@ -1,5 +1,6 @@
 pub mod dependency;
 mod dependency_recovery;
+pub mod events;
 pub mod health_check;
 pub mod process_manager;
 pub mod resource_monitor;

@@ -1,6 +1,6 @@
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
-use std::{future::pending, io, process::ExitStatus, time::Duration};
+use std::{collections::BTreeMap, future::pending, io, process::ExitStatus, time::Duration};
 
 use chrono::Utc;
 use tokio::{sync::watch, task::JoinSet};
@@ -12,6 +12,9 @@ use crate::logging::{LogCollector, LogLevel};
 
 use super::{
     dependency_recovery::{dependency_ready, DependencyRecovery},
+    events::{
+        DependencyChange, EventData, EventRecorder, ProbeEvidence, RestartCause, RestartOutcome,
+    },
     health_check::{HealthChecker, HealthMonitor, HealthState, ProbeResult},
     process_manager::ManagedProcess,
     service_manager::{ManagerOptions, RuntimeSnapshot, ServiceSnapshot, ServiceState},
@@ -21,8 +24,8 @@ use super::{
 pub(super) enum Control {
     Running,
     Quiescing,
-    Stopping,
-    Restarting,
+    Stopping(Option<u64>),
+    Restarting(u64),
 }
 
 pub(super) struct ServiceTask {
@@ -33,19 +36,22 @@ pub(super) struct ServiceTask {
     control: watch::Receiver<Control>,
     snapshots: watch::Sender<RuntimeSnapshot>,
     logs: LogCollector,
+    events: EventRecorder,
+    cause: Option<u64>,
     state: ServiceSnapshot,
 }
 
 enum GenerationEnd {
     Exit(ExitStatus),
     HealthFailure,
-    DependencyRecovery(Vec<String>),
+    DependencyRecovery(Vec<DependencyChange>),
     ResourceLimit(String),
-    Error(String),
+    Error(super::process_manager::ProcessError),
     Shutdown,
 }
 
 impl ServiceTask {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         name: String,
         config: ServiceConfig,
@@ -54,6 +60,8 @@ impl ServiceTask {
         control: watch::Receiver<Control>,
         snapshots: watch::Sender<RuntimeSnapshot>,
         logs: LogCollector,
+        events: EventRecorder,
+        cause: Option<u64>,
     ) -> Self {
         let state = snapshots.borrow().services[&name].clone();
         Self {
@@ -64,6 +72,8 @@ impl ServiceTask {
             control,
             snapshots,
             logs,
+            events,
+            cause,
             state,
         }
     }
@@ -71,6 +81,12 @@ impl ServiceTask {
     pub async fn run(mut self) {
         let mut restarting = false;
         loop {
+            // A fresh identity for every attempt, including dependency waits
+            // and failed spawns; retry counters can saturate and PIDs can recur.
+            let generation = self.record(EventData::GenerationPending);
+            self.state.event_generation = Some(generation);
+            self.cause = Some(generation);
+            self.publish();
             let dependencies = match self.wait_dependencies().await {
                 Ok(Some(dependencies)) => dependencies,
                 Ok(None) => {
@@ -86,6 +102,7 @@ impl ServiceTask {
             if restarting {
                 self.state.restart_count = self.state.restart_count.saturating_add(1);
             }
+            self.record(EventData::Starting);
             self.transition(ServiceState::Starting);
             // A stop request must also be able to interrupt async env-file reads.
             let spawn = tokio::select! {
@@ -101,6 +118,10 @@ impl ServiceTask {
                 }
                 Some(Ok(process)) => process,
                 Some(Err(error)) => {
+                    self.cause = Some(self.record(EventData::SpawnFailed {
+                        failure: (&error).into(),
+                    }));
+                    self.trigger(RestartCause::SpawnFailure);
                     self.state.last_error = Some(error.to_string());
                     if !self.schedule_restart(true).await {
                         break;
@@ -114,9 +135,16 @@ impl ServiceTask {
             self.state.consecutive_failures = 0;
             self.state.last_error = None;
             let mut readers = self.drain_output(&mut process);
+            self.record(EventData::Started {
+                pid: self.state.pid,
+            });
             self.transition(ServiceState::Running);
+            self.cause = None;
             let outcome = self.monitor(&mut process, dependencies).await;
             if let GenerationEnd::ResourceLimit(ref reason) = outcome {
+                self.trigger(RestartCause::ResourceLimit {
+                    evidence: self.state.resource_restart_evidence.clone(),
+                });
                 let exhausted = self.state.restart_count >= self.config.restart.max_attempts;
                 let message = if exhausted {
                     format!(
@@ -140,9 +168,16 @@ impl ServiceTask {
                 self.state.last_error = Some(message);
             }
             if let GenerationEnd::DependencyRecovery(ref names) = outcome {
+                self.trigger(RestartCause::DependencyRecovery {
+                    services: names.clone(),
+                });
                 let reason = format!(
                     "dependencies recovered in new process generations: {}",
-                    names.join(", ")
+                    names
+                        .iter()
+                        .map(|change| change.service.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 );
                 self.state.last_error = Some(
                     if self.state.restart_count >= self.config.restart.max_attempts {
@@ -166,12 +201,18 @@ impl ServiceTask {
                             self.record_exit(status);
                             self.mark_stopped();
                         }
-                        Err(error) => self.fail(error.to_string()),
+                        Err(error) => {
+                            self.cause = Some(self.record(EventData::ProcessFailed {
+                                failure: (&error).into(),
+                            }));
+                            self.fail(error.to_string());
+                        }
                     }
                     break;
                 }
                 GenerationEnd::Exit(status) => {
                     self.record_exit(status);
+                    self.trigger(RestartCause::ProcessExit);
                     if !status.success() {
                         self.state.last_error = Some(format!("process exited with {status}"));
                     }
@@ -184,6 +225,9 @@ impl ServiceTask {
                     match process.stop(self.options.grace_period).await {
                         Ok(status) => self.record_exit(status),
                         Err(error) => {
+                            self.cause = Some(self.record(EventData::ProcessFailed {
+                                failure: (&error).into(),
+                            }));
                             readers.finish().await;
                             self.fail(error.to_string());
                             break;
@@ -192,10 +236,17 @@ impl ServiceTask {
                     true
                 }
                 GenerationEnd::Error(error) => {
+                    self.cause = Some(self.record(EventData::ProcessFailed {
+                        failure: (&error).into(),
+                    }));
                     // Drop still kills the group if explicit cleanup fails.
-                    let _ = process.stop(self.options.grace_period).await;
+                    if let Err(error) = process.stop(self.options.grace_period).await {
+                        self.record(EventData::ProcessFailed {
+                            failure: (&error).into(),
+                        });
+                    }
                     readers.finish().await;
-                    self.fail(error);
+                    self.fail(error.to_string());
                     break;
                 }
             };
@@ -218,12 +269,17 @@ impl ServiceTask {
                 && next.pid == previous.pid
                 && next.started_at == previous.started_at
                 && next.restart_count == previous.restart_count
+                && next.event_generation == previous.event_generation
             {
                 next.resources = previous.resources.clone();
                 next.resource_restart_reason = previous.resource_restart_reason.clone();
+                next.resource_restart_evidence = previous.resource_restart_evidence.clone();
+                next.resource_restart_event = previous.resource_restart_event;
             } else {
                 next.resources = None;
                 next.resource_restart_reason = None;
+                next.resource_restart_evidence = None;
+                next.resource_restart_event = None;
             }
             if *previous == next {
                 false
@@ -234,7 +290,29 @@ impl ServiceTask {
         });
     }
 
+    fn record(&self, data: EventData) -> u64 {
+        self.events.record(
+            Some(&self.name),
+            self.state.event_generation,
+            self.cause,
+            data,
+        )
+    }
+
+    fn trigger(&mut self, reason: RestartCause) {
+        self.cause = Some(self.record(EventData::RestartTriggered {
+            reason,
+            policy: (&self.config.restart).into(),
+        }));
+    }
+
     fn transition(&mut self, state: ServiceState) {
+        if self.state.status != state {
+            self.record(EventData::StateChanged {
+                from: self.state.status,
+                to: state,
+            });
+        }
         self.state.status = state;
         self.publish();
     }
@@ -256,6 +334,10 @@ impl ServiceTask {
         {
             self.state.last_exit_signal = None;
         }
+        self.cause = Some(self.record(EventData::Exited {
+            code: self.state.last_exit_code,
+            signal: self.state.last_exit_signal,
+        }));
         self.publish();
     }
 
@@ -264,27 +346,43 @@ impl ServiceTask {
     }
 
     fn mark_stopped(&mut self) {
-        self.transition(if *self.control.borrow() == Control::Restarting {
-            ServiceState::Restarting
-        } else {
-            ServiceState::Stopped
-        });
+        self.transition(
+            if matches!(*self.control.borrow(), Control::Restarting(_)) {
+                ServiceState::Restarting
+            } else {
+                ServiceState::Stopped
+            },
+        );
     }
 
     async fn wait_stop(&mut self) {
         while !matches!(
             *self.control.borrow_and_update(),
-            Control::Stopping | Control::Restarting
+            Control::Stopping(_) | Control::Restarting(_)
         ) {
             if self.control.changed().await.is_err() {
                 break;
             }
         }
+        let cause = match *self.control.borrow() {
+            Control::Restarting(cause) => Some(cause),
+            Control::Stopping(cause) => cause,
+            _ => None,
+        };
+        self.cause = Some(self.events.record(
+            Some(&self.name),
+            self.state.event_generation,
+            cause,
+            EventData::ServiceStopRequested {
+                manual_restart: matches!(*self.control.borrow(), Control::Restarting(_)),
+            },
+        ));
     }
 
     async fn wait_dependencies(&mut self) -> Result<Option<DependencyRecovery>, String> {
         let mut updates = self.snapshots.subscribe();
         let deadline = tokio::time::Instant::now() + self.options.dependency_timeout;
+        let mut waiting = BTreeMap::new();
         loop {
             if !self.running() {
                 return Ok(None);
@@ -298,12 +396,40 @@ impl ServiceTask {
                         dependency.status,
                         ServiceState::Failed | ServiceState::Stopped
                     ) {
+                        self.cause = Some(self.record(EventData::DependencyFailed {
+                            service: edge.service.clone(),
+                            state: dependency.status,
+                        }));
                         return Err(format!(
                             "dependency '{}' is {:?}",
                             edge.service, dependency.status
                         ));
                     }
-                    ready &= dependency_ready(dependency, &edge.condition);
+                    let edge_ready = dependency_ready(dependency, &edge.condition);
+                    if !edge_ready && !waiting.contains_key(&edge.service) {
+                        let event = self.record(EventData::DependencyWaiting {
+                            service: edge.service.clone(),
+                            condition: edge.condition.clone(),
+                            observed_generation: dependency.event_generation,
+                            timeout: self.options.dependency_timeout,
+                            remaining: deadline
+                                .saturating_duration_since(tokio::time::Instant::now()),
+                        });
+                        waiting.insert(edge.service.clone(), event);
+                    } else if edge_ready && waiting.contains_key(&edge.service) {
+                        let cause = waiting.remove(&edge.service);
+                        self.events.record(
+                            Some(&self.name),
+                            self.state.event_generation,
+                            cause,
+                            EventData::DependencyReady {
+                                service: edge.service.clone(),
+                                condition: edge.condition.clone(),
+                                observed_generation: dependency.event_generation,
+                            },
+                        );
+                    }
+                    ready &= edge_ready;
                 }
                 if ready {
                     return Ok(Some(DependencyRecovery::capture(&self.config, &snapshot)));
@@ -312,7 +438,10 @@ impl ServiceTask {
             tokio::select! {
                 biased;
                 _ = self.control.changed() => return Ok(None),
-                _ = tokio::time::sleep_until(deadline) => return Err(format!("dependency readiness timed out after {:?}", self.options.dependency_timeout)),
+                _ = tokio::time::sleep_until(deadline) => {
+                    self.cause = Some(self.record(EventData::DependencyTimedOut { timeout: self.options.dependency_timeout }));
+                    return Err(format!("dependency readiness timed out after {:?}", self.options.dependency_timeout));
+                },
                 _ = updates.changed() => {},
             }
         }
@@ -324,6 +453,8 @@ impl ServiceTask {
         dependencies: DependencyRecovery,
     ) -> GenerationEnd {
         let mut health = self.checker.clone().map(HealthMonitor::new);
+        let mut previous_health = None;
+        let mut health_event = None;
         let mut updates = self.snapshots.subscribe();
         let resource_restarts = self
             .config
@@ -344,28 +475,38 @@ impl ServiceTask {
                 if !self.running() {
                     return GenerationEnd::Shutdown;
                 }
-                let (recovered, resource_reason) = {
+                let (recovered, resource_reason, resource_event) = {
                     let snapshot = updates.borrow_and_update();
                     let current = &snapshot.services[&self.name];
                     let reason = (resource_restarts
                         && current.pid == self.state.pid
                         && current.started_at == self.state.started_at
-                        && current.restart_count == self.state.restart_count)
+                        && current.restart_count == self.state.restart_count
+                        && current.event_generation == self.state.event_generation)
                         .then(|| current.resource_restart_reason.clone())
                         .flatten();
-                    (dependencies.recovered(&snapshot), reason)
+                    if reason.is_some() {
+                        self.state.resource_restart_evidence =
+                            current.resource_restart_evidence.clone();
+                    }
+                    (
+                        dependencies.recovered(&snapshot),
+                        reason,
+                        current.resource_restart_event,
+                    )
                 };
                 tokio::select! {
                     biased;
                     _ = self.control.changed() => return GenerationEnd::Shutdown,
                     result = process.wait() => return match result {
                         Ok(status) => GenerationEnd::Exit(status),
-                        Err(error) => GenerationEnd::Error(error.to_string()),
+                        Err(error) => GenerationEnd::Error(error),
                     },
                     _ = std::future::ready(()), if !recovered.is_empty() => {
                         return GenerationEnd::DependencyRecovery(recovered);
                     },
                     _ = std::future::ready(()), if resource_reason.is_some() => {
+                        self.cause = resource_event;
                         return GenerationEnd::ResourceLimit(resource_reason.unwrap());
                     },
                     observation = &mut probe => break observation,
@@ -373,10 +514,33 @@ impl ServiceTask {
                 }
             };
             self.state.consecutive_failures = observation.consecutive_failures;
+            let failure = match &observation.result {
+                ProbeResult::Healthy => None,
+                ProbeResult::Unhealthy(error) => Some(ProbeEvidence::from(error)),
+            };
+            let next_health = (observation.state, failure.clone());
+            if previous_health.as_ref() != Some(&next_health) {
+                health_event = Some(self.events.record(
+                    Some(&self.name),
+                    self.state.event_generation,
+                    None,
+                    EventData::HealthChanged {
+                        state: match observation.state {
+                            HealthState::Healthy => ServiceState::Healthy,
+                            HealthState::Retrying => ServiceState::Running,
+                            HealthState::Unhealthy => ServiceState::Unhealthy,
+                        },
+                        consecutive_failures: observation.consecutive_failures,
+                        failure,
+                    },
+                ));
+                previous_health = Some(next_health);
+            }
             self.state.last_error = match observation.result {
                 ProbeResult::Healthy => None,
                 ProbeResult::Unhealthy(error) => Some(error.to_string()),
             };
+            self.cause = health_event;
             self.transition(match observation.state {
                 HealthState::Healthy => ServiceState::Healthy,
                 HealthState::Retrying => ServiceState::Running,
@@ -385,8 +549,10 @@ impl ServiceTask {
             if observation.state == HealthState::Unhealthy
                 && self.config.restart.policy != RestartPolicyType::Never
             {
+                self.trigger(RestartCause::HealthFailure);
                 return GenerationEnd::HealthFailure;
             }
+            self.cause = None;
         }
     }
 
@@ -397,6 +563,24 @@ impl ServiceTask {
             return false;
         }
         let retry = should_restart(&self.config, failed, self.state.restart_count);
+        let policy_allows = match self.config.restart.policy {
+            RestartPolicyType::Always => true,
+            RestartPolicyType::OnFailure => failed,
+            RestartPolicyType::Never => false,
+        };
+        let outcome = if retry {
+            RestartOutcome::Scheduled
+        } else if policy_allows {
+            RestartOutcome::BudgetExhausted
+        } else {
+            RestartOutcome::PolicyDeclined
+        };
+        self.cause = Some(self.record(EventData::RestartDecision {
+            outcome,
+            policy: (&self.config.restart).into(),
+            restart_count: self.state.restart_count,
+            delay: retry.then(|| restart_delay(&self.config.restart, self.state.restart_count)),
+        }));
         if !retry {
             self.transition(if failed {
                 ServiceState::Failed
@@ -500,6 +684,7 @@ mod tests {
         };
         let (snapshots, _) = watch::channel(RuntimeSnapshot {
             supervisor_pid: std::process::id(),
+            event_run_id: None,
             services: [("child".into(), initial)].into(),
         });
         let mut task = ServiceTask::new(
@@ -510,6 +695,8 @@ mod tests {
             control,
             snapshots.clone(),
             LogCollector::new(Default::default()).unwrap(),
+            EventRecorder::new("unused".into(), None),
+            None,
         );
         let usage = ResourceUsage {
             cpu_percent: Some(50.0),
@@ -568,6 +755,7 @@ mod tests {
         let (control, receiver) = watch::channel(Control::Running);
         let (snapshots, _) = watch::channel(RuntimeSnapshot {
             supervisor_pid: std::process::id(),
+            event_run_id: None,
             services: [("child".into(), ServiceSnapshot::default())].into(),
         });
         let mut task = ServiceTask::new(
@@ -578,6 +766,8 @@ mod tests {
             receiver,
             snapshots,
             LogCollector::new(Default::default()).unwrap(),
+            EventRecorder::new("unused".into(), None),
+            None,
         );
         for (count, seconds) in [(0, 1), (1, 2), (2, 3), (3, 3)] {
             task.state.restart_count = count;
@@ -588,7 +778,7 @@ mod tests {
         let start = tokio::time::Instant::now();
         let stop = async {
             tokio::time::sleep(Duration::from_millis(100)).await;
-            control.send_replace(Control::Stopping);
+            control.send_replace(Control::Stopping(None));
         };
         let (retry, _) = tokio::join!(task.schedule_restart(true), stop);
         assert!(!retry);

@@ -17,6 +17,9 @@ use devd::{
         BackoffType, Dependency, DependencyCondition, DevdConfig, HealthCheck, RestartPolicyType,
         ServiceConfig,
     },
+    core::events::{
+        EventData, EventHistory, LifecycleEvent, ProbeEvidence, RestartCause, RestartOutcome,
+    },
     core::service_manager::{
         ManagerOptions, RuntimeSnapshot, ServiceManager, ServiceManagerError, ServiceState,
     },
@@ -143,6 +146,96 @@ async fn test_script_health_failure_restarts_then_exhausts_budget() {
         .as_ref()
         .unwrap()
         .contains("script probe failed"));
+    let trigger = run.event(|e| {
+        e.service.as_deref() == Some("root")
+            && matches!(
+                e.data,
+                EventData::RestartTriggered {
+                    reason: RestartCause::HealthFailure,
+                    ..
+                }
+            )
+    });
+    let probe = run.event(|e| Some(e.sequence) == trigger.cause);
+    assert!(matches!(
+        probe.data,
+        EventData::HealthChanged {
+            state: ServiceState::Unhealthy,
+            failure: Some(ProbeEvidence::Script),
+            consecutive_failures: 2
+        }
+    ));
+    run.event(|e| {
+        e.service.as_deref() == Some("root")
+            && matches!(
+                e.data,
+                EventData::RestartDecision {
+                    outcome: RestartOutcome::BudgetExhausted,
+                    ..
+                }
+            )
+    });
+}
+
+#[tokio::test]
+async fn test_lifecycle_events_preserve_run_generation_and_restart_cause() {
+    let directory = tempdir().unwrap();
+    let manager = ServiceManager::new(
+        config([("worker", sleeper(directory.path()))]),
+        options(&directory),
+    )
+    .unwrap();
+    let controller = manager.controller();
+    let mut run = RunningManager::start(manager);
+    let first = run.until(|s| s.services["worker"].pid.is_some()).await;
+    let restarted = bounded(controller.restart("worker".into())).await.unwrap();
+    assert_eq!(restarted.restart_count, 1);
+    run.until(|s| s.services["worker"].restart_count == 1 && s.services["worker"].pid.is_some())
+        .await;
+    reaped(first.services["worker"].pid.unwrap()).await;
+    run.shutdown().await.unwrap();
+
+    let events = run.events.snapshot();
+    assert!(events
+        .entries
+        .iter()
+        .all(|event| event.run_id == events.context.run_id));
+    let generations = events
+        .entries
+        .iter()
+        .filter_map(|event| match event.data {
+            EventData::GenerationPending => event.generation,
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert!(generations.len() >= 2);
+    assert_ne!(generations[0], generations[1]);
+    assert!(events
+        .entries
+        .iter()
+        .any(|event| matches!(event.data, EventData::SupervisorStarted)));
+    assert!(events
+        .entries
+        .iter()
+        .any(|event| matches!(event.data, EventData::Started { .. })));
+    assert!(events
+        .entries
+        .iter()
+        .any(|event| matches!(event.data, EventData::ManualRestartRequested)));
+    assert!(events
+        .entries
+        .iter()
+        .any(|event| matches!(event.data, EventData::SupervisorStopped { .. })));
+    let generation_event = events
+        .entries
+        .iter()
+        .find(|event| {
+            matches!(event.data, EventData::GenerationPending)
+                && event.generation == Some(generations[1])
+        })
+        .unwrap();
+    assert!(generation_event.cause.is_some());
+    assert!(generation_event.cause.unwrap() < generation_event.sequence);
 }
 
 #[tokio::test]
@@ -206,6 +299,25 @@ async fn test_resource_restart_exhausts_shared_budget_and_cleans_dependents() {
             .contains("restarting after RSS limit exceeded for 3 consecutive samples")));
     assert!(logs.iter().any(|log| log.level == LogLevel::Error
         && log.message.contains("resource restart budget exhausted")));
+    let trigger = run.event(|e| {
+        e.service.as_deref() == Some("root")
+            && matches!(
+                e.data,
+                EventData::RestartTriggered {
+                    reason: RestartCause::ResourceLimit { .. },
+                    ..
+                }
+            )
+    });
+    let request = run.event(|e| Some(e.sequence) == trigger.cause);
+    match &request.data {
+        EventData::ResourceRestartRequested { evidence } => {
+            assert_eq!(evidence.consecutive_samples, 3);
+            assert!(evidence.restart_authorized);
+            assert_eq!(request.generation, trigger.generation);
+        }
+        data => panic!("unexpected restart cause: {data:?}"),
+    }
 }
 
 #[tokio::test]
@@ -330,6 +442,36 @@ async fn test_dependency_recovery_after_automatic_crash_restart() {
     reaped(initial.services["root"].pid.unwrap()).await;
     reaped(initial.services["child"].pid.unwrap()).await;
     run.shutdown().await.unwrap();
+    let event = run.event(|e| {
+        e.service.as_deref() == Some("child")
+            && matches!(
+                e.data,
+                EventData::RestartTriggered {
+                    reason: RestartCause::DependencyRecovery { .. },
+                    ..
+                }
+            )
+    });
+    if let EventData::RestartTriggered {
+        reason: RestartCause::DependencyRecovery { services },
+        ..
+    } = &event.data
+    {
+        assert_eq!(services.len(), 1);
+        assert_eq!(services[0].service, "root");
+        assert_eq!(
+            services[0].previous_generation,
+            initial.services["root"].event_generation
+        );
+        assert_eq!(
+            services[0].current_generation,
+            recovered.services["root"].event_generation
+        );
+        assert_ne!(
+            services[0].previous_generation,
+            services[0].current_generation
+        );
+    }
 }
 
 #[tokio::test]
@@ -532,12 +674,14 @@ struct RunningManager {
     stop: Option<oneshot::Sender<()>>,
     snapshots: watch::Receiver<RuntimeSnapshot>,
     output: broadcast::Receiver<Arc<LogEntry>>,
+    events: EventHistory,
 }
 
 impl RunningManager {
     fn start(manager: ServiceManager) -> Self {
         let snapshots = manager.subscribe();
         let output = manager.subscribe_logs();
+        let events = manager.event_history();
         let (stop, stopped) = oneshot::channel();
         let task = tokio::spawn(manager.run_until(async {
             let _ = stopped.await;
@@ -547,6 +691,7 @@ impl RunningManager {
             stop: Some(stop),
             snapshots,
             output,
+            events,
         }
     }
 
@@ -567,7 +712,37 @@ impl RunningManager {
     }
 
     async fn finish(&mut self) -> Result<RuntimeSnapshot, ServiceManagerError> {
-        bounded(self.task.take().unwrap()).await.unwrap()
+        let result = bounded(self.task.take().unwrap()).await.unwrap();
+        let window = self.events.snapshot();
+        // Check provenance across all real orchestration scenarios, including
+        // causes from a previous generation after an automatic restart.
+        for event in &window.entries {
+            assert_eq!(event.run_id, window.context.run_id);
+            if let Some(cause) = event.cause {
+                assert!(cause < event.sequence, "invalid cause: {event:?}");
+                assert!(window.entries.iter().any(|e| e.sequence == cause));
+            }
+            if let Some(generation) = event.generation {
+                let pending = window
+                    .entries
+                    .iter()
+                    .find(|e| e.sequence == generation)
+                    .unwrap();
+                assert!(matches!(pending.data, EventData::GenerationPending));
+                assert_eq!(pending.service, event.service);
+                assert!(generation <= event.sequence);
+            }
+        }
+        result
+    }
+
+    fn event(&self, predicate: impl Fn(&LifecycleEvent) -> bool) -> Arc<LifecycleEvent> {
+        self.events
+            .snapshot()
+            .entries
+            .into_iter()
+            .find(|event| predicate(event))
+            .expect("expected lifecycle event")
     }
 
     async fn shutdown(&mut self) -> Result<RuntimeSnapshot, ServiceManagerError> {
@@ -829,6 +1004,32 @@ async fn test_orchestration_failure_restart_recovers_and_counts_attempts() {
         .await;
     assert_eq!(state.services["child"].last_exit_code, Some(7));
     run.shutdown().await.unwrap();
+    let trigger = run.event(|e| {
+        matches!(
+            e.data,
+            EventData::RestartTriggered {
+                reason: RestartCause::ProcessExit,
+                ..
+            }
+        )
+    });
+    let exit = run.event(|e| Some(e.sequence) == trigger.cause);
+    assert!(matches!(exit.data, EventData::Exited { code: Some(7), .. }));
+    let decision = run.event(|e| {
+        Some(trigger.sequence) == e.cause
+            && matches!(
+                e.data,
+                EventData::RestartDecision {
+                    outcome: RestartOutcome::Scheduled,
+                    restart_count: 0,
+                    ..
+                }
+            )
+    });
+    let generation = run.event(|e| {
+        Some(decision.sequence) == e.cause && matches!(e.data, EventData::GenerationPending)
+    });
+    assert_ne!(trigger.generation, generation.generation);
 }
 
 #[tokio::test]
@@ -1361,6 +1562,7 @@ async fn test_orchestration_cancelling_run_kills_owned_process_groups() {
     let task = run.task.take().unwrap();
     task.abort();
     assert!(bounded(task).await.unwrap_err().is_cancelled());
+    run.event(|e| matches!(e.data, EventData::SupervisorCancelled));
     reaped(initial.services["child"].pid.unwrap()).await;
     bounded(async {
         // Child reaping does not imply that a cancelled blocking state write

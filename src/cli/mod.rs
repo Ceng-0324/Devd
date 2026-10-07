@@ -170,7 +170,8 @@ impl Cli {
             state_dir = state_dir.join("profiles").join(profile_directory(profile));
         }
         let socket = state_dir.join("control.sock");
-        let options = ManagerOptions::new(state_dir.join("services.json"));
+        let mut options = ManagerOptions::new(state_dir.join("services.json"));
+        options.profile = self.profile.clone();
         let formatter = LogFormatter {
             color: match self.color {
                 Color::Auto => ColorMode::Auto,
