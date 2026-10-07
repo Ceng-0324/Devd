@@ -1,0 +1,642 @@
+//! Deterministic explanations built from runtime snapshots and lifecycle facts.
+//!
+//! This module is deliberately read-only. It never probes services, starts a
+//! process, or turns a suggested next step into a control action.
+use std::collections::BTreeSet;
+
+use serde::{Deserialize, Serialize};
+
+use super::{
+    events::{
+        query::{EventBatch, EventGap, EventKind, EventSource, PersistenceState},
+        EventContext, EventData, LifecycleEvent, ProbeEvidence, ProcessEvidence, RestartCause,
+        RestartOutcome,
+    },
+    service_manager::{RuntimeSnapshot, ServiceState},
+};
+
+pub const DIAGNOSTIC_SCHEMA_VERSION: u16 = 1;
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExplainConclusion {
+    DependencyBlocked,
+    StartupFailed,
+    HealthFailure,
+    ResourceLimit,
+    Restarting,
+    RestartBudgetExhausted,
+    ManuallyStopped,
+    Stopped,
+    Healthy,
+    Running,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExplainEvidence {
+    pub sequence: u64,
+    pub event_type: EventKind,
+    pub generation: Option<u64>,
+    pub cause: Option<u64>,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
+    pub detail: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ExplainReport {
+    pub schema_version: u16,
+    pub source: EventSource,
+    pub persistence: Option<PersistenceState>,
+    pub context: Option<EventContext>,
+    pub service: String,
+    pub status: Option<ServiceState>,
+    pub generation: Option<u64>,
+    pub conclusion: ExplainConclusion,
+    pub summary: String,
+    pub details: Vec<String>,
+    pub evidence: Vec<ExplainEvidence>,
+    pub complete: bool,
+    pub gaps: Vec<EventGap>,
+    pub omitted_gaps: u64,
+    pub next_steps: Vec<String>,
+}
+
+/// Explain one service using one event batch. The same function serves live
+/// and stored queries so text and JSON cannot silently disagree.
+pub fn explain(
+    service: &str,
+    snapshot: Option<&RuntimeSnapshot>,
+    batch: EventBatch,
+) -> ExplainReport {
+    let state = snapshot.and_then(|snapshot| snapshot.services.get(service));
+    let status = state.map(|state| state.status);
+    let generation = state.and_then(|state| state.event_generation);
+    let mut events: Vec<&LifecycleEvent> = batch
+        .entries
+        .iter()
+        .filter(|event| event.service.as_deref() == Some(service))
+        .collect();
+    events.sort_by_key(|event| event.sequence);
+    let mut evidence = Vec::new();
+    let mut seen = BTreeSet::new();
+
+    let mut conclusion = ExplainConclusion::Unknown;
+    let mut summary = format!("{service}: 无法确定当前原因");
+    let mut details = Vec::new();
+    let mut has_diagnostic_evidence = false;
+
+    let latest_budget = events.iter().rev().find(|event| {
+        matches!(
+            event.data,
+            EventData::RestartDecision {
+                outcome: RestartOutcome::BudgetExhausted,
+                ..
+            }
+        )
+    });
+    let latest_trigger = events
+        .iter()
+        .rev()
+        .find(|event| matches!(event.data, EventData::RestartTriggered { .. }));
+    let latest_manual_restart = events.iter().rev().find(|event| {
+        matches!(
+            event.data,
+            EventData::ManualRestartRequested
+                | EventData::ServiceStopRequested {
+                    manual_restart: true
+                }
+        )
+    });
+    let latest_started = events
+        .iter()
+        .rev()
+        .find(|event| matches!(event.data, EventData::Started { .. }));
+    let latest_wait = events
+        .iter()
+        .rev()
+        .find(|event| matches!(event.data, EventData::DependencyWaiting { .. }));
+    let latest_ready = events
+        .iter()
+        .rev()
+        .find(|event| matches!(event.data, EventData::DependencyReady { .. }));
+    let latest_spawn = events
+        .iter()
+        .rev()
+        .find(|event| matches!(event.data, EventData::SpawnFailed { .. }));
+    let latest_dependency_failure = events.iter().rev().find(|event| {
+        matches!(
+            event.data,
+            EventData::DependencyFailed { .. } | EventData::DependencyTimedOut { .. }
+        )
+    });
+    let latest_start_failure = latest_spawn
+        .into_iter()
+        .chain(latest_dependency_failure)
+        .max_by_key(|event| event.sequence);
+    let latest_health_failure = events.iter().rev().find(|event| {
+        matches!(
+            event.data,
+            EventData::HealthChanged {
+                state: ServiceState::Unhealthy,
+                ..
+            }
+        )
+    });
+    let latest_resource = events.iter().rev().find(|event| {
+        matches!(
+            event.data,
+            EventData::ResourceRestartRequested { .. }
+                | EventData::ResourceChanged { exceeded: true, .. }
+        )
+    });
+    let latest_manual_stop = events.iter().rev().find(|event| {
+        matches!(
+            event.data,
+            EventData::ServiceStopRequested {
+                manual_restart: false
+            }
+        )
+    });
+
+    if let Some(event) = latest_budget {
+        has_diagnostic_evidence = true;
+        conclusion = ExplainConclusion::RestartBudgetExhausted;
+        summary = format!("{service} 的自动重启预算已耗尽");
+        if let EventData::RestartDecision {
+            restart_count,
+            policy,
+            ..
+        } = &event.data
+        {
+            details.push(format!(
+                "已尝试 {} 次，策略允许的最大次数为 {}，当前策略为 {:?}",
+                restart_count, policy.max_attempts, policy.policy
+            ));
+        }
+        add_evidence(&mut evidence, &mut seen, event);
+        add_cause(&mut evidence, &mut seen, event, &batch.entries);
+    } else if let Some(event) = latest_wait.filter(|wait| {
+        latest_ready.is_none_or(|ready| ready.sequence < wait.sequence)
+            && matches!(status, Some(ServiceState::Pending | ServiceState::Starting))
+    }) {
+        has_diagnostic_evidence = true;
+        conclusion = ExplainConclusion::DependencyBlocked;
+        summary = format!("{service} 尚未启动，正在等待依赖就绪");
+        if let EventData::DependencyWaiting {
+            service: dependency,
+            condition,
+            timeout,
+            remaining,
+            ..
+        } = &event.data
+        {
+            details.push(format!(
+                "等待 {dependency} 满足 {}；已配置期限 {:?}，剩余 {:?}",
+                condition_name(condition),
+                timeout,
+                remaining
+            ));
+            details.push(format!(
+                "先检查 {dependency} 的状态和对应健康事件，不会因本次诊断自动重启服务"
+            ));
+        }
+        add_evidence(&mut evidence, &mut seen, event);
+    } else if let Some(event) = latest_start_failure {
+        has_diagnostic_evidence = true;
+        conclusion = ExplainConclusion::StartupFailed;
+        summary = format!("{service} 启动失败");
+        details.push(event_detail(event));
+        add_evidence(&mut evidence, &mut seen, event);
+        add_cause(&mut evidence, &mut seen, event, &batch.entries);
+    } else if let Some(event) = latest_resource {
+        has_diagnostic_evidence = true;
+        conclusion = ExplainConclusion::ResourceLimit;
+        summary = if matches!(event.data, EventData::ResourceRestartRequested { .. }) {
+            format!("{service} 因资源阈值超限触发了重启")
+        } else {
+            format!("{service} 超过了配置的资源阈值")
+        };
+        details.push(event_detail(event));
+        add_evidence(&mut evidence, &mut seen, event);
+        add_cause(&mut evidence, &mut seen, event, &batch.entries);
+    } else if let Some(event) = latest_health_failure.filter(|_| {
+        matches!(
+            status,
+            Some(ServiceState::Unhealthy | ServiceState::Restarting | ServiceState::Failed)
+        )
+    }) {
+        has_diagnostic_evidence = true;
+        conclusion = ExplainConclusion::HealthFailure;
+        summary = format!("{service} 的健康检查失败");
+        details.push(event_detail(event));
+        add_evidence(&mut evidence, &mut seen, event);
+        add_cause(&mut evidence, &mut seen, event, &batch.entries);
+    } else if let Some(event) = latest_trigger.filter(|_| {
+        matches!(
+            status,
+            Some(ServiceState::Restarting | ServiceState::Starting)
+        )
+    }) {
+        has_diagnostic_evidence = true;
+        conclusion = ExplainConclusion::Restarting;
+        summary = format!("{service} 正在按记录的原因重启");
+        details.push(event_detail(event));
+        add_evidence(&mut evidence, &mut seen, event);
+        add_cause(&mut evidence, &mut seen, event, &batch.entries);
+    } else if let Some(event) = latest_manual_restart
+        .filter(|request| latest_started.is_none_or(|started| started.sequence < request.sequence))
+    {
+        has_diagnostic_evidence = true;
+        conclusion = ExplainConclusion::Restarting;
+        summary = format!("{service} 收到手动重启请求，等待新进程代次");
+        details.push(event_detail(event));
+        add_evidence(&mut evidence, &mut seen, event);
+        add_cause(&mut evidence, &mut seen, event, &batch.entries);
+    } else if let Some(event) = latest_manual_stop.filter(|_| {
+        status.is_none() || matches!(status, Some(ServiceState::Stopped | ServiceState::Stopping))
+    }) {
+        has_diagnostic_evidence = true;
+        conclusion = ExplainConclusion::ManuallyStopped;
+        summary = format!("{service} 已按停止请求结束");
+        details.push("停止请求只清理受 devd 管理的进程，不会执行诊断建议".into());
+        add_evidence(&mut evidence, &mut seen, event);
+    } else {
+        match status {
+            Some(ServiceState::Healthy) => {
+                conclusion = ExplainConclusion::Healthy;
+                summary = format!("{service} 当前健康");
+            }
+            Some(ServiceState::Running) => {
+                conclusion = ExplainConclusion::Running;
+                summary = format!("{service} 正在运行，尚未报告健康结论");
+            }
+            Some(ServiceState::Stopped) => {
+                conclusion = ExplainConclusion::Stopped;
+                summary = format!("{service} 当前已停止");
+            }
+            Some(ServiceState::Failed) => {
+                conclusion = ExplainConclusion::StartupFailed;
+                summary = format!("{service} 处于失败状态，但保留事件不足以确定直接原因");
+            }
+            Some(other) => {
+                summary = format!("{service} 当前状态为 {other:?}，缺少足够事件证据");
+            }
+            None => {}
+        }
+    }
+
+    if evidence.is_empty() {
+        if let Some(event) = events.last() {
+            details.push(format!("最近的服务事件：{}", event_detail(event)));
+            add_evidence(&mut evidence, &mut seen, event);
+            add_cause(&mut evidence, &mut seen, event, &batch.entries);
+        }
+    }
+
+    let mut next_steps = next_steps(conclusion);
+    if !has_diagnostic_evidence {
+        next_steps.insert(
+            0,
+            "当前没有可定位故障原因的事件证据；可在下次启动时显式开启 --persist-events 后重现"
+                .into(),
+        );
+    }
+    let complete = batch.gaps.is_empty() && batch.omitted_gaps == 0;
+    if !complete {
+        details.push("事件历史存在缺口，以上结论只覆盖保留下来的证据".into());
+    }
+
+    ExplainReport {
+        schema_version: DIAGNOSTIC_SCHEMA_VERSION,
+        source: batch.source,
+        persistence: batch.persistence,
+        context: batch.context,
+        service: service.into(),
+        status,
+        generation,
+        conclusion,
+        summary,
+        details,
+        evidence,
+        complete,
+        gaps: batch.gaps,
+        omitted_gaps: batch.omitted_gaps,
+        next_steps,
+    }
+}
+
+fn add_evidence(
+    evidence: &mut Vec<ExplainEvidence>,
+    seen: &mut BTreeSet<u64>,
+    event: &LifecycleEvent,
+) {
+    if seen.insert(event.sequence) {
+        evidence.push(ExplainEvidence {
+            sequence: event.sequence,
+            event_type: event.data.kind(),
+            generation: event.generation,
+            cause: event.cause,
+            timestamp: event.timestamp,
+            detail: event_detail(event),
+        });
+    }
+}
+
+fn add_cause(
+    evidence: &mut Vec<ExplainEvidence>,
+    seen: &mut BTreeSet<u64>,
+    event: &LifecycleEvent,
+    entries: &[LifecycleEvent],
+) {
+    let mut cause = event.cause;
+    while let Some(sequence) = cause {
+        let Some(parent) = entries.iter().find(|item| item.sequence == sequence) else {
+            break;
+        };
+        add_evidence(evidence, seen, parent);
+        cause = parent.cause;
+    }
+}
+
+fn event_detail(event: &LifecycleEvent) -> String {
+    match &event.data {
+        EventData::DependencyWaiting {
+            service,
+            condition,
+            timeout,
+            remaining,
+            ..
+        } => format!(
+            "等待依赖 {service} 满足 {}，期限 {:?}，剩余 {:?}",
+            condition_name(condition),
+            timeout,
+            remaining
+        ),
+        EventData::DependencyReady {
+            service, condition, ..
+        } => format!("依赖 {service} 已满足 {}", condition_name(condition)),
+        EventData::DependencyFailed { service, state } => {
+            format!("依赖 {service} 处于 {state:?} 状态")
+        }
+        EventData::DependencyTimedOut { timeout } => {
+            format!("依赖就绪等待超过 {:?}", timeout)
+        }
+        EventData::SpawnFailed { failure } => format!("创建进程失败：{}", process_detail(failure)),
+        EventData::ProcessFailed { failure } => {
+            format!("进程处理失败：{}", process_detail(failure))
+        }
+        EventData::HealthChanged {
+            state,
+            consecutive_failures,
+            failure,
+        } => format!(
+            "健康状态变为 {state:?}，连续失败 {consecutive_failures} 次{}",
+            failure
+                .as_ref()
+                .map(|failure| format!("：{}", probe_detail(failure)))
+                .unwrap_or_default()
+        ),
+        EventData::ResourceRestartRequested { evidence } => {
+            format!("资源阈值超限并获授权重启：{evidence:?}")
+        }
+        EventData::RestartTriggered { reason, .. } => {
+            format!("触发重启：{}", restart_detail(reason))
+        }
+        EventData::RestartDecision {
+            outcome,
+            restart_count,
+            delay,
+            ..
+        } => format!(
+            "重启决策为 {outcome:?}，累计次数 {restart_count}，退避 {:?}",
+            delay
+        ),
+        EventData::Exited { code, signal } => {
+            format!("进程退出，code={code:?}, signal={signal:?}")
+        }
+        EventData::ServiceStopRequested { manual_restart } => {
+            format!("收到服务停止请求，manual_restart={manual_restart}")
+        }
+        EventData::ManualRestartRequested => "收到手动重启请求".into(),
+        EventData::StateChanged { from, to } => format!("状态从 {from:?} 变为 {to:?}"),
+        EventData::Starting => "开始启动".into(),
+        EventData::Started { pid } => format!("进程已启动，pid={pid:?}"),
+        EventData::GenerationPending => "等待启动新进程代次".into(),
+        EventData::SupervisorStarted => "supervisor 已启动".into(),
+        EventData::SupervisorStopping { reason } => format!("supervisor 开始停止：{reason:?}"),
+        EventData::SupervisorStopped { failed } => format!("supervisor 已停止，failed={failed}"),
+        EventData::SupervisorCancelled => "supervisor 被取消".into(),
+        EventData::ActorFailed { cancelled } => format!("服务 actor 失败，cancelled={cancelled}"),
+        EventData::ResourceChanged { exceeded, evidence } => {
+            format!("资源状态 changed，exceeded={exceeded}：{evidence:?}")
+        }
+        EventData::Omitted { original_type } => format!("事件内容已省略，原类型={original_type}"),
+    }
+}
+
+fn probe_detail(failure: &ProbeEvidence) -> String {
+    match failure {
+        ProbeEvidence::Timeout { timeout } => format!("探测超时 {:?}", timeout),
+        ProbeEvidence::Tcp { os_code } => format!("TCP 连接失败，os_code={os_code:?}"),
+        ProbeEvidence::Socket { os_code } => format!("Unix socket 连接失败，os_code={os_code:?}"),
+        ProbeEvidence::Http { connection_error } => {
+            format!("HTTP 请求失败，connection_error={connection_error}")
+        }
+        ProbeEvidence::HttpStatus { status } => format!("HTTP 返回状态 {status}"),
+        ProbeEvidence::Script => "脚本探测失败".into(),
+    }
+}
+
+fn process_detail(failure: &ProcessEvidence) -> String {
+    format!("操作 {:?}", failure)
+}
+
+fn restart_detail(reason: &RestartCause) -> String {
+    match reason {
+        RestartCause::ProcessExit => "进程异常退出".into(),
+        RestartCause::SpawnFailure => "进程创建失败".into(),
+        RestartCause::HealthFailure => "健康检查失败".into(),
+        RestartCause::DependencyRecovery { services } => format!(
+            "依赖恢复：{}",
+            services
+                .iter()
+                .map(|item| item.service.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        RestartCause::ResourceLimit { .. } => "资源阈值超限".into(),
+    }
+}
+
+fn condition_name(condition: &crate::config::DependencyCondition) -> &'static str {
+    match condition {
+        crate::config::DependencyCondition::Started => "started",
+        crate::config::DependencyCondition::SocketReady => "socket-ready",
+        crate::config::DependencyCondition::TcpReady => "tcp-ready",
+        crate::config::DependencyCondition::HttpReady => "http-ready",
+        crate::config::DependencyCondition::ScriptReady => "script-ready",
+    }
+}
+
+fn next_steps(conclusion: ExplainConclusion) -> Vec<String> {
+    match conclusion {
+        ExplainConclusion::DependencyBlocked => vec!["检查依赖服务的 status 与 events".into()],
+        ExplainConclusion::StartupFailed => vec!["检查启动失败事件和服务配置，再手动重试".into()],
+        ExplainConclusion::HealthFailure => vec!["检查健康探测类型、端点状态和最近事件".into()],
+        ExplainConclusion::ResourceLimit => {
+            vec!["检查资源阈值、采样证据和是否明确授权了自动重启".into()]
+        }
+        ExplainConclusion::Restarting => vec!["等待新代次就绪；需要停止时使用 devd stop".into()],
+        ExplainConclusion::RestartBudgetExhausted => {
+            vec!["修复直接原因后再调整 max-attempts 或重新启动 supervisor".into()]
+        }
+        ExplainConclusion::ManuallyStopped | ExplainConclusion::Stopped => {
+            vec!["使用 devd restart <service> 或重新启动 supervisor".into()]
+        }
+        ExplainConclusion::Healthy | ExplainConclusion::Running => {
+            vec!["继续用 devd events 观察后续生命周期".into()]
+        }
+        ExplainConclusion::Unknown => vec!["先查询 devd status 与 devd events 获取更多事实".into()],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::events::{query::EventQuery, EventRecorder};
+    use crate::core::service_manager::ServiceSnapshot;
+
+    fn batch(recorder: &EventRecorder) -> EventBatch {
+        EventQuery {
+            filter: Default::default(),
+            tail: 1000,
+            cursor: None,
+        }
+        .select(recorder.history().snapshot())
+        .unwrap()
+    }
+
+    #[test]
+    fn test_explain_dependency_wait_is_deterministic_and_cites_event() {
+        let recorder = EventRecorder::new("state".into(), None);
+        recorder.record(
+            Some("web"),
+            Some(1),
+            None,
+            EventData::DependencyWaiting {
+                service: "api".into(),
+                condition: crate::config::DependencyCondition::HttpReady,
+                observed_generation: None,
+                timeout: std::time::Duration::from_secs(30),
+                remaining: std::time::Duration::from_secs(12),
+            },
+        );
+        let snapshot = RuntimeSnapshot {
+            supervisor_pid: 1,
+            event_run_id: Some(recorder.run_id().into()),
+            services: [("web".into(), ServiceSnapshot::default())].into(),
+        };
+        let report = explain("web", Some(&snapshot), batch(&recorder));
+        assert_eq!(report.conclusion, ExplainConclusion::DependencyBlocked);
+        assert_eq!(report.evidence[0].sequence, 0);
+        assert!(report.complete);
+    }
+
+    #[test]
+    fn test_explain_budget_exhaustion_includes_causal_trigger() {
+        let recorder = EventRecorder::new("state".into(), None);
+        let trigger = recorder.record(
+            Some("api"),
+            Some(1),
+            None,
+            EventData::RestartTriggered {
+                reason: RestartCause::HealthFailure,
+                policy: (&crate::config::RestartPolicy::default()).into(),
+            },
+        );
+        recorder.record(
+            Some("api"),
+            Some(1),
+            Some(trigger),
+            EventData::RestartDecision {
+                outcome: RestartOutcome::BudgetExhausted,
+                policy: (&crate::config::RestartPolicy::default()).into(),
+                restart_count: 3,
+                delay: None,
+            },
+        );
+        let report = explain("api", None, batch(&recorder));
+        assert_eq!(report.conclusion, ExplainConclusion::RestartBudgetExhausted);
+        assert_eq!(report.evidence.len(), 2);
+        assert!(report.complete);
+    }
+
+    #[test]
+    fn test_explain_manual_restart_waits_for_new_generation() {
+        let recorder = EventRecorder::new("state".into(), None);
+        recorder.record(
+            Some("api"),
+            Some(1),
+            None,
+            EventData::ManualRestartRequested,
+        );
+        recorder.record(
+            Some("api"),
+            Some(1),
+            None,
+            EventData::ServiceStopRequested {
+                manual_restart: true,
+            },
+        );
+        let report = explain("api", None, batch(&recorder));
+        assert_eq!(report.conclusion, ExplainConclusion::Restarting);
+        assert_eq!(
+            report.evidence[0].event_type,
+            EventKind::ServiceStopRequested
+        );
+    }
+
+    #[test]
+    fn test_explain_event_gaps_mark_report_incomplete() {
+        let recorder = EventRecorder::new("state".into(), None);
+        recorder.record(Some("api"), Some(1), None, EventData::Starting);
+        let mut batch = batch(&recorder);
+        batch.gaps.push(EventGap::IncompleteRun {
+            run_id: recorder.run_id().into(),
+        });
+        let report = explain("api", None, batch);
+        assert!(!report.complete);
+        assert_eq!(report.gaps.len(), 1);
+        assert!(report
+            .details
+            .iter()
+            .any(|detail| detail.contains("历史存在缺口")));
+    }
+
+    #[test]
+    fn test_explain_resource_warning_does_not_claim_restart() {
+        let recorder = EventRecorder::new("state".into(), None);
+        recorder.record(
+            Some("api"),
+            Some(1),
+            None,
+            EventData::ResourceChanged {
+                exceeded: true,
+                evidence: super::super::events::ResourceEvidence {
+                    value: super::super::events::ResourceValue::Memory {
+                        bytes: 20,
+                        limit_bytes: 10,
+                    },
+                    sampled_at: chrono::Utc::now(),
+                    consecutive_samples: 1,
+                    restart_authorized: false,
+                },
+            },
+        );
+        let report = explain("api", None, batch(&recorder));
+        assert_eq!(report.conclusion, ExplainConclusion::ResourceLimit);
+        assert!(report.summary.contains("超过了配置的资源阈值"));
+        assert!(!report.summary.contains("触发了重启"));
+    }
+}

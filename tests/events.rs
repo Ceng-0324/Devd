@@ -296,3 +296,52 @@ fn test_cli_event_disk_failure_disables_recording_but_services_keep_running() {
         .iter()
         .any(|g| matches!(g, EventGap::IncompleteRun { .. })));
 }
+
+#[test]
+fn test_cli_explain_online_reports_current_service_evidence() {
+    let project = project();
+    let mut supervisor = project.start();
+    project.running();
+    let report: serde_json::Value =
+        serde_json::from_str(&success(project.invoke(&["explain", "worker", "--json"]))).unwrap();
+    assert_eq!(report["conclusion"], "running", "{report}");
+    assert!(
+        report["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["event_type"] == "state-changed" || e["event_type"] == "started"),
+        "{report}"
+    );
+    assert_eq!(report["source"], "live");
+    success(project.invoke(&["stop"]));
+    supervisor.finish(true);
+}
+
+#[test]
+fn test_cli_explain_stored_is_read_only_after_shutdown() {
+    let project = project();
+    let mut supervisor = start(&project, &["start", "--persist-events"]);
+    project.running();
+    success(project.invoke(&["stop"]));
+    supervisor.finish(true);
+
+    let stored = events(&project, &["--stored"]);
+    assert!(
+        stored
+            .entries
+            .iter()
+            .any(|entry| entry.service.as_deref() == Some("worker")),
+        "{stored:?}"
+    );
+    let report: serde_json::Value = serde_json::from_str(&success(
+        project.invoke(&["explain", "worker", "--stored", "--json"]),
+    ))
+    .unwrap();
+    assert_eq!(report["source"], "stored");
+    assert_eq!(report["status"], serde_json::Value::Null);
+    assert!(
+        !report["evidence"].as_array().unwrap().is_empty(),
+        "{report}"
+    );
+}

@@ -175,6 +175,7 @@ devd graph --profile staging --format mermaid > dependencies.mmd
 | `devd status [--json]` | 查看实时状态、PID、CPU／RSS、重启次数和诊断信息 |
 | `devd top` | 在交互式终端查看运行中的服务和实时日志 |
 | `devd events [service] [--type TYPE] [--since DURATION] [--tail N] [--cursor RUN_UUID:NEXT_SEQUENCE] [--json] [--follow \| --stored]` | 查询生命周期经过、游标与历史缺口 |
+| `devd explain <service> [--json] [--stored]` | 基于确定性事件证据解释一个服务最近的故障或状态 |
 | `devd logs [service] [--tail N] [--level info|warn|error] [--since DURATION] [--grep TEXT] [--follow \| --stored]` | 查询内存或离线磁盘日志，跟随实时输出 |
 | `devd check` | 校验配置、命令引号、依赖关系及当前支持的设置 |
 | `devd graph [--format text|dot|mermaid]` | 显示依赖边与启动层，或导出依赖图 |
@@ -258,6 +259,17 @@ devd events --stored --json
 `events --stored` 要求 writer 已停止，沿用相同实例/profile 参数，YAML 删除后仍可查询。按保留文件顺序跨运行筛选、取尾部；批次的 context、最早可用序号和游标描述最后一个保留运行。保留范围内的游标可继续读到后续运行；游标所属运行已丢失时返回缺口及空事件列表，去掉游标即可查看剩余历史。离线未知服务无匹配结果。输出明确标为 `stored`，旧 PID 仅为历史证据。
 
 正常关闭会排空并同步磁盘；慢磁盘订阅、未完整结束的运行和未写完的尾记录都会显示缺口。下次持久化启动只修复未完成尾记录，并留下恢复标记；完整记录损坏或 schema 不支持时明确报错。单次查询最多保留 128 个缺口诊断，`omitted_gaps` 标出被丢弃的旧诊断数。轮转、强杀与掉电仍可能丢失历史，这是一份有边界的诊断记录。事件不保存命令、URL 或环境内容，但上下文仍包含实例状态路径。
+
+**不靠猜，解释一次故障。** `devd explain <service>` 是只读、确定性的诊断报告，依据当前 supervisor 快照和结构化生命周期事件，区分依赖阻塞、启动失败、健康失败、资源超限、重启预算耗尽、手动停止以及健康／运行状态，并引用对应的事件序号、进程代次、因果事件和时间。它不会探测服务、启动或重启进程，也不会执行报告里的建议。
+
+```bash
+devd explain api
+devd explain api --json
+# 持久化运行停止后：
+devd explain api --stored --json
+```
+
+在线模式连接正在运行的 supervisor，不重新读取 YAML。`--stored` 在 writer 停止后读取保留的事件文件，即使 YAML 已删除也可用；报告会标记 `source: stored`，历史 PID 只作为证据。报告中的 `complete: false` 表示存在明确缺口或被省略的缺口，结论只对保留下来的历史负责。没有匹配事件时会明确说无法确定原因，并给出下一步只读检查。任何模式都不会自动修复。
 
 **日志默认保存在内存里。** 保留全栈最近 1000 条，单行最多 16 KiB；没有开启持久化时，停止后无法再查询。`logs --follow` 先输出指定条数的历史日志，再持续接收新日志，按 Ctrl+C 或 supervisor 停止时退出；跟随者落后过多会报错退出。最多同时连接 16 个跟随者，为控制命令保留连接槽位。前台输出过慢时会丢弃部分实时条目并告警；前台输出管道断开会触发服务清理。
 

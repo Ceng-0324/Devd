@@ -1,6 +1,7 @@
 use super::protocol::{self, Request, Response};
 use crate::{
     core::{
+        diagnostics,
         events::{query::PersistenceState, storage::EventStorage},
         service_manager::{ManagerOptions, ServiceManager},
         state_store::StateStore,
@@ -155,6 +156,28 @@ pub(super) async fn start(
                     let response = match protocol::read_request(&mut stream).await {
                         Err(error) => Response::Error(error.to_string()),
                         Ok(Request::Status) => Response::Status(snapshots.borrow().clone()),
+                        Ok(Request::Explain { service }) => {
+                            if !snapshots.borrow().services.contains_key(&service) {
+                                Response::Error(format!("unknown service '{service}'"))
+                            } else {
+                                let query = crate::core::events::query::EventQuery {
+                                    filter: crate::core::events::query::EventFilter::default(),
+                                    tail: 1000,
+                                    cursor: None,
+                                };
+                                match query.select(event_history.snapshot()) {
+                                    Ok(mut batch) => {
+                                        batch.persistence = Some(*event_persistence.borrow());
+                                        Response::Explain(diagnostics::explain(
+                                            &service,
+                                            Some(&snapshots.borrow()),
+                                            batch,
+                                        ))
+                                    }
+                                    Err(error) => Response::Error(error),
+                                }
+                            }
+                        }
                         Ok(request @ (Request::Events { .. } | Request::FollowEvents { .. })) => {
                             let follow = matches!(request, Request::FollowEvents { .. });
                             let (Request::Events { query } | Request::FollowEvents { query }) = request else { unreachable!() };

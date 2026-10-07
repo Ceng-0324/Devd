@@ -6,6 +6,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{
+    core::diagnostics::ExplainReport,
     core::events::query::{EventBatch, EventQuery},
     core::service_manager::{RuntimeSnapshot, ServiceSnapshot},
     logging::{LogEntry, LogFilter},
@@ -25,6 +26,9 @@ pub(super) enum Request {
     },
     FollowEvents {
         query: EventQuery,
+    },
+    Explain {
+        service: String,
     },
     Restart {
         service: String,
@@ -49,6 +53,7 @@ pub(super) enum Response {
     Status(RuntimeSnapshot),
     Stopping,
     Events(EventBatch),
+    Explain(ExplainReport),
     Restarted(ServiceSnapshot),
     Logs(Vec<LogEntry>),
     Log(LogEntry),

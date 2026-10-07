@@ -177,6 +177,7 @@ Diagram arrows point from each prerequisite to the service that depends on it; e
 | `devd status [--json]` | Show live state, PIDs, CPU / RSS, restart counts, and diagnostics |
 | `devd top` | Inspect a running stack and its live logs in an interactive terminal |
 | `devd events [service] [--type TYPE] [--since DURATION] [--tail N] [--cursor RUN_UUID:NEXT_SEQUENCE] [--json] [--follow \| --stored]` | Query lifecycle facts, cursors and history gaps |
+| `devd explain <service> [--json] [--stored]` | Explain the latest deterministic failure evidence for one service |
 | `devd logs [service] [--tail N] [--level info|warn|error] [--since DURATION] [--grep TEXT] [--follow \| --stored]` | Query live memory or offline disk logs; follow live output |
 | `devd check` | Validate configuration, command quoting, dependencies, and supported settings |
 | `devd graph [--format text|dot|mermaid]` | Show dependency edges and startup layers, or export a diagram |
@@ -260,6 +261,17 @@ Event persistence requires its own `--persist-events` opt-in. Files live under t
 `events --stored` requires the writer to have stopped, uses the same instance/profile selection and works after YAML removal. It reads retained runs oldest first, with filtering and tail across files; context, earliest available sequence and cursor describe the latest retained run. A cursor in retained history continues through later runs; a missing run returns an explicit gap and no events, so omit the cursor to inspect remaining history. An unknown offline service has no matches. Offline output is labeled `stored` and never treats historical PIDs as live processes.
 
 Graceful shutdown drains and syncs the writer. Slow disk subscribers record gaps; incomplete runs and unfinished final records are marked, and the next persistent start repairs only the unfinished tail with a recovery marker. Corrupt complete records and unsupported schemas fail explicitly. Queries retain at most 128 gap diagnostics; `omitted_gaps` counts older discarded diagnostics. Rotation and forced termination can lose history, so these records are diagnostic evidence, not a complete audit trail. Commands, URLs and environment contents are excluded from event payloads; context still contains the instance state path.
+
+**Explain one failure without guessing.** `devd explain <service>` is a read-only, deterministic report built from the current supervisor snapshot and structured lifecycle events. It classifies dependency blocks, startup and health failures, resource limits, restart-budget exhaustion, stops, and healthy/running states, then cites the event sequence, generation, cause and timestamp behind the conclusion. It never probes a service, starts or restarts a process, or executes a suggested next step.
+
+```bash
+devd explain api
+devd explain api --json
+# After a persisted run has stopped:
+devd explain api --stored --json
+```
+
+Online mode connects to the running supervisor and does not reread YAML. `--stored` reads retained event files after the writer has stopped, works even when the YAML has been removed, and labels the report `source: stored`; historical PIDs are evidence only. A report with `complete: false` has explicit gaps or omitted gap diagnostics, so its conclusion is bounded by retained history. Without matching events, the report says it cannot determine the cause and points to the next read-only checks. No mode performs automatic remediation.
 
 **Logs stay in memory by default.** devd retains the latest 1000 entries across the stack, with a 16 KiB limit per line. Without persistence they cannot be queried after shutdown. `logs --follow` starts with the requested tail and then streams new entries until Ctrl+C or supervisor shutdown; a lagging follower exits with an error. Up to 16 followers can connect at once, leaving room for control commands. Slow foreground output can lose live entries, with a warning; a broken foreground output pipe triggers service cleanup.
 

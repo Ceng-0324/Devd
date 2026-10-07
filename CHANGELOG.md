@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add read-only `explain` reports for deterministic, event-backed service failure
+  diagnosis in live and stored history, with cited evidence and explicit gaps.
 - Add `events` text/JSON queries with service/type/time filters, filtered tails,
   run-scoped cursors, explicit retention gaps and atomic history-to-live follow.
 - Add independent opt-in event persistence (`start --persist-events`,

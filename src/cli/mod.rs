@@ -1,4 +1,5 @@
 mod events;
+mod explain;
 mod graph;
 mod protocol;
 mod server;
@@ -91,6 +92,8 @@ enum Command {
     Top,
     /// Query lifecycle history and explicit gaps, or follow a running stack.
     Events(events::Args),
+    /// Explain the latest deterministic cause for one service.
+    Explain(explain::Args),
     /// Print buffered logs, or query stored logs after shutdown (oldest first).
     Logs {
         service: Option<String>,
@@ -246,6 +249,7 @@ impl Cli {
                 server::start(manager, options, socket, formatter, storage, event_storage).await?;
             }
             Command::Events(args) => events::run(args, &socket, &state_dir).await?,
+            Command::Explain(args) => explain::run(args, &socket, &state_dir).await?,
             Command::Check => {
                 ServiceManager::new(
                     load_config(&config_path, self.profile.as_deref()).await?,
