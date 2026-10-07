@@ -35,6 +35,65 @@ fn test_cli_doctor_reports_environment_without_executing_commands_or_probes() {
 }
 
 #[test]
+fn test_cli_doctor_reports_path_requirements_and_does_not_read_file_contents() {
+    let project = Project::new(
+        "services:\n  api:\n    command: 'true'\n    cwd: service\n    requires:\n      - {type: file, path: secret.txt}\n      - {type: directory, path: missing-dir}\n",
+    );
+    fs::create_dir(project.path().join("service")).unwrap();
+    fs::write(project.path().join("service/secret.txt"), "must-not-appear").unwrap();
+    let output = project.invoke(&["doctor", "--json"]);
+    assert!(!output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(report["ready"], false);
+    let checks = report["checks"].as_array().unwrap();
+    assert!(
+        checks.iter().any(|check| {
+            check["check"] == "required-file"
+                && check["status"] == "passed"
+                && check["evidence"][0]
+                    .as_str()
+                    .unwrap()
+                    .ends_with("service/secret.txt")
+        }),
+        "{report}"
+    );
+    assert!(checks.iter().any(|check| {
+        check["check"] == "required-directory"
+            && check["status"] == "failed"
+            && check["summary"] == "required path does not exist"
+    }));
+    assert!(!text.contains("must-not-appear"));
+    let text_report = project.invoke(&["doctor"]);
+    assert!(!text_report.status.success());
+    let text_report = String::from_utf8(text_report.stdout).unwrap();
+    assert!(text_report.contains("required-directory - required path does not exist"));
+}
+
+#[test]
+fn test_cli_path_requirement_failure_blocks_spawn_and_cleans_dependencies() {
+    let project = Project::new(
+        "services:\n  dependency:\n    command: sh -c 'touch dependency-started; exec sleep 60'\n    healthcheck: {type: script, command: 'test -f dependency-started', interval: 20ms, timeout: 1s, retries: 3}\n    restart: {policy: never}\n  api:\n    command: sh -c 'touch should-not-exist; exec sleep 60'\n    cwd: .\n    depends-on: [{service: dependency, condition: script-ready}]\n    requires: [{type: symlink, path: missing-link}]\n    restart: {policy: never}\n",
+    );
+    failure(project.invoke(&["start"]), "services failed");
+    let snapshot: serde_json::Value = serde_json::from_slice(
+        &fs::read(project.path().join(".devd/devd.yml/services.json")).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(snapshot["services"]["api"]["status"], "failed");
+    assert!(snapshot["services"]["api"]["last_error"]
+        .as_str()
+        .unwrap()
+        .contains("requires a symlink"));
+    assert_eq!(
+        snapshot["services"]["dependency"]["pid"],
+        serde_json::Value::Null
+    );
+    assert!(project.path().join("dependency-started").exists());
+    assert!(!project.path().join("should-not-exist").exists());
+}
+
+#[test]
 fn test_cli_doctor_reports_occupied_listen_address_and_keeps_json_on_failure() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

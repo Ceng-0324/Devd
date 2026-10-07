@@ -112,6 +112,21 @@ services:
 
 这个例子需要你已有 `backend`、`frontend`、对应的 `dev` 脚本和 `backend/.env.local`。API 的健康接口返回 2xx 后，前端才会启动；依赖等待默认最多 30 秒。
 
+文件前置条件与应用健康检查分开声明。服务依赖就绪后、进程启动前会立即检查：
+
+```yaml
+services:
+  api:
+    command: npm run dev
+    cwd: ./backend
+    requires:
+      - {type: file, path: .env.local}
+      - {type: directory, path: uploads}
+      - {type: symlink, path: current-data}
+```
+
+`file` 要求路径是可读普通文件，`directory` 要求是可访问目录，`symlink` 要求链接指向现存文件或目录。相对路径按服务生效后的 `cwd` 解析，也可以使用绝对路径。条件不满足时该服务不会启动，并按正常规则清理整组服务。`devd doctor` 使用相同检查，不启动服务，也不读取文件内容。
+
 `cwd` 相对配置文件所在目录，`env-file` 相对服务的 `cwd`。显式配置的 `env` 会覆盖环境文件里的同名值。命令支持带引号的参数；需要管道、重定向或 shell 展开时，显式使用 `sh -c '...'`。
 
 ## 常用命令
@@ -136,7 +151,7 @@ profiles:
 
 `devd check --profile staging` 检查合并后的配置，`devd start --profile staging` 启动它。这里的 `LOG_LEVEL` 会从基础配置继承。查看状态、读日志、重启、停止时，使用同一个 `--profile`；不指定时选择基础配置及其独立实例。
 
-服务按名称合并。`env` 和 `restart` 按字段覆盖，其余字段整体替换，包括依赖列表和健康检查。`cwd`、`env-file`、`healthcheck` 等可选字段可以用 `null` 清除；空映射表示继承，`depends-on: []` 则清空依赖。新增服务必须有命令；暂不支持删除服务或 profile 之间的继承。未选中的 profile 也会检查未知字段，依赖及就绪条件按所选结果校验。不带 profile 的 `check` 检查基础配置。
+服务按名称合并。`env` 和 `restart` 按字段覆盖，其余字段整体替换，包括依赖列表、路径前置条件和健康检查。`cwd`、`env-file`、`healthcheck` 等可选字段可以用 `null` 清除；空映射表示继承，`depends-on: []` 和 `requires: []` 分别清空对应列表。新增服务必须有命令；暂不支持删除服务或 profile 之间的继承。未选中的 profile 也会检查未知字段，依赖及就绪条件按所选结果校验。不带 profile 的 `check` 检查基础配置。
 
 路径仍沿用配置目录和服务 `cwd` 的相对路径规则。profile 名称以 ASCII 字母、数字或下划线开头，只允许 ASCII 字母、数字、`_`、`-`、`.`，区分大小写。默认运行目录为 `.devd/<配置文件名>/profiles/<名称>/`，大写字母转义为 `~hh`，避免大小写不敏感文件系统上的实例碰撞；显式 `--state-dir` 同样追加 `profiles/<名称>/`。隔离的是控制端点和状态文件，服务端口、应用文件仍需自行配置不同值。`init` 不接受 `--profile`。
 
@@ -275,7 +290,7 @@ devd explain api --stored --json
 
 在线模式连接正在运行的 supervisor，不重新读取 YAML。`--stored` 在 writer 停止后读取保留的事件文件，即使 YAML 已删除也可用；报告会标记 `source: stored`，历史 PID 只作为证据。报告中的 `complete: false` 表示存在明确缺口或被省略的缺口，结论只对保留下来的历史负责。没有匹配事件时会明确说无法确定原因，并给出下一步只读检查。任何模式都不会自动修复。
 
-**启动前先查环境。** `devd doctor` 检查服务工作目录、dotenv 文件、服务命令和脚本探测程序是否可找到，以及显式声明的 TCP 监听地址。它不会启动服务、执行命令或探测脚本，也不会改动文件和进程。用 `listen` 声明服务自己的端口，例如 `listen: [127.0.0.1:3000]`；健康检查目标不会被当作服务自有端口。检查会短暂绑定后释放地址，只说明检查当时是否可用。没有声明时会标记为 `not-checked`。可用 `--profile` 检查合并后的配置，用 `--json` 获取带版本的机器可读报告。发现失败时返回非零退出码；通过检查不代表之后启动必然成功。
+**启动前先查环境。** `devd doctor` 检查服务工作目录、声明的 `requires` 路径、dotenv 文件、服务命令和脚本探测程序是否可找到，以及显式声明的 TCP 监听地址。它不会启动服务、执行命令或探测脚本，也不会改动文件和进程。`requires` 使用与启动相同的 evaluator 检查可读文件、可访问目录及目标存在的软链接。用 `listen` 声明服务自己的端口，例如 `listen: [127.0.0.1:3000]`；健康检查目标不会被当作服务自有端口。检查会短暂绑定后释放地址，只说明检查当时是否可用。没有声明时会标记为 `not-checked`。可用 `--profile` 检查合并后的配置，用 `--json` 获取带版本的机器可读报告。发现失败时返回非零退出码；通过检查不代表之后启动必然成功。
 
 ```bash
 devd doctor

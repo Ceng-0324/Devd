@@ -130,6 +130,7 @@ impl HealthChecker {
                     command: command.clone(),
                     listen: Vec::new(),
                     cwd: None,
+                    requires: Vec::new(),
                     env: Default::default(),
                     env_file: None,
                     depends_on: Vec::new(),

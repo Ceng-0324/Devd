@@ -1,5 +1,6 @@
 use crate::{
     config::{ConfigError, HealthCheck, ServiceConfig},
+    core::path_requirements::{evaluate, PathRequirementFailure},
     core::process_manager::{
         environment_file_path, load_environment_file, parse_command, ProcessError,
     },
@@ -91,6 +92,19 @@ pub(super) async fn run(args: Args, config_path: &Path, profile: Option<&str>) -
     for name in service_names {
         let service = &config.services[name];
         check_working_directory(name, service, &mut checks);
+        for requirement in &service.requires {
+            match evaluate(requirement, service.cwd.as_deref()) {
+                Ok(path) => checks.push(check(
+                    Some(name),
+                    required_check_name(requirement.kind),
+                    CheckStatus::Passed,
+                    "Required path exists, has the declared type, and is readable.",
+                    vec![path.display().to_string()],
+                    None,
+                )),
+                Err(error) => checks.push(path_requirement_failure(name, error)),
+            }
+        }
 
         let environment = match load_environment_file(name, service).await {
             Ok(environment) => {
@@ -163,6 +177,30 @@ pub(super) async fn run(args: Args, config_path: &Path, profile: Option<&str>) -
         bail!("doctor found environment failures");
     }
     Ok(())
+}
+
+fn required_check_name(kind: crate::config::PathRequirementType) -> &'static str {
+    match kind {
+        crate::config::PathRequirementType::File => "required-file",
+        crate::config::PathRequirementType::Directory => "required-directory",
+        crate::config::PathRequirementType::Symlink => "required-symlink",
+    }
+}
+
+fn path_requirement_failure(service: &str, failure: PathRequirementFailure) -> DoctorCheck {
+    let kind = required_check_name(failure.requirement);
+    let mut evidence = vec![failure.path.display().to_string()];
+    if let Some(detail) = failure.detail {
+        evidence.push(format!("io-error={detail}"));
+    }
+    check(
+        Some(service),
+        kind,
+        CheckStatus::Failed,
+        failure.summary(),
+        evidence,
+        Some("Create or correct the required path and ensure the service user can access it."),
+    )
 }
 
 fn check_working_directory(name: &str, service: &ServiceConfig, checks: &mut Vec<DoctorCheck>) {

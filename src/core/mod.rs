@@ -3,6 +3,7 @@ mod dependency_recovery;
 pub mod diagnostics;
 pub mod events;
 pub mod health_check;
+pub mod path_requirements;
 pub mod process_manager;
 pub mod resource_monitor;
 pub mod service_manager;

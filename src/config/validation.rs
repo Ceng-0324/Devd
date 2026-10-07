@@ -61,6 +61,16 @@ impl DevdConfig {
                     "listening port must be between 1 and 65535",
                 ));
             }
+            for (index, requirement) in service.requires.iter().enumerate() {
+                if requirement.path.as_os_str().is_empty()
+                    || requirement.path.to_string_lossy().contains('\0')
+                {
+                    return Err(invalid(
+                        format!("{prefix}.requires[{index}].path"),
+                        "path must be non-empty and contain no NUL bytes",
+                    ));
+                }
+            }
             if let Some(limits) = &service.limits {
                 if limits.on_exceed == super::ResourceLimitAction::Restart
                     && service.restart.policy == RestartPolicyType::Never
@@ -393,6 +403,19 @@ mod tests {
                 if field == "services.api.listen"
         ));
         validate("  api: {command: api, listen: ['127.0.0.1:3000', '[::1]:3001']}\n").unwrap();
+    }
+
+    #[test]
+    fn test_config_validation_rejects_empty_required_paths() {
+        for path in ["''", "\"\"", "\"bad\\0path\""] {
+            let error = validate(&format!(
+                "  api:\n    command: api\n    requires: [{{type: file, path: {path}}}]\n"
+            ))
+            .unwrap_err();
+            assert!(
+                matches!(error, ConfigValidationError::InvalidField { field, .. } if field == "services.api.requires[0].path")
+            );
+        }
     }
 
     #[test]

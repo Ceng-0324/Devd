@@ -114,6 +114,21 @@ services:
 
 This assumes you already have `backend`, `frontend`, their `dev` scripts, and `backend/.env.local`. The frontend starts after the API's health endpoint returns 2xx. The default dependency readiness timeout is 30 seconds.
 
+Declare filesystem prerequisites separately from application health checks. They are checked after service dependencies become ready and immediately before launch:
+
+```yaml
+services:
+  api:
+    command: npm run dev
+    cwd: ./backend
+    requires:
+      - {type: file, path: .env.local}
+      - {type: directory, path: uploads}
+      - {type: symlink, path: current-data}
+```
+
+`file` requires a readable regular file, `directory` an accessible directory, and `symlink` a link to an existing file or directory. Relative paths use the service's effective `cwd`; absolute paths are allowed. A failed requirement prevents that service from starting and causes the normal stack cleanup. `devd doctor` checks the same conditions without starting services or reading file contents.
+
 `cwd` is relative to the configuration file's directory. `env-file` is relative to the service's `cwd`, and explicit `env` values override entries from that file. Commands support quoted arguments. For pipes, redirection, or shell expansion, use `sh -c '...'` explicitly.
 
 ## Commands
@@ -138,7 +153,7 @@ profiles:
 
 `devd check --profile staging` validates the merged configuration; `devd start --profile staging` runs it. `LOG_LEVEL` is inherited. Use the same `--profile` for `status`, `logs`, `restart`, and `stop`. Omitting it selects the base configuration and a separate instance.
 
-Services merge by name. `env` and `restart` merge by key; other fields, including dependency lists and the entire health check, replace the base value. `null` clears optional fields such as `cwd`, `env-file`, and `healthcheck`; empty maps inherit, while `depends-on: []` clears dependencies. New services need a command. Service deletion and profile inheritance are not supported. All definitions reject unknown fields, including unselected profiles; dependency and readiness validation applies to the selected result. `check` without a profile checks the base result.
+Services merge by name. `env` and `restart` merge by key; other fields, including dependency lists, path requirements, and the entire health check, replace the base value. `null` clears optional fields such as `cwd`, `env-file`, and `healthcheck`; empty maps inherit, while `depends-on: []` and `requires: []` clear their lists. New services need a command. Service deletion and profile inheritance are not supported. All definitions reject unknown fields, including unselected profiles; dependency and readiness validation applies to the selected result. `check` without a profile checks the base result.
 
 Paths retain the usual configuration-directory and service-`cwd` rules. Profile names start with an ASCII letter, digit, or underscore and contain only ASCII letters, digits, `_`, `-`, or `.`. Names are case-sensitive. Runtime files use `.devd/<config-filename>/profiles/<name>/`; uppercase letters are escaped as `~hh` to stay distinct on case-insensitive filesystems. With an explicit `--state-dir`, the same `profiles/<name>/` suffix is appended. This isolates control and state files; service ports and application files still need distinct values when running environments together. `init` rejects `--profile`.
 
@@ -277,7 +292,7 @@ devd explain api --stored --json
 
 Online mode connects to the running supervisor and does not reread YAML. `--stored` reads retained event files after the writer has stopped, works even when the YAML has been removed, and labels the report `source: stored`; historical PIDs are evidence only. A report with `complete: false` has explicit gaps or omitted gap diagnostics, so its conclusion is bounded by retained history. Without matching events, the report says it cannot determine the cause and points to the next read-only checks. No mode performs automatic remediation.
 
-**Check the launch environment before starting.** `devd doctor` checks service working directories, dotenv files, whether service and script-probe programs can be found, and explicitly declared TCP listen addresses. It does not start services, execute commands or probes, or change files and processes. Declare ports with `listen` (for example `listen: [127.0.0.1:3000]`); healthcheck targets are not assumed to belong to the service. Listen checks briefly bind and release each address, so they report only whether it was available at that instant. Without declarations the report says `not-checked`. Use `--profile` to inspect the selected merged configuration and `--json` for a versioned machine-readable report. Failures return a nonzero exit code; a clean report cannot guarantee that a later launch will succeed.
+**Check the launch environment before starting.** `devd doctor` checks service working directories, declared `requires` paths, dotenv files, whether service and script-probe programs can be found, and explicitly declared TCP listen addresses. It does not start services, execute commands or probes, or change files and processes. `requires` checks readable files, accessible directories, and symlinks with existing file or directory targets using the same evaluator as startup. Declare ports with `listen` (for example `listen: [127.0.0.1:3000]`); healthcheck targets are not assumed to belong to the service. Listen checks briefly bind and release each address, so they report only whether it was available at that instant. Without declarations the report says `not-checked`. Use `--profile` to inspect the selected merged configuration and `--json` for a versioned machine-readable report. Failures return a nonzero exit code; a clean report cannot guarantee that a later launch will succeed.
 
 ```bash
 devd doctor

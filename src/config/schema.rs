@@ -20,6 +20,8 @@ pub struct ServiceConfig {
     #[serde(default)]
     pub cwd: Option<PathBuf>,
     #[serde(default)]
+    pub requires: Vec<PathRequirement>,
+    #[serde(default)]
     pub env: HashMap<String, String>,
     #[serde(default, rename = "env-file", alias = "env_file")]
     pub env_file: Option<PathBuf>,
@@ -38,6 +40,22 @@ pub struct ServiceConfig {
     pub restart: RestartPolicy,
     #[serde(default)]
     pub limits: Option<ResourceLimits>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
+pub struct PathRequirement {
+    #[serde(rename = "type")]
+    pub kind: PathRequirementType,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum PathRequirementType {
+    File,
+    Directory,
+    Symlink,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

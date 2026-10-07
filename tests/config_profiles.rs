@@ -55,6 +55,24 @@ fn test_profile_script_probe_replaces_network_probe_and_validates_readiness() {
 }
 
 #[test]
+fn test_profile_replaces_path_requirements_as_a_list() {
+    let yaml = "version: '1'\nservices:\n  api: {command: api, requires: [{type: file, path: base.txt}]}\nprofiles:\n  local:\n    services:\n      api: {requires: [{type: directory, path: local-data}]}\n  none:\n    services:\n      api: {requires: []}\n";
+    let base = ConfigLoader::from_str(yaml, "devd.yml").unwrap();
+    let local = ConfigLoader::from_str_profile(yaml, "devd.yml", Some("local")).unwrap();
+    let none = ConfigLoader::from_str_profile(yaml, "devd.yml", Some("none")).unwrap();
+    assert_eq!(base.services["api"].requires[0].path, Path::new("base.txt"));
+    assert_eq!(
+        local.services["api"].requires[0].path,
+        Path::new("local-data")
+    );
+    assert!(matches!(
+        local.services["api"].requires[0].kind,
+        devd::config::PathRequirementType::Directory
+    ));
+    assert!(none.services["api"].requires.is_empty());
+}
+
+#[test]
 fn test_profile_limits_replace_base_thresholds_and_can_be_cleared() {
     let yaml = "version: '1'\nservices:\n  api: {command: sleep 60, limits: {cpu: '50%', memory: 1GiB, on-exceed: restart}}\nprofiles:\n  dev:\n    services:\n      api: {limits: {memory: 512MiB}}\n  free:\n    services:\n      api: {limits: null}\n";
     let base = ConfigLoader::from_str(yaml, "devd.yml").unwrap();

@@ -16,6 +16,7 @@ use super::{
         DependencyChange, EventData, EventRecorder, ProbeEvidence, RestartCause, RestartOutcome,
     },
     health_check::{HealthChecker, HealthMonitor, HealthState, ProbeResult},
+    path_requirements::{evaluate, PathRequirementFailure},
     process_manager::ManagedProcess,
     service_manager::{ManagerOptions, RuntimeSnapshot, ServiceSnapshot, ServiceState},
 };
@@ -99,6 +100,12 @@ impl ServiceTask {
                     break;
                 }
             };
+            for requirement in &self.config.requires {
+                if let Err(failure) = evaluate(requirement, self.config.cwd.as_deref()) {
+                    self.fail(format_path_requirement_failure(&self.name, &failure));
+                    return;
+                }
+            }
             if restarting {
                 self.state.restart_count = self.state.restart_count.saturating_add(1);
             }
@@ -625,6 +632,19 @@ impl ServiceTask {
         }
         OutputReaders(tasks)
     }
+}
+
+fn format_path_requirement_failure(service: &str, failure: &PathRequirementFailure) -> String {
+    format!(
+        "service '{service}' requires a {} at '{}': {}",
+        match failure.requirement {
+            crate::config::PathRequirementType::File => "file",
+            crate::config::PathRequirementType::Directory => "directory",
+            crate::config::PathRequirementType::Symlink => "symlink",
+        },
+        failure.path.display(),
+        failure.summary()
+    )
 }
 
 fn restart_delay(policy: &RestartPolicy, count: u32) -> Duration {
