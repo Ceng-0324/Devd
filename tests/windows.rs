@@ -248,7 +248,13 @@ fn test_windows_cli_control_persistence_and_supervisor_death_cleanup() {
     );
     let mut supervisor = Supervisor(
         Command::new(env!("CARGO_BIN_EXE_devd"))
-            .args(["start", "--persist-logs", "--color", "never"])
+            .args([
+                "start",
+                "--persist-logs",
+                "--persist-events",
+                "--color",
+                "never",
+            ])
             .current_dir(root.path())
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
@@ -265,6 +271,15 @@ fn test_windows_cli_control_persistence_and_supervisor_death_cleanup() {
         std::thread::sleep(Duration::from_millis(30));
     }
     assert!(!cli(root.path(), &["start"]).status.success());
+    let output = cli(root.path(), &["events", "worker", "--json"]);
+    assert!(output.status.success());
+    let events: devd::core::events::query::EventBatch =
+        serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        events.persistence,
+        Some(devd::core::events::query::PersistenceState::Recording)
+    );
+    assert!(!events.entries.is_empty());
     assert!(cli(root.path(), &["restart", "worker"]).status.success());
     assert!(cli(root.path(), &["snapshot", "save", "before-stop"])
         .status
@@ -277,6 +292,15 @@ fn test_windows_cli_control_persistence_and_supervisor_death_cleanup() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert!(cli(root.path(), &["logs", "--stored"]).status.success());
+    let output = cli(root.path(), &["events", "--stored", "--json"]);
+    assert!(output.status.success());
+    let events: devd::core::events::query::EventBatch =
+        serde_json::from_slice(&output.stdout).unwrap();
+    assert!(events.gaps.is_empty());
+    assert!(events.entries.iter().any(|event| matches!(
+        event.data,
+        devd::core::events::EventData::SupervisorStopped { .. }
+    )));
     assert!(cli(
         root.path(),
         &[

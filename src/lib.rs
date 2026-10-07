@@ -3,3 +3,4 @@ pub mod config;
 pub mod core;
 pub mod logging;
 pub(crate) mod platform;
+pub mod storage;

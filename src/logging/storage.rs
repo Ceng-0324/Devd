@@ -1,101 +1,26 @@
-//! Bounded JSONL storage. Call blocking operations on Tokio's blocking pool.
-//! A lifetime lock keeps offline reads and rotations mutually exclusive.
-
-use std::{
-    collections::VecDeque,
-    fs::{self, File},
-    io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write},
-    path::{Path, PathBuf},
-    sync::Arc,
-};
-
-use crate::platform::files;
-use tokio::sync::broadcast;
-
+//! Opt-in application log storage using the shared rotating JSONL store.
 use super::{LogEntry, LogFilter, LogLevel, OutputSummary};
-
-const MAX_ARCHIVES: u16 = 100;
+use crate::storage::{JsonlStorage, Record};
+use std::{collections::VecDeque, io, path::Path, sync::Arc};
+use tokio::sync::broadcast;
+// Preserve the published v0.4 library import path for log storage options.
+pub use crate::storage::StorageOptions;
 // Includes JSON escaping of the collector's maximum 1 MiB message.
 const MAX_RECORD_BYTES: usize = 8 * 1024 * 1024;
 
-#[derive(Debug, Clone, Copy)]
-pub struct StorageOptions {
-    pub max_file_bytes: u64,
-    /// Rotated archives in addition to the current file.
-    pub keep: u16,
-}
-
-impl Default for StorageOptions {
-    fn default() -> Self {
-        Self {
-            max_file_bytes: 10 * 1024 * 1024,
-            keep: 3,
-        }
-    }
-}
-
 pub struct LogStorage {
-    directory: PathBuf,
-    options: StorageOptions,
-    file: File,
-    size: u64,
-    _lock: File,
+    inner: JsonlStorage,
 }
-
 impl LogStorage {
-    /// Open only after acquiring the supervisor's state lock, before spawning
-    /// services. Existing complete records survive across supervisor runs.
+    /// Open under the supervisor state lock, before spawning services.
     pub fn open(directory: &Path, options: StorageOptions) -> io::Result<Self> {
-        if options.max_file_bytes == 0 || options.max_file_bytes > 1024 * 1024 * 1024 {
-            return Err(invalid("log file size must be between 1 byte and 1 GiB"));
-        }
-        if !(1..=MAX_ARCHIVES).contains(&options.keep) {
-            return Err(invalid("log archive count must be between 1 and 100"));
-        }
-        let builder = fs::DirBuilder::new();
-        #[cfg(unix)]
-        let builder = {
-            use std::os::unix::fs::DirBuilderExt;
-            let mut builder = builder;
-            builder.mode(0o700);
-            builder
-        };
-        match builder.create(directory) {
-            Ok(()) => {}
-            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error),
-        }
-        check_directory(directory)?;
-        let lock = lock(directory, true)?;
-        // Check every managed path before repairing or rotating any file.
-        for index in 0..=MAX_ARCHIVES {
-            check_file(&log_path(directory, index))?;
-        }
-        let mut file = open_file(&log_path(directory, 0), true)?;
-        let removed = repair_tail(&mut file)?;
-        let size = file.metadata()?.len();
-        let mut storage = Self {
-            directory: directory.into(),
-            options,
-            file,
-            size,
-            _lock: lock,
-        };
-        // A reduced retention setting also applies to archives from older runs.
-        for index in options.keep + 1..=MAX_ARCHIVES {
-            remove_if_present(&log_path(directory, index))?;
-        }
-        if storage.size > options.max_file_bytes {
-            storage.rotate()?;
-        }
+        let (inner, removed) = JsonlStorage::open(directory, options, MAX_RECORD_BYTES)?;
+        let mut storage = Self { inner };
         if removed > 0 {
-            storage.append(&diagnostic(format!(
-                "discarded {removed} bytes from an unfinished stored log record after an interrupted write"
-            )))?;
+            storage.append(&diagnostic(format!("discarded {removed} bytes from an unfinished stored log record after an interrupted write")))?;
         }
         Ok(storage)
     }
-
     /// Drain complete entries without blocking service capture. A slow disk may
     /// lag the bounded broadcast; each gap is recorded explicitly in the file.
     /// Graceful shutdown waits for this drain and syncs the final file.
@@ -119,43 +44,17 @@ impl LogStorage {
                 Err(broadcast::error::RecvError::Closed) => break,
             }
         }
-        self.file.sync_data()?;
+        self.inner.sync()?;
         Ok(summary)
     }
 
     fn append(&mut self, entry: &LogEntry) -> io::Result<()> {
-        let mut bytes = serde_json::to_vec(entry).map_err(io::Error::other)?;
-        bytes.push(b'\n');
-        if bytes.len() > MAX_RECORD_BYTES || bytes.len() as u64 > self.options.max_file_bytes {
-            return Err(invalid("stored log record exceeds the log file size limit"));
-        }
-        if self.size + bytes.len() as u64 > self.options.max_file_bytes {
-            self.rotate()?;
-        }
-        self.file.write_all(&bytes)?;
-        self.size += bytes.len() as u64;
-        Ok(())
-    }
-
-    fn rotate(&mut self) -> io::Result<()> {
-        self.file.sync_data()?;
-        for index in (0..self.options.keep).rev() {
-            let source = log_path(&self.directory, index);
-            let destination = log_path(&self.directory, index + 1);
-            if check_file(&source)? {
-                check_file(&destination)?;
-                fs::rename(source, destination)?;
-            }
-        }
-        self.file = open_file(&log_path(&self.directory, 0), true)?;
-        self.size = 0;
-        Ok(())
+        self.inner.append(entry)
     }
 }
 
-/// Read an offline snapshot oldest first, filtering before applying the tail.
-/// The YAML need not exist. Memory is bounded by `limit` and record size, even
-/// for corrupt files. An unfinished last record of the current file is ignored.
+/// Read an offline snapshot oldest first, filtering before the bounded tail.
+/// An unfinished final record is ignored; complete corrupt records are errors.
 pub fn read_stored(
     directory: &Path,
     service: Option<&str>,
@@ -165,42 +64,11 @@ pub fn read_stored(
     if !(1..=1000).contains(&limit) {
         return Err(invalid("stored log tail must be between 1 and 1000"));
     }
-    check_directory(directory)?;
-    let _lock = lock(directory, false)?;
     let mut result = VecDeque::new();
-    for index in (0..=MAX_ARCHIVES).rev() {
-        let path = log_path(directory, index);
-        if !check_file(&path)? {
-            continue;
-        }
-        let mut reader = BufReader::new(open_file(&path, false)?);
-        let mut line = Vec::new();
-        loop {
-            line.clear();
-            Read::by_ref(&mut reader)
-                .take(MAX_RECORD_BYTES as u64 + 1)
-                .read_until(b'\n', &mut line)?;
-            if line.is_empty() {
-                break;
-            }
-            if line.len() > MAX_RECORD_BYTES {
-                return Err(invalid(format!(
-                    "oversized log record in {}",
-                    path.display()
-                )));
-            }
-            if line.last() != Some(&b'\n') {
-                if index == 0 {
-                    break;
-                }
-                return Err(invalid(format!(
-                    "unfinished log record in {}",
-                    path.display()
-                )));
-            }
-            let entry: LogEntry = serde_json::from_slice(&line).map_err(|error| {
-                invalid(format!("invalid log record in {}: {error}", path.display()))
-            })?;
+    crate::storage::scan(directory, MAX_RECORD_BYTES, |record| {
+        if let Record::Complete(line) = record {
+            let entry: LogEntry = serde_json::from_slice(line)
+                .map_err(|error| invalid(format!("invalid log record: {error}")))?;
             if service.is_none_or(|name| entry.service == name) && filter.matches(&entry) {
                 if result.len() == limit {
                     result.pop_front();
@@ -208,104 +76,9 @@ pub fn read_stored(
                 result.push_back(entry);
             }
         }
-    }
-    Ok(result.into_iter().collect())
-}
-
-fn log_path(directory: &Path, index: u16) -> PathBuf {
-    directory.join(if index == 0 {
-        "current.jsonl".into()
-    } else {
-        format!("archive-{index}.jsonl")
-    })
-}
-
-fn check_directory(path: &Path) -> io::Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
-    if !metadata.is_dir() || files::is_link(&metadata) {
-        return Err(invalid(format!("not a log directory: {}", path.display())));
-    }
-    Ok(())
-}
-
-fn check_file(path: &Path) -> io::Result<bool> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if files::regular(&metadata) => {
-            files::open_regular(path, false, true)?;
-            Ok(true)
-        }
-        Ok(_) => Err(invalid(format!(
-            "not a regular log file: {}",
-            path.display()
-        ))),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error),
-    }
-}
-
-fn open_file(path: &Path, write: bool) -> io::Result<File> {
-    let mut file = files::open_regular(path, write, true)?;
-    if write {
-        file.seek(SeekFrom::End(0))?;
-    }
-    Ok(file)
-}
-
-fn lock(directory: &Path, write: bool) -> io::Result<File> {
-    let file = open_file(&directory.join(".lock"), write)?;
-    let result = if write {
-        file.try_lock()
-    } else {
-        file.try_lock_shared()
-    };
-    result.map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::WouldBlock,
-            format!("stored logs are in use; stop the supervisor or use live 'logs': {error}"),
-        )
+        Ok(())
     })?;
-    Ok(file)
-}
-
-fn remove_if_present(path: &Path) -> io::Result<()> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
-    }
-}
-
-fn repair_tail(file: &mut File) -> io::Result<u64> {
-    let length = file.metadata()?.len();
-    if length == 0 {
-        return Ok(0);
-    }
-    file.seek(SeekFrom::End(-1))?;
-    let mut last = [0];
-    file.read_exact(&mut last)?;
-    if last[0] == b'\n' {
-        return Ok(0);
-    }
-    let scan = length.min(MAX_RECORD_BYTES as u64);
-    file.seek(SeekFrom::End(-(scan as i64)))?;
-    let mut tail = Vec::with_capacity(scan as usize);
-    file.take(scan).read_to_end(&mut tail)?;
-    let removed = match tail.iter().rposition(|byte| *byte == b'\n') {
-        Some(index) => scan - index as u64 - 1,
-        None if scan == length => scan,
-        None => {
-            return Err(invalid(
-                "unfinished stored log record exceeds the size limit",
-            ))
-        }
-    };
-    if removed > 0 {
-        file.set_len(length - removed)?;
-        // Truncation preserves the old cursor. On Windows writes use that
-        // position; continuing there would insert a zero-filled gap.
-        file.seek(SeekFrom::End(0))?;
-    }
-    Ok(removed)
+    Ok(result.into_iter().collect())
 }
 
 fn diagnostic(message: String) -> LogEntry {
@@ -326,8 +99,10 @@ fn invalid(message: impl Into<String>) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::{open_file, record_path as log_path};
     #[cfg(unix)]
     use std::os::unix::fs::{symlink, PermissionsExt};
+    use std::{fs, io::Write};
 
     fn entry(index: usize) -> LogEntry {
         LogEntry {
@@ -484,7 +259,7 @@ mod tests {
         assert!(read_stored(&path, None, &LogFilter::default(), 10)
             .unwrap_err()
             .to_string()
-            .contains("unfinished log record"));
+            .contains("unfinished JSONL record"));
     }
 
     #[test]

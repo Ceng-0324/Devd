@@ -171,11 +171,12 @@ Diagram arrows point from each prerequisite to the service that depends on it; e
 
 | Command | Purpose |
 | --- | --- |
-| `devd start [--persist-logs] [--log-max-size MiB] [--log-keep N]` | Start the stack in the foreground, optionally retaining disk logs |
+| `devd start [--persist-logs] [--persist-events]` | Start the stack in the foreground, optionally retaining logs and lifecycle events with separate size/retention options |
 | `devd stop` | Request ordered shutdown; the foreground process exits after cleanup |
 | `devd restart <service>` | Restart one service using the configuration loaded at startup, rechecking dependencies |
 | `devd status [--json]` | Show live state, PIDs, CPU / RSS, restart counts, and diagnostics |
 | `devd top` | Inspect a running stack and its live logs in an interactive terminal |
+| `devd events [service] [--type TYPE] [--since DURATION] [--tail N] [--cursor RUN_UUID:NEXT_SEQUENCE] [--json] [--follow \| --stored]` | Query lifecycle facts, cursors and history gaps |
 | `devd logs [service] [--tail N] [--level info|warn|error] [--since DURATION] [--grep TEXT] [--follow \| --stored]` | Query live memory or offline disk logs; follow live output |
 | `devd check` | Validate configuration, command quoting, dependencies, and supported settings |
 | `devd graph [--format text|dot|mermaid]` | Show dependency edges and startup layers, or export a diagram |
@@ -239,6 +240,26 @@ restart:
 The default is off. An opted-in running service restarts when a direct dependency has a new process generation and all its dependencies satisfy their configured readiness conditions. Both manual and automatic dependency restarts count; health recovery within the same process does not. The service keeps running while dependencies are unavailable. Initial startup and already completed services do not trigger extra restarts. Each link in a chain must opt in to propagate recovery further.
 
 Recovery restarts use the service's backoff and share its cumulative `max-attempts` budget with other restarts; exhaustion cleans up the stack. Enabling this with `policy: never`, or without dependencies, is a configuration error. Recoveries observed before the next startup readiness check completes are combined into one restart. A dependency that changes again after that point can trigger another; this is per-service recovery, not an atomic restart of an entire dependency graph. Stop interrupts the wait, and a manual restart of the dependent can supersede its pending backoff.
+
+**Find out what happened.** The v0.5 development tree adds `devd events`: structured startup, exit, dependency, health, resource and restart decisions, with run IDs, process generations and causal references. This is available when building current source; the v0.4 release does not include it.
+
+```bash
+devd events api --type restart-decision --since 10m --tail 20
+devd events --json --follow
+devd start --persist-events --event-max-size 10 --event-keep 3
+# After shutdown:
+devd events --stored --json
+```
+
+Memory retains 1024 events across the stack, with a 16 KiB serialized limit per event. `--tail` defaults to 100 (1–1000), after filtering. Repeat `--type` to match any selected type; service matching is exact and `--since` is an inclusive UTC threshold fixed when the command starts. Events remain ordered by sequence, even if the wall clock changes. Live queries work without loading YAML. Logs and events share a limit of 16 followers; Ctrl+C only exits the query.
+
+`--json` emits a schema-versioned batch with `source`, `context`, `entries`, `gaps`, `first_available`, `cursor` and live `persistence` status (`disabled`, `recording`, `failed`). Follow emits one batch per JSON line, including empty entries when only the watermark or persistence status changes. Resume with `--cursor RUN_UUID:NEXT_SEQUENCE`; the sequence is inclusive and the returned cursor is the next inspected position, even when filters match nothing. The first batch captures history and subscribes atomically. Later follow batches leave `first_available` null. Expired history, run changes and tail truncation produce explicit gaps; an ahead-of-run cursor is an error. A lagging follower reports its gap and exits with an error; reconnect with the last cursor to recover whatever memory still retains. An old cursor against a live new run returns that new run with a run-change gap.
+
+Event persistence requires its own `--persist-events` opt-in. Files live under the instance/profile's `events/` directory, independently of `logs/`, with the same locks, file protections and rotation rules. Defaults are 10 MiB per file plus three archives (40 MiB); `--event-max-size` accepts 1–1024 MiB and `--event-keep` accepts 1–100. Both require the opt-in. Startup storage failure starts no services. **A runtime event write failure disables disk event recording for that run, reports on stderr and through live event queries, and leaves services running.** Restart the supervisor with persistence enabled to try recording again.
+
+`events --stored` requires the writer to have stopped, uses the same instance/profile selection and works after YAML removal. It reads retained runs oldest first, with filtering and tail across files; context, earliest available sequence and cursor describe the latest retained run. A cursor in retained history continues through later runs; a missing run returns an explicit gap and no events, so omit the cursor to inspect remaining history. An unknown offline service has no matches. Offline output is labeled `stored` and never treats historical PIDs as live processes.
+
+Graceful shutdown drains and syncs the writer. Slow disk subscribers record gaps; incomplete runs and unfinished final records are marked, and the next persistent start repairs only the unfinished tail with a recovery marker. Corrupt complete records and unsupported schemas fail explicitly. Queries retain at most 128 gap diagnostics; `omitted_gaps` counts older discarded diagnostics. Rotation and forced termination can lose history, so these records are diagnostic evidence, not a complete audit trail. Commands, URLs and environment contents are excluded from event payloads; context still contains the instance state path.
 
 **Logs stay in memory by default.** devd retains the latest 1000 entries across the stack, with a 16 KiB limit per line. Without persistence they cannot be queried after shutdown. `logs --follow` starts with the requested tail and then streams new entries until Ctrl+C or supervisor shutdown; a lagging follower exits with an error. Up to 16 followers can connect at once, leaving room for control commands. Slow foreground output can lose live entries, with a warning; a broken foreground output pipe triggers service cleanup.
 

@@ -1,13 +1,12 @@
 use super::protocol::{self, Request, Response};
 use crate::{
     core::{
+        events::{query::PersistenceState, storage::EventStorage},
         service_manager::{ManagerOptions, ServiceManager},
         state_store::StateStore,
     },
-    logging::{
-        storage::{LogStorage, StorageOptions},
-        write_logs, LogFormatter,
-    },
+    logging::{storage::LogStorage, write_logs, LogFormatter},
+    storage::StorageOptions,
 };
 use anyhow::{Context, Result};
 use std::{path::PathBuf, sync::Arc, time::Duration};
@@ -23,6 +22,7 @@ pub(super) async fn start(
     socket: PathBuf,
     formatter: LogFormatter,
     storage_options: Option<StorageOptions>,
+    event_options: Option<StorageOptions>,
 ) -> Result<()> {
     let mut signals = crate::platform::shutdown::Shutdown::new(false)?;
     // The state lock covers bind, the entire run, and socket cleanup.
@@ -34,6 +34,12 @@ pub(super) async fn start(
     let mut listener = super::transport::Listener::bind(&socket).await?;
     let snapshots = manager.subscribe();
     let history = manager.log_history();
+    let event_history = manager.event_history();
+    let (event_status, event_persistence) = watch::channel(if event_options.is_some() {
+        PersistenceState::Recording
+    } else {
+        PersistenceState::Disabled
+    });
     let controller = manager.controller();
     let logs = manager.subscribe_logs();
     // Open under the state lock, before polling the manager and spawning any
@@ -54,6 +60,23 @@ pub(super) async fn start(
         None
     };
     let disk_logs = storage.as_ref().map(|_| manager.subscribe_logs());
+    let event_storage = if let Some(options) = event_options {
+        let directory = socket.parent().unwrap().join("events");
+        let context = event_history.snapshot().context;
+        let lease = store.clone();
+        Some(
+            tokio::task::spawn_blocking(move || {
+                let _lease = lease;
+                EventStorage::open(&directory, options, context)
+            })
+            .await
+            .context("disk event setup task failed")?
+            .context("cannot open persistent events")?,
+        )
+    } else {
+        None
+    };
+    let disk_events = event_storage.as_ref().map(|_| manager.subscribe_events());
     let (shutdown, mut stopping) = watch::channel(false);
     let mut run = Box::pin(manager.run_with_store(
         async move {
@@ -75,17 +98,32 @@ pub(super) async fn start(
         });
     }
     let mut writer = JoinSet::new();
+    let mut event_writer = JoinSet::new();
+    if let Some((storage, events)) = event_storage.zip(disk_events) {
+        let lease = store.clone();
+        event_writer.spawn_blocking(move || {
+            let _lease = lease;
+            storage.run(events)
+        });
+    }
     writer.spawn(write_logs(stdout, logs, formatter));
     let mut writer_done = false;
     let mut clients = JoinSet::new();
     // Long-lived followers must leave room for status/stop/restart requests.
     let followers = Arc::new(Semaphore::new(16));
     let mut failure = None;
+    let mut diagnostics = JoinSet::new();
     let result = loop {
         tokio::select! {
             biased;
             result = &mut run => break result,
             _ = signals.recv() => { shutdown.send_replace(true); },
+            Some(result) = event_writer.join_next() => {
+                if let Err(error) = result.context("disk event writer task failed").and_then(|r| r.context("cannot write persistent events")) {
+                    event_status.send_replace(PersistenceState::Failed);
+                    diagnostics.spawn(report_event_failure(format!("{error:#}; disk event recording disabled for this run; services continue\n")));
+                }
+            },
             Some(result) = disk_writer.join_next() => {
                 if let Err(error) = result.context("disk log writer task failed").and_then(|r| r.context("cannot write persistent logs")) {
                     failure.get_or_insert(error);
@@ -100,6 +138,7 @@ pub(super) async fn start(
                 }
             },
             Some(_) = clients.join_next() => {},
+            Some(_) = diagnostics.join_next() => {},
             accepted = listener.accept(), if clients.len() < 32 && !*shutdown.borrow() => {
                 let mut stream = match accepted {
                     Ok(client) => client,
@@ -107,6 +146,8 @@ pub(super) async fn start(
                 };
                 let snapshots = snapshots.clone();
                 let history = history.clone();
+                let event_history = event_history.clone();
+                let event_persistence = event_persistence.clone();
                 let controller = controller.clone();
                 let shutdown = shutdown.clone();
                 let followers = followers.clone();
@@ -114,6 +155,31 @@ pub(super) async fn start(
                     let response = match protocol::read_request(&mut stream).await {
                         Err(error) => Response::Error(error.to_string()),
                         Ok(Request::Status) => Response::Status(snapshots.borrow().clone()),
+                        Ok(request @ (Request::Events { .. } | Request::FollowEvents { .. })) => {
+                            let follow = matches!(request, Request::FollowEvents { .. });
+                            let (Request::Events { query } | Request::FollowEvents { query }) = request else { unreachable!() };
+                            if let Err(error) = query.validate() {
+                                return protocol::write(&mut stream, &Response::Error(error)).await;
+                            }
+                            if let Some(name) = &query.filter.service {
+                                if !snapshots.borrow().services.contains_key(name) {
+                                    return protocol::write(&mut stream, &Response::Error(format!("unknown service '{name}'"))).await;
+                                }
+                            }
+                            if follow {
+                                let Ok(_permit) = followers.try_acquire_owned() else {
+                                    return protocol::write(&mut stream, &Response::Error("too many followers (maximum 16)".into())).await;
+                                };
+                                if let Err(error) = super::events::follow(&mut stream, event_history, query, event_persistence).await {
+                                    protocol::write(&mut stream, &Response::Error(error.to_string())).await?;
+                                }
+                                return Ok(());
+                            }
+                            match query.select(event_history.snapshot()) {
+                                Ok(mut batch) => { batch.persistence = Some(*event_persistence.borrow()); Response::Events(batch) }
+                                Err(error) => Response::Error(error),
+                            }
+                        }
                         Ok(Request::Stop) => {
                             let result = protocol::write(&mut stream, &Response::Stopping).await;
                             shutdown.send_replace(true);
@@ -175,6 +241,17 @@ pub(super) async fn start(
         }
     };
     drop(run);
+    if let Some(result) = event_writer.join_next().await {
+        if let Err(error) = result
+            .context("disk event writer task failed")
+            .and_then(|r| r.context("cannot write persistent events"))
+        {
+            event_status.send_replace(PersistenceState::Failed);
+            diagnostics.spawn(report_event_failure(format!(
+                "{error:#}; disk event recording incomplete\n"
+            )));
+        }
+    }
     // Disk persistence is not subject to the terminal writer's one-second
     // timeout: drain all accepted entries and sync before releasing state.
     if let Some(result) = disk_writer.join_next().await {
@@ -190,6 +267,7 @@ pub(super) async fn start(
     })
     .await;
     clients.shutdown().await;
+    while diagnostics.join_next().await.is_some() {}
     if !writer_done {
         match tokio::time::timeout(Duration::from_secs(1), writer.join_next()).await {
             Ok(Some(result)) => {
@@ -211,4 +289,16 @@ pub(super) async fn start(
     }
     result?;
     Ok(())
+}
+
+async fn report_event_failure(message: String) {
+    use tokio::io::AsyncWriteExt;
+    // A closed or stalled diagnostic pipe must not change event-storage's
+    // nonfatal policy or keep the supervisor from serving control requests.
+    let _ = tokio::time::timeout(Duration::from_secs(1), async {
+        let mut stderr = super::stdout::Stdout::stderr()?;
+        stderr.write_all(message.as_bytes()).await?;
+        stderr.flush().await
+    })
+    .await;
 }

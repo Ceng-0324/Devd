@@ -169,11 +169,12 @@ devd graph --profile staging --format mermaid > dependencies.mmd
 
 | 命令 | 用途 |
 | --- | --- |
-| `devd start [--persist-logs] [--log-max-size MiB] [--log-keep N]` | 前台启动全栈，可选保留磁盘日志 |
+| `devd start [--persist-logs] [--persist-events]` | 前台启动全栈，可选保留日志和生命周期事件，分别设置大小与保留数 |
 | `devd stop` | 请求有序关闭，前台进程完成清理后退出 |
 | `devd restart <service>` | 用启动时的配置重启一个服务，重新检查依赖 |
 | `devd status [--json]` | 查看实时状态、PID、CPU／RSS、重启次数和诊断信息 |
 | `devd top` | 在交互式终端查看运行中的服务和实时日志 |
+| `devd events [service] [--type TYPE] [--since DURATION] [--tail N] [--cursor RUN_UUID:NEXT_SEQUENCE] [--json] [--follow \| --stored]` | 查询生命周期经过、游标与历史缺口 |
 | `devd logs [service] [--tail N] [--level info|warn|error] [--since DURATION] [--grep TEXT] [--follow \| --stored]` | 查询内存或离线磁盘日志，跟随实时输出 |
 | `devd check` | 校验配置、命令引号、依赖关系及当前支持的设置 |
 | `devd graph [--format text|dot|mermaid]` | 显示依赖边与启动层，或导出依赖图 |
@@ -237,6 +238,26 @@ restart:
 默认关闭。开启后，直接依赖换了进程，且所有依赖重新满足各自的就绪条件，才会重启当前正在运行的服务。依赖的手动重启和自动恢复都适用；同一进程从不健康变健康不触发。依赖不可用期间，当前服务继续运行。首次启动不补一次重启，已经正常结束的服务也不会被重新拉起。沿依赖链传播时，每一层都需要自行开启。
 
 联动复用服务的退避设置，与其他重启共用累计 `max-attempts` 预算；耗尽后清理全栈。与 `policy: never` 同时启用、或未声明依赖，会在配置检查时明确报错。下一次启动就绪检查完成前观察到的多次恢复合并为一次重启；之后依赖再次变化，仍可能再触发一次，各服务独立恢复，不是整张依赖图的原子重启。停止可打断等待，手动重启当前服务可接管待执行的联动退避。
+
+**出事之后，至少要知道发生了什么。** v0.5 开发分支新增 `devd events`，记录启动、退出、依赖、健康、资源和重启决策，带运行 ID、进程代次与因果引用。当前源码构建可用，v0.4 发布包尚不包含。
+
+```bash
+devd events api --type restart-decision --since 10m --tail 20
+devd events --json --follow
+devd start --persist-events --event-max-size 10 --event-keep 3
+# 停止后查询：
+devd events --stored --json
+```
+
+全栈内存保留 1024 条事件，单条序列化上限 16 KiB。`--tail` 默认 100，范围 1–1000，先筛选再取尾部。`--type` 可重复指定，命中任意一个类型即保留；服务名精确匹配，`--since` 在命令开始时固定包含边界的 UTC 阈值。顺序以序号为准，不受系统时间回拨影响。在线查询不读取 YAML；日志和事件共用最多 16 个跟随连接，Ctrl+C 只退出查询。
+
+`--json` 返回带 schema 版本的批次，包含 `source`、`context`、`entries`、`gaps`、`first_available`、`cursor` 和在线磁盘状态 `persistence`（`disabled`／`recording`／`failed`）。跟随模式每行一个 JSON 批次，只更新水位或磁盘状态时事件列表可以为空。`--cursor RUN_UUID:NEXT_SEQUENCE` 从指定序号开始，包含该序号；返回游标指向下一个待检查位置，即使筛选没有命中也会前进。首批历史与订阅原子衔接，后续跟随批次的 `first_available` 为空。历史淘汰、运行变更、尾部截取都显式报告缺口；超前游标报错。慢订阅者报告缺口后以错误退出，可用最后游标重连，恢复仍在内存中的记录。拿旧运行游标查询新运行时，会返回新运行并标出运行变更。
+
+事件写盘需要单独开启 `--persist-events`，放在实例/profile 的 `events/` 目录，与 `logs/` 独立，共用文件锁、安全访问和轮转规则。默认每文件 10 MiB、3 份归档，共 40 MiB；`--event-max-size` 支持 1–1024 MiB，`--event-keep` 支持 1–100，均要求显式开启。启动时无法打开存储则不启动服务。**运行中事件写盘失败，会停用本次磁盘事件记录，在 stderr 和在线事件查询中报告，服务继续运行。** 重新以持久化参数启动 supervisor 才会重试磁盘记录。
+
+`events --stored` 要求 writer 已停止，沿用相同实例/profile 参数，YAML 删除后仍可查询。按保留文件顺序跨运行筛选、取尾部；批次的 context、最早可用序号和游标描述最后一个保留运行。保留范围内的游标可继续读到后续运行；游标所属运行已丢失时返回缺口及空事件列表，去掉游标即可查看剩余历史。离线未知服务无匹配结果。输出明确标为 `stored`，旧 PID 仅为历史证据。
+
+正常关闭会排空并同步磁盘；慢磁盘订阅、未完整结束的运行和未写完的尾记录都会显示缺口。下次持久化启动只修复未完成尾记录，并留下恢复标记；完整记录损坏或 schema 不支持时明确报错。单次查询最多保留 128 个缺口诊断，`omitted_gaps` 标出被丢弃的旧诊断数。轮转、强杀与掉电仍可能丢失历史，这是一份有边界的诊断记录。事件不保存命令、URL 或环境内容，但上下文仍包含实例状态路径。
 
 **日志默认保存在内存里。** 保留全栈最近 1000 条，单行最多 16 KiB；没有开启持久化时，停止后无法再查询。`logs --follow` 先输出指定条数的历史日志，再持续接收新日志，按 Ctrl+C 或 supervisor 停止时退出；跟随者落后过多会报错退出。最多同时连接 16 个跟随者，为控制命令保留连接槽位。前台输出过慢时会丢弃部分实时条目并告警；前台输出管道断开会触发服务清理。
 

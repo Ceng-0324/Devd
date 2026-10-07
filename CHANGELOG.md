@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Add `events` text/JSON queries with service/type/time filters, filtered tails,
+  run-scoped cursors, explicit retention gaps and atomic history-to-live follow.
+- Add independent opt-in event persistence (`start --persist-events`,
+  `--event-max-size`, `--event-keep`) and offline `events --stored` queries.
+  Share safe rotating JSONL file handling with logs; report incomplete runs,
+  subscriber losses, repaired tails, and corrupt or unsupported records.
+- Keep services running after runtime event-storage failure, disable disk event
+  recording for that run, and expose failure through live queries and bounded
+  stderr output. Application-log storage retains its existing failure policy.
 - Add bounded structured lifecycle events with per-run identity, service
   generations, causal restart evidence, safe failure details, and live
   subscribers. Legacy runtime snapshots remain readable.

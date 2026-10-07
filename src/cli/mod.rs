@@ -1,3 +1,4 @@
+mod events;
 mod graph;
 mod protocol;
 mod server;
@@ -24,7 +25,8 @@ use tokio::io::AsyncWriteExt;
 use crate::{
     config::{parse_duration, validate_profile_name, ConfigLoader, DevdConfig},
     core::service_manager::{ManagerOptions, ServiceManager},
-    logging::{storage::StorageOptions, ColorMode, LogFilter, LogFormatter, LogLevel},
+    logging::{ColorMode, LogFilter, LogFormatter, LogLevel},
+    storage::StorageOptions,
 };
 use protocol::{Request, Response};
 
@@ -66,6 +68,15 @@ enum Command {
         /// Number of rotated log files to retain, in addition to the current file.
         #[arg(long, requires = "persist_logs", value_parser = clap::value_parser!(u16).range(1..=100))]
         log_keep: Option<u16>,
+        /// Persist lifecycle events separately from application logs.
+        #[arg(long)]
+        persist_events: bool,
+        /// Maximum event file size in MiB (1–1024).
+        #[arg(long, requires = "persist_events", value_parser = clap::value_parser!(u16).range(1..=1024))]
+        event_max_size: Option<u16>,
+        /// Number of event archives retained in addition to the current file.
+        #[arg(long, requires = "persist_events", value_parser = clap::value_parser!(u16).range(1..=100))]
+        event_keep: Option<u16>,
     },
     /// Request ordered shutdown of the running supervisor.
     Stop,
@@ -78,6 +89,8 @@ enum Command {
     },
     /// Inspect and control a running stack in an interactive terminal.
     Top,
+    /// Query lifecycle history and explicit gaps, or follow a running stack.
+    Events(events::Args),
     /// Print buffered logs, or query stored logs after shutdown (oldest first).
     Logs {
         service: Option<String>,
@@ -216,6 +229,9 @@ impl Cli {
                 persist_logs,
                 log_max_size,
                 log_keep,
+                persist_events,
+                event_max_size,
+                event_keep,
             } => {
                 let config = load_config(&config_path, self.profile.as_deref()).await?;
                 let manager = ServiceManager::new(config, options.clone())?;
@@ -223,8 +239,13 @@ impl Cli {
                     max_file_bytes: u64::from(log_max_size.unwrap_or(10)) * 1024 * 1024,
                     keep: log_keep.unwrap_or(3),
                 });
-                server::start(manager, options, socket, formatter, storage).await?;
+                let event_storage = persist_events.then(|| StorageOptions {
+                    max_file_bytes: u64::from(event_max_size.unwrap_or(10)) * 1024 * 1024,
+                    keep: event_keep.unwrap_or(3),
+                });
+                server::start(manager, options, socket, formatter, storage, event_storage).await?;
             }
+            Command::Events(args) => events::run(args, &socket, &state_dir).await?,
             Command::Check => {
                 ServiceManager::new(
                     load_config(&config_path, self.profile.as_deref()).await?,

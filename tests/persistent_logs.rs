@@ -66,7 +66,7 @@ fn test_cli_persistence_is_opt_in_and_survives_runs_shutdown_and_config_removal(
         });
         failure(
             project.invoke(&["logs", "--stored"]),
-            "stored logs are in use",
+            "stored history is in use",
         );
         failure(
             project.invoke(&["start", "--persist-logs"]),

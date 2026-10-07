@@ -20,6 +20,9 @@ pub const EVENT_CAPACITY: usize = 1024;
 pub const MAX_EVENT_BYTES: usize = 16 * 1024;
 const LIVE_CAPACITY: usize = 256;
 
+pub mod query;
+pub mod storage;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct EventContext {
     pub run_id: String,
@@ -307,6 +310,7 @@ pub struct EventWindow {
 pub struct EventHistory {
     context: Arc<EventContext>,
     buffer: Arc<Mutex<Buffer>>,
+    sender: broadcast::WeakSender<Arc<LifecycleEvent>>,
 }
 impl EventHistory {
     pub fn snapshot(&self) -> EventWindow {
@@ -317,6 +321,25 @@ impl EventHistory {
             next_sequence: buffer.next,
             entries: buffer.entries.iter().cloned().collect(),
         }
+    }
+
+    /// Capture a history window and subscribe under the publisher lock. The
+    /// first live event is at or beyond the window's next_sequence.
+    pub fn subscribe_with_snapshot(
+        &self,
+    ) -> (EventWindow, broadcast::Receiver<Arc<LifecycleEvent>>) {
+        let buffer = self.buffer.lock().unwrap();
+        let live = self
+            .sender
+            .upgrade()
+            .map_or_else(|| broadcast::channel(1).1, |sender| sender.subscribe());
+        let window = EventWindow {
+            context: (*self.context).clone(),
+            first_available: buffer.entries.front().map_or(buffer.next, |e| e.sequence),
+            next_sequence: buffer.next,
+            entries: buffer.entries.iter().cloned().collect(),
+        };
+        (window, live)
     }
 }
 
@@ -340,6 +363,7 @@ impl EventRecorder {
                     next: 0,
                     entries: VecDeque::new(),
                 })),
+                sender: sender.downgrade(),
             },
             sender,
             started: Instant::now(),

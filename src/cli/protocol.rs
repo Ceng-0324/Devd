@@ -6,6 +6,7 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{
+    core::events::query::{EventBatch, EventQuery},
     core::service_manager::{RuntimeSnapshot, ServiceSnapshot},
     logging::{LogEntry, LogFilter},
 };
@@ -19,6 +20,12 @@ pub(super) const IO_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) enum Request {
     Status,
     Stop,
+    Events {
+        query: EventQuery,
+    },
+    FollowEvents {
+        query: EventQuery,
+    },
     Restart {
         service: String,
     },
@@ -41,6 +48,7 @@ pub(super) enum Request {
 pub(super) enum Response {
     Status(RuntimeSnapshot),
     Stopping,
+    Events(EventBatch),
     Restarted(ServiceSnapshot),
     Logs(Vec<LogEntry>),
     Log(LogEntry),
@@ -122,7 +130,7 @@ pub(super) async fn next_response(
         Ok(Some(response))
     })
     .await
-    .context("log frame timed out")?
+    .context("control stream frame timed out")?
 }
 
 #[cfg(test)]
@@ -177,7 +185,7 @@ mod tests {
                 .err()
                 .unwrap()
                 .to_string()
-                .contains("log frame timed out"));
+                .contains("control stream frame timed out"));
         }
         let (mut server, mut client) = tokio::io::duplex(1024);
         let (response, _) = tokio::join!(next_response(&mut server), async {

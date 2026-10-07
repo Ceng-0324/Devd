@@ -33,7 +33,18 @@ impl Stdout {
         // Avoid std's global stdout lock: process-exit flushing could otherwise
         // wait for a worker blocked on a full redirected pipe.
         let console = io::stdout().is_terminal();
-        let mut output = File::from(io::stdout().as_handle().try_clone_to_owned()?);
+        let output = File::from(io::stdout().as_handle().try_clone_to_owned()?);
+        Self::from_file(output, console)
+    }
+
+    pub(super) fn stderr() -> io::Result<Self> {
+        Self::from_file(
+            File::from(io::stderr().as_handle().try_clone_to_owned()?),
+            io::stderr().is_terminal(),
+        )
+    }
+
+    fn from_file(mut output: File, console: bool) -> io::Result<Self> {
         let (sender, receiver) = mpsc::sync_channel::<WriteRequest>(1);
         let cancelled = Arc::new(AtomicBool::new(false));
         let stopped = cancelled.clone();

@@ -20,6 +20,14 @@ pub(super) enum Stdout {
 impl Stdout {
     pub fn new() -> io::Result<Self> {
         let file = File::from(io::stdout().as_fd().try_clone_to_owned()?);
+        Self::from_file(file)
+    }
+
+    pub fn stderr() -> io::Result<Self> {
+        Self::from_file(File::from(io::stderr().as_fd().try_clone_to_owned()?))
+    }
+
+    fn from_file(file: File) -> io::Result<Self> {
         if file.metadata()?.is_file() {
             return Ok(Self::File(fs::File::from_std(file)));
         }
