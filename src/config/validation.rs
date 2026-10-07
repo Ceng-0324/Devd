@@ -61,6 +61,12 @@ impl DevdConfig {
                     "listening port must be between 1 and 65535",
                 ));
             }
+            if service.monitor_requires && service.requires.is_empty() {
+                return Err(invalid(
+                    format!("{prefix}.monitor-requires"),
+                    "requires at least one path requirement",
+                ));
+            }
             for (index, requirement) in service.requires.iter().enumerate() {
                 if requirement.path.as_os_str().is_empty()
                     || requirement.path.to_string_lossy().contains('\0')
@@ -416,6 +422,17 @@ mod tests {
                 matches!(error, ConfigValidationError::InvalidField { field, .. } if field == "services.api.requires[0].path")
             );
         }
+    }
+
+    #[test]
+    fn test_path_monitoring_requires_declared_paths_but_no_restart_permission() {
+        let error = validate("  api: {command: api, monitor-requires: true}\n").unwrap_err();
+        assert!(
+            matches!(error, ConfigValidationError::InvalidField { field, .. }
+            if field == "services.api.monitor-requires")
+        );
+        validate("  api: {command: api, requires: [{type: file, path: absent}], monitor-requires: true, restart: {policy: never}}\n").unwrap();
+        validate("  api: {command: api, monitor-requires: false}\n").unwrap();
     }
 
     #[test]

@@ -21,6 +21,9 @@ pub struct ServiceConfig {
     pub cwd: Option<PathBuf>,
     #[serde(default)]
     pub requires: Vec<PathRequirement>,
+    /// Observe path conditions while running; never authorizes recovery.
+    #[serde(default, rename = "monitor-requires", alias = "monitor_requires")]
+    pub monitor_requires: bool,
     #[serde(default)]
     pub env: HashMap<String, String>,
     #[serde(default, rename = "env-file", alias = "env_file")]
@@ -50,7 +53,7 @@ pub struct PathRequirement {
     pub path: PathBuf,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum PathRequirementType {
     File,

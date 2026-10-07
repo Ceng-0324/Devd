@@ -11,9 +11,12 @@ use serde::{Deserialize, Serialize};
 use tokio::{sync::broadcast, time::Instant};
 
 use super::{
-    health_check::ProbeFailure, process_manager::ProcessError, service_manager::ServiceState,
+    health_check::ProbeFailure, path_requirements::PathRequirementFailureKind,
+    process_manager::ProcessError, service_manager::ServiceState,
 };
-use crate::config::{BackoffType, DependencyCondition, RestartPolicy, RestartPolicyType};
+use crate::config::{
+    BackoffType, DependencyCondition, PathRequirementType, RestartPolicy, RestartPolicyType,
+};
 
 pub const EVENT_SCHEMA_VERSION: u16 = 1;
 pub const EVENT_CAPACITY: usize = 1024;
@@ -138,6 +141,10 @@ pub enum EventData {
     ResourceRestartRequested {
         evidence: ResourceEvidence,
     },
+    /// An observed prerequisite transition, never a restart or health decision.
+    PathConditionChanged {
+        evidence: PathConditionEvidence,
+    },
     /// Payload exceeded the record bound; no unbounded text is retained.
     Omitted {
         original_type: String,
@@ -211,6 +218,17 @@ pub struct ResourceEvidence {
     pub sampled_at: DateTime<Utc>,
     pub consecutive_samples: u8,
     pub restart_authorized: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PathConditionEvidence {
+    /// Position in this generation's effective requires list.
+    pub requirement_index: usize,
+    pub requirement: PathRequirementType,
+    /// Resolved path only; file contents and symlink targets are never retained.
+    pub path: String,
+    /// None means recovery; Some identifies the observed failure class.
+    pub failure: Option<PathRequirementFailureKind>,
 }
 
 /// Only typed failure facts: URLs, commands and environment-file contents are
@@ -424,6 +442,7 @@ impl EventRecorder {
                 EventData::DependencyReady { .. } => "dependency-ready",
                 EventData::DependencyFailed { .. } => "dependency-failed",
                 EventData::RestartTriggered { .. } => "restart-triggered",
+                EventData::PathConditionChanged { .. } => "path-condition-changed",
                 _ => "unknown",
             }
             .to_owned();
@@ -541,6 +560,30 @@ mod tests {
         let mut json = serde_json::to_value(&*event).unwrap();
         json["schema_version"] = 2.into();
         assert!(serde_json::from_value::<LifecycleEvent>(json).is_err());
+    }
+
+    #[test]
+    fn test_events_bound_path_evidence_without_losing_omission_type() {
+        let recorder = recorder();
+        recorder.record(
+            Some("api"),
+            Some(1),
+            None,
+            EventData::PathConditionChanged {
+                evidence: PathConditionEvidence {
+                    requirement_index: 0,
+                    requirement: PathRequirementType::File,
+                    path: "猫".repeat(MAX_EVENT_BYTES),
+                    failure: Some(PathRequirementFailureKind::Missing),
+                },
+            },
+        );
+        let event = recorder.history().snapshot().entries.remove(0);
+        assert!(event.truncated);
+        assert!(
+            matches!(&event.data, EventData::Omitted { original_type } if original_type == "path-condition-changed")
+        );
+        assert!(serde_json::to_vec(&*event).unwrap().len() <= MAX_EVENT_BYTES);
     }
 
     #[tokio::test(start_paused = true)]

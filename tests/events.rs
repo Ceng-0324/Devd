@@ -9,7 +9,7 @@ use nix::{
     sys::signal::{kill, Signal},
     unistd::Pid,
 };
-use std::{fs, io::Write, process::Stdio};
+use std::{fs, io::Write, process::Stdio, time::Duration};
 use support::{failure, success, wait, Project, Supervisor};
 
 fn project() -> Project {
@@ -29,6 +29,192 @@ fn events(project: &Project, args: &[&str]) -> EventBatch {
     let mut command = vec!["events", "--json"];
     command.extend(args);
     serde_json::from_str(&success(project.invoke(&command))).unwrap()
+}
+
+fn path_events(project: &Project, stored: bool) -> EventBatch {
+    let mut args = vec!["--type", "path-condition-changed"];
+    if stored {
+        args.push("--stored");
+    }
+    events(project, &args)
+}
+
+#[test]
+fn test_cli_runtime_path_monitor_is_opt_in_and_reports_independent_condition_evidence() {
+    use devd::core::path_requirements::PathRequirementFailureKind::{Missing, WrongType};
+
+    let project = Project::new(
+        "services:\n  dependency:\n    command: sleep 60\n    healthcheck: {type: script, command: 'true', interval: 50ms, timeout: 1s, retries: 3}\n    restart: {policy: never}\n  worker:\n    command: sleep 60\n    depends-on: [{service: dependency, condition: script-ready}]\n    requires: [{type: file, path: input}, {type: directory, path: data}]\n    monitor-requires: true\n    healthcheck: {type: script, command: 'true', interval: 50ms, timeout: 1s, retries: 3}\n    restart: {policy: always}\n  unwatched:\n    command: sleep 60\n    requires: [{type: file, path: input}]\n    restart: {policy: never}\n",
+    );
+    let input = project.path().join("input");
+    fs::write(&input, "must-not-appear-in-events").unwrap();
+    fs::create_dir(project.path().join("data")).unwrap();
+    let mut supervisor = start(&project, &["start", "--persist-events"]);
+    let first = wait(|| {
+        project.snapshot().filter(|snapshot| {
+            snapshot.services["worker"].status == devd::core::service_manager::ServiceState::Healthy
+                && snapshot.services["unwatched"].pid.is_some()
+        })
+    });
+    fs::remove_file(&input).unwrap();
+    let mut observations = Vec::new();
+    for expected in [Some(Missing), Some(WrongType), None] {
+        let entry = wait(|| {
+            path_events(&project, false).entries.into_iter().find(|entry| {
+                matches!(&entry.data, EventData::PathConditionChanged { evidence } if evidence.failure == expected)
+            })
+        });
+        assert_eq!(entry.service.as_deref(), Some("worker"));
+        assert_eq!(entry.generation, first.services["worker"].event_generation);
+        assert_eq!(entry.cause, None);
+        let EventData::PathConditionChanged { evidence } = &entry.data else {
+            unreachable!()
+        };
+        assert_eq!(evidence.requirement_index, 0);
+        assert_eq!(
+            std::path::Path::new(&evidence.path),
+            project.path().canonicalize().unwrap().join("input")
+        );
+        observations.push(entry.sequence);
+        match expected {
+            Some(Missing) => fs::create_dir(&input).unwrap(),
+            Some(WrongType) => {
+                fs::remove_dir(&input).unwrap();
+                fs::write(&input, "must-not-appear-in-events").unwrap();
+            }
+            None => {}
+            _ => unreachable!(),
+        }
+    }
+    let all = path_events(&project, false);
+    assert_eq!(
+        all.entries.len(),
+        3,
+        "default-off service and unchanged samples must stay silent"
+    );
+    let snapshot = project.snapshot().unwrap();
+    for name in ["worker", "unwatched"] {
+        assert_eq!(snapshot.services[name].pid, first.services[name].pid);
+        assert_eq!(snapshot.services[name].restart_count, 0);
+        assert_eq!(snapshot.services[name].last_error, None);
+    }
+    let explanation: serde_json::Value =
+        serde_json::from_str(&success(project.invoke(&["explain", "worker", "--json"]))).unwrap();
+    assert_eq!(explanation["conclusion"], "healthy");
+    for sequence in &observations[1..] {
+        assert!(explanation["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["sequence"] == *sequence));
+    }
+    assert!(success(project.invoke(&["explain", "worker"])).contains("不代表应用健康状态"));
+    assert!(success(project.invoke(&["logs", "worker"])).contains("observation only"));
+    success(project.invoke(&["stop"]));
+    supervisor.finish(true);
+    assert_eq!(path_events(&project, true).entries, all.entries);
+    let text = success(project.invoke(&["events", "--stored", "--type", "path-condition-changed"]));
+    assert!(text.contains("path-condition-changed"));
+    assert!(!text.contains("must-not-appear-in-events"));
+    assert!(success(project.invoke(&["explain", "worker", "--stored"])).contains("已恢复"));
+}
+
+#[test]
+fn test_cli_runtime_path_monitor_drops_old_generation_and_stops_publishing_on_shutdown() {
+    let project = Project::new(
+        "services:\n  worker:\n    command: sleep 60\n    requires: [{type: file, path: input}]\n    monitor-requires: true\n    restart: {policy: never}\n",
+    );
+    let input = project.path().join("input");
+    fs::write(&input, "initial").unwrap();
+    let mut supervisor = start(&project, &["start", "--persist-events"]);
+    project.running();
+    fs::remove_file(&input).unwrap();
+    let old = wait(|| path_events(&project, false).entries.into_iter().next());
+    fs::write(&input, "replacement").unwrap();
+    success(project.invoke(&["restart", "worker"]));
+    let new = project.snapshot().unwrap().services["worker"].event_generation;
+    assert_ne!(old.generation, new);
+    let explanation = success(project.invoke(&["explain", "worker", "--json"]));
+    assert!(
+        !explanation.contains("path-condition-changed"),
+        "{explanation}"
+    );
+    fs::remove_file(&input).unwrap();
+    wait(|| {
+        path_events(&project, false)
+            .entries
+            .iter()
+            .any(|event| event.generation == new)
+            .then_some(())
+    });
+    fs::write(&input, "restored before shutdown").unwrap();
+    success(project.invoke(&["stop"]));
+    supervisor.finish(true);
+    let all = events(&project, &["--stored"]);
+    for generation in [old.generation, new] {
+        let stopped = all
+            .entries
+            .iter()
+            .find(|event| {
+                event.generation == generation
+                    && matches!(event.data, EventData::ServiceStopRequested { .. })
+            })
+            .unwrap();
+        assert!(!all
+            .entries
+            .iter()
+            .any(|event| event.generation == generation
+                && event.sequence > stopped.sequence
+                && matches!(event.data, EventData::PathConditionChanged { .. })));
+    }
+}
+
+#[test]
+fn test_cli_runtime_path_monitor_observes_symlink_loss_permissions_and_atomic_replacement() {
+    use devd::core::path_requirements::PathRequirementFailureKind::{DanglingSymlink, NotReadable};
+    use std::os::unix::fs::{symlink, PermissionsExt};
+
+    let project = Project::new(
+        "services:\n  worker:\n    command: sleep 60\n    requires: [{type: symlink, path: current}]\n    monitor-requires: true\n    restart: {policy: never}\n",
+    );
+    let target = project.path().join("target");
+    fs::write(&target, "initial").unwrap();
+    symlink("target", project.path().join("current")).unwrap();
+    let mut supervisor = project.start();
+    let pid = project.running().services["worker"].pid;
+    fs::write(project.path().join("next"), "replacement").unwrap();
+    fs::rename(project.path().join("next"), &target).unwrap();
+    // No identity/content change should be reported while the condition holds.
+    std::thread::sleep(Duration::from_millis(2300));
+    assert!(path_events(&project, false).entries.is_empty());
+    fs::remove_file(&target).unwrap();
+    for expected in [Some(DanglingSymlink), None] {
+        wait(|| {
+            path_events(&project, false).entries.iter().any(|event| {
+            matches!(&event.data, EventData::PathConditionChanged { evidence } if evidence.failure == expected)
+        }).then_some(())
+        });
+        if expected.is_some() {
+            fs::write(project.path().join("next"), "restored").unwrap();
+            fs::rename(project.path().join("next"), &target).unwrap();
+        }
+    }
+    if unsafe { nix::libc::geteuid() } != 0 {
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o000)).unwrap();
+        wait(|| {
+            path_events(&project, false).entries.iter().any(|event| {
+            matches!(&event.data, EventData::PathConditionChanged { evidence } if evidence.failure == Some(NotReadable))
+        }).then_some(())
+        });
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    assert_eq!(project.running().services["worker"].pid, pid);
+    assert_eq!(
+        project.snapshot().unwrap().services["worker"].restart_count,
+        0
+    );
+    success(project.invoke(&["stop"]));
+    supervisor.finish(true);
 }
 
 #[test]

@@ -131,6 +131,7 @@ impl HealthChecker {
                     listen: Vec::new(),
                     cwd: None,
                     requires: Vec::new(),
+                    monitor_requires: false,
                     env: Default::default(),
                     env_file: None,
                     depends_on: Vec::new(),

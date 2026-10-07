@@ -2,7 +2,7 @@
 //!
 //! This module is deliberately read-only. It never probes services, starts a
 //! process, or turns a suggested next step into a control action.
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -72,10 +72,20 @@ pub fn explain(
     let state = snapshot.and_then(|snapshot| snapshot.services.get(service));
     let status = state.map(|state| state.status);
     let generation = state.and_then(|state| state.event_generation);
+    let run = snapshot
+        .and_then(|snapshot| snapshot.event_run_id.as_deref())
+        .or_else(|| {
+            batch
+                .context
+                .as_ref()
+                .map(|context| context.run_id.as_str())
+        });
     let mut events: Vec<&LifecycleEvent> = batch
         .entries
         .iter()
-        .filter(|event| event.service.as_deref() == Some(service))
+        .filter(|event| {
+            event.service.as_deref() == Some(service) && run.is_none_or(|run| event.run_id == run)
+        })
         .collect();
     events.sort_by_key(|event| event.sequence);
     let mut evidence = Vec::new();
@@ -286,6 +296,43 @@ pub fn explain(
         }
     }
 
+    // Path observations are evidence alongside lifecycle conclusions. They do
+    // not prove application failure or authorize a restart. Restrict to the
+    // latest generation so a replacement cannot inherit an old warning.
+    let path_generation = generation.or_else(|| events.last().and_then(|event| event.generation));
+    let mut path_events = BTreeMap::new();
+    let mut has_path_evidence = false;
+    for event in events
+        .iter()
+        .rev()
+        .filter(|event| event.generation == path_generation)
+    {
+        if let EventData::PathConditionChanged { evidence: path } = &event.data {
+            path_events
+                .entry(path.requirement_index)
+                .or_insert_with(Vec::new)
+                .push(event);
+        }
+    }
+    for events in path_events.values() {
+        let latest = events[0];
+        has_path_evidence = true;
+        details.push(event_detail(latest));
+        add_evidence(&mut evidence, &mut seen, latest);
+        if matches!(&latest.data, EventData::PathConditionChanged { evidence, .. } if evidence.failure.is_none())
+        {
+            if let Some(failure) = events.iter().copied().find(|event| {
+                matches!(&event.data, EventData::PathConditionChanged { evidence, .. } if evidence.failure.is_some())
+            }) {
+                details.push(event_detail(failure));
+                add_evidence(&mut evidence, &mut seen, failure);
+            }
+        }
+    }
+    if has_path_evidence {
+        details.push("路径条件是独立的文件系统观测，不代表应用健康状态，也不能单凭发生顺序断定后续故障原因；监测不会触发重启或修改文件".into());
+    }
+
     if evidence.is_empty() {
         if let Some(event) = events.last() {
             details.push(format!("最近的服务事件：{}", event_detail(event)));
@@ -295,7 +342,10 @@ pub fn explain(
     }
 
     let mut next_steps = next_steps(conclusion);
-    if !has_diagnostic_evidence {
+    if has_path_evidence {
+        next_steps.push("用 devd doctor 只读复查 requires 路径，并结合应用日志核对影响".into());
+    }
+    if !has_diagnostic_evidence && !has_path_evidence {
         next_steps.insert(
             0,
             "当前没有可定位故障原因的事件证据；可在下次启动时显式开启 --persist-events 后重现"
@@ -351,7 +401,10 @@ fn add_cause(
 ) {
     let mut cause = event.cause;
     while let Some(sequence) = cause {
-        let Some(parent) = entries.iter().find(|item| item.sequence == sequence) else {
+        let Some(parent) = entries
+            .iter()
+            .find(|item| item.sequence == sequence && item.run_id == event.run_id)
+        else {
             break;
         };
         add_evidence(evidence, seen, parent);
@@ -431,6 +484,15 @@ fn event_detail(event: &LifecycleEvent) -> String {
         EventData::ResourceChanged { exceeded, evidence } => {
             format!("资源状态 changed，exceeded={exceeded}：{evidence:?}")
         }
+        EventData::PathConditionChanged { evidence } => format!(
+            "观测到路径条件 requires[{}] ({:?}) {:?}：{}",
+            evidence.requirement_index,
+            evidence.requirement,
+            evidence.path,
+            evidence
+                .failure
+                .map_or("已恢复", |failure| failure.summary()),
+        ),
         EventData::Omitted { original_type } => format!("事件内容已省略，原类型={original_type}"),
     }
 }
@@ -515,6 +577,89 @@ mod tests {
         }
         .select(recorder.history().snapshot())
         .unwrap()
+    }
+
+    fn path_change(
+        failure: Option<super::super::path_requirements::PathRequirementFailureKind>,
+    ) -> EventData {
+        EventData::PathConditionChanged {
+            evidence: super::super::events::PathConditionEvidence {
+                requirement_index: 0,
+                requirement: crate::config::PathRequirementType::File,
+                path: "input\n\u{1b}[31m".into(),
+                failure,
+            },
+        }
+    }
+
+    #[test]
+    fn test_explain_path_observations_include_recovery_without_inventing_causality() {
+        use super::super::path_requirements::PathRequirementFailureKind::Missing;
+        let recorder = EventRecorder::new("state".into(), None);
+        recorder.record(Some("api"), Some(1), None, path_change(Some(Missing)));
+        recorder.record(Some("api"), Some(1), None, path_change(None));
+        let mut batch = batch(&recorder);
+        batch.gaps.push(EventGap::IncompleteRun {
+            run_id: recorder.run_id().into(),
+        });
+        let report = explain("api", None, batch);
+        assert_eq!(report.conclusion, ExplainConclusion::Unknown);
+        assert_eq!(report.evidence.len(), 2);
+        assert_eq!(report.evidence[0].sequence, 1);
+        assert_eq!(report.evidence[1].sequence, 0);
+        assert!(report.evidence.iter().all(|item| item.cause.is_none()));
+        assert!(report
+            .details
+            .iter()
+            .any(|detail| detail.contains("已恢复")));
+        assert!(report
+            .details
+            .iter()
+            .any(|detail| detail.contains("不代表应用健康状态")));
+        assert!(report
+            .details
+            .iter()
+            .all(|detail| !detail.contains('\n') && !detail.contains('\u{1b}')));
+        assert!(!report.complete);
+    }
+
+    #[test]
+    fn test_explain_path_observations_do_not_cross_runs_or_generations() {
+        use super::super::path_requirements::PathRequirementFailureKind::Missing;
+        let recorder = EventRecorder::new("state".into(), None);
+        recorder.record(Some("api"), Some(1), None, path_change(Some(Missing)));
+        // The newest generation has no path failures. Old evidence is not its state.
+        recorder.record(
+            Some("api"),
+            Some(2),
+            None,
+            EventData::Started { pid: Some(123) },
+        );
+        let report = explain("api", None, batch(&recorder));
+        assert!(!report
+            .evidence
+            .iter()
+            .any(|e| e.event_type == EventKind::PathConditionChanged));
+
+        recorder.record(Some("api"), Some(2), None, path_change(Some(Missing)));
+        let snapshot = RuntimeSnapshot {
+            supervisor_pid: 1,
+            event_run_id: Some("another-run".into()),
+            services: [(
+                "api".into(),
+                ServiceSnapshot {
+                    status: ServiceState::Running,
+                    event_generation: Some(2),
+                    ..Default::default()
+                },
+            )]
+            .into(),
+        };
+        let report = explain("api", Some(&snapshot), batch(&recorder));
+        assert!(!report
+            .evidence
+            .iter()
+            .any(|e| e.event_type == EventKind::PathConditionChanged));
     }
 
     #[test]

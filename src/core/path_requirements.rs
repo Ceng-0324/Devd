@@ -1,12 +1,14 @@
 use std::{
-    fs::{self, File},
+    fs::{self, File, OpenOptions},
     io,
     path::{Path, PathBuf},
 };
 
 use crate::config::{PathRequirement, PathRequirementType};
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
 pub enum PathRequirementFailureKind {
     Missing,
     WrongType,
@@ -28,7 +30,13 @@ pub struct PathRequirementFailure {
 
 impl PathRequirementFailure {
     pub fn summary(&self) -> &'static str {
-        match self.kind {
+        self.kind.summary()
+    }
+}
+
+impl PathRequirementFailureKind {
+    pub fn summary(self) -> &'static str {
+        match self {
             PathRequirementFailureKind::Missing => "required path does not exist",
             PathRequirementFailureKind::WrongType => "path has the wrong type",
             PathRequirementFailureKind::NotReadable => "required path is not readable",
@@ -69,7 +77,7 @@ pub fn evaluate(
             if !metadata.is_file() {
                 return Err(fail(PathRequirementFailureKind::WrongType, None));
             }
-            File::open(&path).map_err(|error| {
+            let file = open_for_inspection(&path).map_err(|error| {
                 let detail = error.kind();
                 let kind = if detail == io::ErrorKind::PermissionDenied {
                     PathRequirementFailureKind::NotReadable
@@ -78,6 +86,13 @@ pub fn evaluate(
                 };
                 fail(kind, Some(detail))
             })?;
+            if !file
+                .metadata()
+                .map_err(|error| classify(error, &fail))?
+                .is_file()
+            {
+                return Err(fail(PathRequirementFailureKind::WrongType, None));
+            }
         }
         PathRequirementType::Directory => {
             let metadata = fs::metadata(&path).map_err(|error| classify(error, &fail))?;
@@ -112,11 +127,13 @@ pub fn evaluate(
                 return Err(fail(PathRequirementFailureKind::WrongType, None));
             }
             let access = if target.is_file() {
-                File::open(&path).map(|_| ())
+                open_for_inspection(&path)
+                    .and_then(|file| file.metadata())
+                    .map(|metadata| metadata.is_file() || metadata.is_dir())
             } else {
-                fs::read_dir(&path).map(|_| ())
+                fs::read_dir(&path).map(|_| true)
             };
-            access.map_err(|error| {
+            let valid_type = access.map_err(|error| {
                 let detail = error.kind();
                 let kind = if detail == io::ErrorKind::PermissionDenied {
                     PathRequirementFailureKind::NotReadable
@@ -125,9 +142,25 @@ pub fn evaluate(
                 };
                 fail(kind, Some(detail))
             })?;
+            if !valid_type {
+                return Err(fail(PathRequirementFailureKind::WrongType, None));
+            }
         }
     }
     Ok(path)
+}
+
+fn open_for_inspection(path: &Path) -> io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    // A regular file may be replaced by a FIFO between metadata and open.
+    // Follow declared symlinks, but never wait for a FIFO writer to appear.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(nix::libc::O_NONBLOCK);
+    }
+    options.open(path)
 }
 
 fn classify(
@@ -172,6 +205,22 @@ mod tests {
             kind,
             path: path.into(),
         }
+    }
+
+    #[test]
+    fn test_inspection_open_does_not_wait_for_fifo_writer_after_replacement() {
+        let root = tempdir().unwrap();
+        let path = root.path().join("replaced");
+        nix::unistd::mkfifo(&path, nix::sys::stat::Mode::S_IRUSR).unwrap();
+        // Simulate replacement after the evaluator's first metadata check.
+        let file = open_for_inspection(&path).unwrap();
+        assert!(!file.metadata().unwrap().is_file());
+        assert_eq!(
+            evaluate(&requirement(PathRequirementType::File, path), None)
+                .unwrap_err()
+                .kind,
+            PathRequirementFailureKind::WrongType
+        );
     }
 
     #[test]

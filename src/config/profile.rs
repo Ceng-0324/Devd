@@ -178,6 +178,7 @@ fn normalize_service(service: &mut Mapping) -> Result<(), serde_yaml::Error> {
         service,
         &[
             ("env_file", "env-file"),
+            ("monitor_requires", "monitor-requires"),
             ("depends_on", "depends-on"),
             ("restart_on_dep_recovery", "restart-on-dep-recovery"),
         ],

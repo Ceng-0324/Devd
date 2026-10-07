@@ -459,6 +459,21 @@ impl ServiceTask {
         process: &mut ManagedProcess,
         dependencies: DependencyRecovery,
     ) -> GenerationEnd {
+        // Keep this future alive across health and peer updates. It never owns
+        // the process and is dropped before this generation begins cleanup.
+        let config = self.config.clone();
+        let name = self.name.clone();
+        let events = self.events.clone();
+        let logs = self.logs.clone();
+        let path_monitor = super::path_monitor::monitor(
+            &config,
+            &name,
+            self.state.event_generation,
+            self.state.restart_count,
+            &events,
+            &logs,
+        );
+        tokio::pin!(path_monitor);
         let mut health = self.checker.clone().map(HealthMonitor::new);
         let mut previous_health = None;
         let mut health_event = None;
@@ -517,6 +532,7 @@ impl ServiceTask {
                         return GenerationEnd::ResourceLimit(resource_reason.unwrap());
                     },
                     observation = &mut probe => break observation,
+                    never = &mut path_monitor => match never {},
                     _ = updates.changed(), if dependencies.enabled() || resource_restarts => {},
                 }
             };

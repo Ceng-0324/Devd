@@ -73,6 +73,31 @@ fn test_profile_replaces_path_requirements_as_a_list() {
 }
 
 #[test]
+fn test_profile_path_monitoring_is_explicit_and_can_be_disabled() {
+    let yaml = "version: '1'\nservices:\n  api: {command: api, requires: [{type: file, path: input}]}\nprofiles:\n  monitored:\n    services:\n      api: {monitor_requires: true}\n  disabled:\n    services:\n      api: {monitor-requires: false}\n";
+    let base = ConfigLoader::from_str(yaml, "devd.yml").unwrap();
+    assert!(!base.services["api"].monitor_requires);
+    let monitored = ConfigLoader::from_str_profile(yaml, "devd.yml", Some("monitored")).unwrap();
+    assert!(monitored.services["api"].monitor_requires);
+    let enabled_base = yaml.replace("command: api,", "command: api, monitor-requires: true,");
+    let disabled =
+        ConfigLoader::from_str_profile(&enabled_base, "devd.yml", Some("disabled")).unwrap();
+    assert!(!disabled.services["api"].monitor_requires);
+    for value in ["'true'", "null", "{}", "1"] {
+        let invalid = enabled_base.replace(
+            "monitor_requires: true",
+            &format!("monitor_requires: {value}"),
+        );
+        assert!(ConfigLoader::from_str(&invalid, "devd.yml").is_err());
+    }
+    let duplicate = enabled_base.replace(
+        "monitor_requires: true",
+        "monitor_requires: true, monitor-requires: false",
+    );
+    assert!(ConfigLoader::from_str(&duplicate, "devd.yml").is_err());
+}
+
+#[test]
 fn test_profile_limits_replace_base_thresholds_and_can_be_cleared() {
     let yaml = "version: '1'\nservices:\n  api: {command: sleep 60, limits: {cpu: '50%', memory: 1GiB, on-exceed: restart}}\nprofiles:\n  dev:\n    services:\n      api: {limits: {memory: 512MiB}}\n  free:\n    services:\n      api: {limits: null}\n";
     let base = ConfigLoader::from_str(yaml, "devd.yml").unwrap();

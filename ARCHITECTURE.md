@@ -46,6 +46,12 @@ v0.3 增加单文件 `profiles` 与全局 `--profile`。`config/profile.rs` 独�
 
 依赖联动由 `core::dependency_recovery` 比较依赖进程代次：actor 在通过启动就绪检查的同一个快照读锁内记录直接依赖的 PID、started_at、restart_count。运行期间只在代次变化且所有依赖满足各自条件时停止旧进程组，复用自动重启的退避、预算、依赖等待和日志排空。基线随下一次就绪检查更新，不依赖 watch 保留每次中间事件；单纯健康波动不会触发。每个服务独立恢复，非全图原子操作。监听其他服务状态时保留在途健康探测 future，防止频繁快照更新取消探测。开启联动要求存在依赖且自动策略不是 never；次数耗尽沿用 Failed 与全栈清理语义。
 
+`core::path_requirements` 复用同一个只读 evaluator 为启动前的 `service.requires` 和 `doctor` 检查文件、目录及软链接条件。相对路径按有效服务 cwd 解析；启动时在进程依赖就绪后、spawn 前检查。失败拒绝启动并沿用全栈清理。Unix 打开文件带 O_NONBLOCK 并复查句柄类型，避免路径在 metadata 与 open 之间被替换成 FIFO 后阻塞。
+
+v0.6 的 `core::path_monitor` 仅在服务显式设置 `monitor-requires: true` 时启用，允许 `restart.policy: never`。每次阻塞线程池检查完成后等待一秒，每条条件连续两次相同变化才发布 `path-condition-changed` 及 WARN/INFO 日志，重复失效、恢复和原子替换中仍成立的条件均不刷屏。监测 future 由 actor 在一整个进程代次内驱动，跨健康检查及快照更新保持；停止、退出、换代时直接取消。在途 OS 调用只持有路径与 cwd，没有记录器或日志句柄，返回后无法给旧代次补发事件。监测不改变状态、健康、重启预算，也不执行文件修复。
+
+路径事件保存 requires 索引、类型、解析路径与稳定失败分类（null 表示恢复），不保存文件内容或解析后的链接目标，沿用现有事件容量和截断规则。`explain` 按运行实例与进程代次引用每条条件的最近观测，恢复时附上保留的最近失效，并明确观测不等于应用故障因果；历史缺口照常显示。磁盘留存仍由独立的 `--persist-events` 授权。
+
 ## 系统架构图
 
 ```

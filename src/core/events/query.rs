@@ -33,6 +33,7 @@ pub enum EventKind {
     RestartDecision,
     ResourceChanged,
     ResourceRestartRequested,
+    PathConditionChanged,
     Omitted,
 }
 
@@ -62,6 +63,7 @@ impl EventData {
             Self::RestartDecision { .. } => EventKind::RestartDecision,
             Self::ResourceChanged { .. } => EventKind::ResourceChanged,
             Self::ResourceRestartRequested { .. } => EventKind::ResourceRestartRequested,
+            Self::PathConditionChanged { .. } => EventKind::PathConditionChanged,
             Self::Omitted { .. } => EventKind::Omitted,
         }
     }

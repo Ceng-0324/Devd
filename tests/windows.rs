@@ -226,6 +226,98 @@ fn test_windows_init_and_stalled_terminal_do_not_block_shutdown() {
     }
 }
 
+#[tokio::test]
+async fn test_windows_runtime_path_monitor_records_failure_and_recovery_without_restart() {
+    use devd::core::{
+        events::{query::EventBatch, EventData},
+        path_requirements::PathRequirementFailureKind::Missing,
+    };
+    let root = tempfile::tempdir().unwrap();
+    let service = config(root.path(), "tree");
+    let input = root.path().join("input");
+    fs::write(&input, "private file contents").unwrap();
+    fs::write(
+        root.path().join("devd.yml"),
+        serde_yaml::to_string(&serde_json::json!({
+            "version": "1", "services": {"worker": {
+                "command": service.command, "cwd": service.cwd, "env": service.env,
+                "restart": {"policy": "never"},
+                "requires": [{"type": "file", "path": "input"}], "monitor-requires": true
+            }}
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut supervisor = Supervisor(
+        Command::new(env!("CARGO_BIN_EXE_devd"))
+            .args(["start", "--persist-events", "--color", "never"])
+            .current_dir(root.path())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap(),
+    );
+    wait_until(|| !descendants(root.path()).is_empty()).await;
+    let first: serde_json::Value =
+        serde_json::from_slice(&cli(root.path(), &["status", "--json"]).stdout).unwrap();
+    fs::remove_file(&input).unwrap();
+    for expected in [Some(Missing), None] {
+        wait_until(|| {
+            let output = cli(
+                root.path(),
+                &[
+                    "events",
+                    "worker",
+                    "--json",
+                    "--type",
+                    "path-condition-changed",
+                ],
+            );
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let batch: EventBatch = serde_json::from_slice(&output.stdout).unwrap();
+            batch.entries.iter().any(|event| {
+                matches!(&event.data,
+                EventData::PathConditionChanged { evidence } if evidence.failure == expected)
+            })
+        })
+        .await;
+        if expected.is_some() {
+            fs::write(&input, "recovered").unwrap();
+        }
+    }
+    let current: serde_json::Value =
+        serde_json::from_slice(&cli(root.path(), &["status", "--json"]).stdout).unwrap();
+    assert!(first["services"]["worker"]["pid"].is_number(), "{first}");
+    assert_eq!(
+        current["services"]["worker"]["pid"],
+        first["services"]["worker"]["pid"]
+    );
+    assert_eq!(current["services"]["worker"]["restart_count"], 0);
+    assert!(cli(root.path(), &["stop"]).status.success());
+    wait_until(|| supervisor.0.try_wait().unwrap().is_some()).await;
+    let output = cli(
+        root.path(),
+        &[
+            "events",
+            "--stored",
+            "--json",
+            "--type",
+            "path-condition-changed",
+        ],
+    );
+    assert!(output.status.success());
+    let batch: EventBatch = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(batch.entries.len(), 2);
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("private file contents"));
+    assert!(cli(root.path(), &["explain", "worker", "--stored"])
+        .status
+        .success());
+}
+
 #[test]
 fn test_windows_cli_control_persistence_and_supervisor_death_cleanup() {
     let root = tempfile::tempdir().unwrap();
