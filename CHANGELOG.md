@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## v0.5.0-alpha.1 — Unreleased
+
+Release candidate for local development on Linux, macOS, and Windows. Native
+CI and release artifacts for the final source SHA remain publication gates.
 
 - Add read-only `devd doctor` environment reports in text or versioned JSON,
   checking service directories, dotenv files, executable discovery, script

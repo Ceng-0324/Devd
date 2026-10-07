@@ -18,9 +18,11 @@ Broken file dependencies still need fixing. devd takes care of the services you 
 
 ## What it does
 
-devd is a local development service manager written in Rust. **v0.4.0-alpha.1 is available for Linux, macOS, and Windows.**
+devd is a local development service manager written in Rust. **v0.4.0-alpha.1 is available for Linux, macOS, and Windows; this checkout prepares v0.5.0-alpha.1.**
 
 v0.4 brings opt-in disk logs, an interactive terminal view, resource warnings and explicitly enabled recovery, custom script health checks, and Windows process supervision. Download Linux x86_64, macOS Apple Silicon, or Windows x86_64 binaries and their SHA-256 checksums from [GitHub Releases](https://github.com/Ceng-0324/Devd/releases/tag/v0.4.0-alpha.1), or install from source. The release passed native CI and recovery smoke tests on all three platforms.
+
+The v0.5 source adds `events` to trace what happened, `explain` to connect failures to recorded evidence, and `doctor` to check the environment before starting. Install from source to use them; the published v0.4 binaries do not include these commands or the new `listen` setting. The [release checklist](RELEASING.md) tracks the checks needed before v0.5 publication.
 
 It also includes CPU and memory samples, opt-in restarts after dependency recovery, named configuration profiles, configuration snapshots, dependency diagram export, and log filters.
 
@@ -244,7 +246,7 @@ The default is off. An opted-in running service restarts when a direct dependenc
 
 Recovery restarts use the service's backoff and share its cumulative `max-attempts` budget with other restarts; exhaustion cleans up the stack. Enabling this with `policy: never`, or without dependencies, is a configuration error. Recoveries observed before the next startup readiness check completes are combined into one restart. A dependency that changes again after that point can trigger another; this is per-service recovery, not an atomic restart of an entire dependency graph. Stop interrupts the wait, and a manual restart of the dependent can supersede its pending backoff.
 
-**Find out what happened.** The v0.5 development tree adds `devd events`: structured startup, exit, dependency, health, resource and restart decisions, with run IDs, process generations and causal references. This is available when building current source; the v0.4 release does not include it.
+**Find out what happened.** `devd events` records structured startup, exit, dependency, health, resource and restart decisions, with run IDs, process generations and causal references.
 
 ```bash
 devd events api --type restart-decision --since 10m --tail 20
