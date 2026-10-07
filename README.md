@@ -18,9 +18,9 @@ Broken file dependencies still need fixing. devd takes care of the services you 
 
 ## What it does
 
-devd is a local development service manager written in Rust. **This checkout prepares v0.4.0-alpha.1 for Linux, macOS, and Windows.**
+devd is a local development service manager written in Rust. **v0.4.0-alpha.1 is available for Linux, macOS, and Windows.**
 
-v0.4 brings opt-in disk logs, an interactive terminal view, resource warnings and explicitly enabled recovery, custom script health checks, and Windows process supervision. Install from source to use these features; v0.3 release binaries do not include them. Published assets are listed on [GitHub Releases](https://github.com/Ceng-0324/Devd/releases); the [release checklist](RELEASING.md) requires native CI on all three platforms before publication.
+v0.4 brings opt-in disk logs, an interactive terminal view, resource warnings and explicitly enabled recovery, custom script health checks, and Windows process supervision. Download Linux x86_64, macOS Apple Silicon, or Windows x86_64 binaries and their SHA-256 checksums from [GitHub Releases](https://github.com/Ceng-0324/Devd/releases/tag/v0.4.0-alpha.1), or install from source. The release passed native CI and recovery smoke tests on all three platforms.
 
 It also includes CPU and memory samples, opt-in restarts after dependency recovery, named configuration profiles, configuration snapshots, dependency diagram export, and log filters.
 

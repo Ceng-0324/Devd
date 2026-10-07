@@ -1,9 +1,10 @@
 # Changelog
 
-## v0.4.0-alpha.1 — Unreleased
+## v0.4.0-alpha.1 — 2026-10-06
 
-Release candidate for local development on Linux, macOS, and Windows. Native
-CI and release artifacts for the final source SHA remain publication gates.
+Prerelease for local development on Linux, macOS, and Windows. Native CI and
+release-binary recovery tests passed on all three platforms for source revision
+`a044e60909ee1dec9ec40c49fb6e6ae4ee3de6c2`; archives and SHA-256 checksums were verified.
 
 - Add `devd top` for live service status, resource metrics, bounded logs, asynchronous single-service restart, and confirmed whole-stack stop; quitting the view leaves services running.
 - Add opt-in JSONL persistence with `start --persist-logs`, per-instance/profile storage, size-based rotation, and configurable archive retention (`--log-max-size` in MiB and `--log-keep`).
