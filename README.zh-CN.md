@@ -16,11 +16,11 @@
 
 ## 它能做什么
 
-devd 是用 Rust 编写的本地开发服务管理器。**v0.4.0-alpha.1 已发布，支持 Linux、macOS 和 Windows；当前源码正在准备 v0.5.0-alpha.1。**
+devd 是用 Rust 编写的本地开发服务管理器。**v0.5.0-alpha.1 已发布，支持 Linux、macOS 和 Windows。**
 
 v0.4 补上了可选磁盘日志、交互式终端界面、资源告警与显式授权的自动恢复、自定义脚本健康检查，以及 Windows 进程管理。可以从 [GitHub Releases](https://github.com/Ceng-0324/Devd/releases/tag/v0.4.0-alpha.1) 下载 Linux x86_64、macOS Apple Silicon、Windows x86_64 制品及 SHA-256 校验文件，也可以从源码安装。该版本已通过三平台原生 CI 和故障恢复演练。
 
-v0.5 源码补上了诊断闭环：`events` 查经过，`explain` 根据记录解释故障，`doctor` 在启动前检查环境。需要从源码安装；已发布的 v0.4 制品尚不支持这些命令和新增的 `listen` 配置。v0.5 发布前还需按[发布清单](RELEASING.md)完成验收。
+v0.5 补上了诊断闭环：`events` 查经过，`explain` 根据记录解释故障，`doctor` 在启动前检查环境，并新增用于声明 TCP 监听端口的 `listen` 配置。可以从 [GitHub Releases](https://github.com/Ceng-0324/Devd/releases/tag/v0.5.0-alpha.1) 下载 Linux x86_64、macOS Apple Silicon、Windows x86_64 制品及 SHA-256 校验文件。该版本已通过三平台原生 CI 和故障恢复演练。
 
 已有的 CPU／内存采样、依赖恢复联动、多环境配置、配置快照、依赖图导出和日志筛选继续保留。
 
