@@ -7,6 +7,100 @@ use support::{failure, success, wait, Project, Supervisor};
 const RUNNING: &str = "services:\n  worker:\n    command: sh -c 'echo hello; echo problem >&2; exec sleep 60'\n    restart:\n      policy: never\n";
 
 #[test]
+fn test_cli_doctor_reports_environment_without_executing_commands_or_probes() {
+    let project = Project::new("services:\n  api:\n    command: true\n");
+    fs::create_dir(project.path().join("service")).unwrap();
+    fs::write(project.path().join("service/.env"), "TOKEN=do-not-print\n").unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    let yaml = format!(
+        "version: '1'\nservices:\n  api:\n    command: \"sh -c 'touch command-ran'\"\n    cwd: service\n    env-file: .env\n    healthcheck:\n      type: script\n      command: \"sh -c 'touch probe-ran'\"\n    listen:\n      - {address}\n"
+    );
+    fs::write(project.path().join("devd.yml"), yaml).unwrap();
+
+    let output = success(project.invoke(&["doctor", "--json"]));
+    let report: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(report["ready"], true);
+    let checks = report["checks"].as_array().unwrap();
+    assert!(checks.iter().any(|check| check["check"] == "listen-address"
+        && check["status"] == "passed"
+        && check["evidence"][0] == address.to_string()));
+    assert!(checks
+        .iter()
+        .any(|check| check["check"] == "script-probe" && check["status"] == "passed"));
+    assert!(!output.contains("do-not-print"));
+    assert!(!project.path().join("service/command-ran").exists());
+    assert!(!project.path().join("service/probe-ran").exists());
+}
+
+#[test]
+fn test_cli_doctor_reports_occupied_listen_address_and_keeps_json_on_failure() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let project = Project::new(&format!(
+        "services:\n  api:\n    command: sh -c 'exit 0'\n    listen: ['{address}']\n"
+    ));
+    let output = project.invoke(&["doctor", "--json"]);
+    assert!(!output.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["ready"], false);
+    assert!(report["checks"].as_array().unwrap().iter().any(|check| {
+        check["check"] == "listen-address"
+            && check["status"] == "failed"
+            && check["summary"] == "Address is already in use."
+    }));
+    drop(listener);
+}
+
+#[test]
+fn test_cli_doctor_uses_selected_profile_listen_addresses() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let project = Project::new(&format!(
+        "services:\n  api:\n    command: sh -c 'exit 0'\n    listen: ['127.0.0.1:1']\nprofiles:\n  local:\n    services:\n      api:\n        listen: ['{address}']\n"
+    ));
+    drop(listener);
+    let output = success(project.invoke(&["doctor", "--profile", "local", "--json"]));
+    let report: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(report["profile"], "local");
+    assert!(report["checks"].as_array().unwrap().iter().any(|check| {
+        check["check"] == "listen-address" && check["evidence"][0] == address.to_string()
+    }));
+}
+
+#[test]
+fn test_cli_doctor_marks_undeclared_listen_addresses_not_checked() {
+    let project = Project::new("services:\n  api:\n    command: sh -c 'exit 0'\n");
+    let output = success(project.invoke(&["doctor", "--json"]));
+    let report: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(report["ready"], true);
+    assert!(report["checks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|check| { check["check"] == "listen-addresses" && check["status"] == "not-checked" }));
+}
+
+#[test]
+fn test_cli_doctor_reports_environment_file_failure_without_disclosing_contents() {
+    let project = Project::new(
+        "services:\n  api:\n    command: sh -c 'exit 0'\n    cwd: service\n    env-file: missing.env\n",
+    );
+    fs::create_dir(project.path().join("service")).unwrap();
+    let output = project.invoke(&["doctor", "--json"]);
+    assert!(!output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    let report: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(report["ready"], false);
+    assert!(report["checks"].as_array().unwrap().iter().any(|check| {
+        check["check"] == "env-file"
+            && check["status"] == "failed"
+            && check["summary"] == "Environment file could not be loaded."
+    }));
+}
+
+#[test]
 fn test_cli_script_ready_uses_service_context_and_static_checks_do_not_execute() {
     let project = Project::new("services:\n  worker:\n    command: sleep 60\n    cwd: service\n    env-file: .env\n    env: {OVERRIDE: explicit}\n    restart: {policy: never}\n    healthcheck: {type: script, command: 'sh probe.sh', interval: 50ms, timeout: 1s, retries: 2}\n  web:\n    command: sh -c 'echo web-ready; exec sleep 60'\n    restart: {policy: never}\n    depends-on: [{service: worker, condition: script-ready}]\n");
     fs::create_dir(project.path().join("service")).unwrap();

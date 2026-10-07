@@ -89,6 +89,7 @@ services:
     command: npm run dev
     cwd: ./backend
     env-file: .env.local
+    listen: [127.0.0.1:3000]
     healthcheck:
       type: http
       url: http://127.0.0.1:3000/health
@@ -178,6 +179,7 @@ Diagram arrows point from each prerequisite to the service that depends on it; e
 | `devd top` | Inspect a running stack and its live logs in an interactive terminal |
 | `devd events [service] [--type TYPE] [--since DURATION] [--tail N] [--cursor RUN_UUID:NEXT_SEQUENCE] [--json] [--follow \| --stored]` | Query lifecycle facts, cursors and history gaps |
 | `devd explain <service> [--json] [--stored]` | Explain the latest deterministic failure evidence for one service |
+| `devd doctor [--json]` | Check configured service prerequisites without starting them |
 | `devd logs [service] [--tail N] [--level info|warn|error] [--since DURATION] [--grep TEXT] [--follow \| --stored]` | Query live memory or offline disk logs; follow live output |
 | `devd check` | Validate configuration, command quoting, dependencies, and supported settings |
 | `devd graph [--format text|dot|mermaid]` | Show dependency edges and startup layers, or export a diagram |
@@ -273,6 +275,13 @@ devd explain api --stored --json
 
 Online mode connects to the running supervisor and does not reread YAML. `--stored` reads retained event files after the writer has stopped, works even when the YAML has been removed, and labels the report `source: stored`; historical PIDs are evidence only. A report with `complete: false` has explicit gaps or omitted gap diagnostics, so its conclusion is bounded by retained history. Without matching events, the report says it cannot determine the cause and points to the next read-only checks. No mode performs automatic remediation.
 
+**Check the launch environment before starting.** `devd doctor` checks service working directories, dotenv files, whether service and script-probe programs can be found, and explicitly declared TCP listen addresses. It does not start services, execute commands or probes, or change files and processes. Declare ports with `listen` (for example `listen: [127.0.0.1:3000]`); healthcheck targets are not assumed to belong to the service. Listen checks briefly bind and release each address, so they report only whether it was available at that instant. Without declarations the report says `not-checked`. Use `--profile` to inspect the selected merged configuration and `--json` for a versioned machine-readable report. Failures return a nonzero exit code; a clean report cannot guarantee that a later launch will succeed.
+
+```bash
+devd doctor
+devd doctor --profile staging --json
+```
+
 **Logs stay in memory by default.** devd retains the latest 1000 entries across the stack, with a 16 KiB limit per line. Without persistence they cannot be queried after shutdown. `logs --follow` starts with the requested tail and then streams new entries until Ctrl+C or supervisor shutdown; a lagging follower exits with an error. Up to 16 followers can connect at once, leaving room for control commands. Slow foreground output can lose live entries, with a warning; a broken foreground output pipe triggers service cleanup.
 
 **Keep logs after shutdown when you need them.** Start with `devd start --persist-logs`, then use `devd logs --stored` after the supervisor exits. For example:
@@ -291,7 +300,7 @@ Disk writes run independently of service capture using a bounded subscription. A
 
 Filter history or a live stream with `--level`, `--since`, and `--grep`, alone or together. For example, `devd logs api --level error --since 5m --grep database --tail 50 --follow` first shows up to 50 matching retained entries, then matching new ones. Level matches exactly; `--grep` is literal and case-sensitive against the raw message. `--since` accepts `ms`, `s`, `m`, or `h` (for example `500ms` or `2h`) and fixes its cutoff when the command starts. Filtering cannot recover entries evicted from memory.
 
-**Diagnostics describe the running instance.** `status` returns an error when the supervisor is offline; leftover state files are for diagnosis. If you break the configuration file while devd is running, you can still use `stop`, `status`, `logs`, `restart`, and `top`. `check` performs static validation; executable availability, environment files, and probe endpoints are checked at runtime. Failed commands return a nonzero exit code.
+**Diagnostics describe the right layer.** `status` returns an error when the supervisor is offline; leftover state files are for diagnosis. If you break the configuration file while devd is running, you can still use `stop`, `status`, `logs`, `restart`, and `top`. `check` validates configuration structure and relationships; `doctor` checks launch prerequisites without executing them; health probes run only under the supervisor. Failed commands return a nonzero exit code.
 
 `devd top` connects to the same running instance as `status` and `logs`. It shows service state, PID, restart count, CPU/RSS and a bounded live log tail. Use Up/Down (or j/k) to select a service, `r` to restart it, Page Up/Down to scroll logs, and End to return to the latest entries. `s` asks for confirmation before stopping the entire stack; Enter or `s` confirms, Esc or `n` cancels. `q` and Ctrl+C only close the view. It requires an interactive terminal and does not start a supervisor.
 

@@ -128,6 +128,7 @@ impl HealthChecker {
             HealthCheck::Script { command, .. } => Probe::Script {
                 config: Box::new(ServiceConfig {
                     command: command.clone(),
+                    listen: Vec::new(),
                     cwd: None,
                     env: Default::default(),
                     env_file: None,

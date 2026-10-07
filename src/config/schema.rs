@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::PathBuf, time::Duration};
+use std::{collections::HashMap, net::SocketAddr, path::PathBuf, time::Duration};
 
 use serde::{de::Deserializer, Deserialize, Serialize};
 
@@ -14,6 +14,9 @@ pub struct DevdConfig {
 #[serde(deny_unknown_fields)]
 pub struct ServiceConfig {
     pub command: String,
+    /// TCP addresses this service intends to bind; used by `devd doctor`.
+    #[serde(default)]
+    pub listen: Vec<SocketAddr>,
     #[serde(default)]
     pub cwd: Option<PathBuf>,
     #[serde(default)]

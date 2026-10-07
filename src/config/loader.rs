@@ -153,6 +153,26 @@ services:
     }
 
     #[test]
+    fn test_profile_replaces_listen_addresses() {
+        let yaml = r#"
+version: "1"
+services:
+  api:
+    command: api
+    listen: [127.0.0.1:3000]
+profiles:
+  local:
+    services:
+      api:
+        listen: [127.0.0.1:4000]
+"#;
+        let base = ConfigLoader::from_str_profile(yaml, "test.yml", None).unwrap();
+        let local = ConfigLoader::from_str_profile(yaml, "test.yml", Some("local")).unwrap();
+        assert_eq!(base.services["api"].listen[0].port(), 3000);
+        assert_eq!(local.services["api"].listen[0].port(), 4000);
+    }
+
+    #[test]
     fn test_config_loader_from_str_with_optional_fields() {
         let contents = r#"
 version: "1"

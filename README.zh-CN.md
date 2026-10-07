@@ -87,6 +87,7 @@ services:
     command: npm run dev
     cwd: ./backend
     env-file: .env.local
+    listen: [127.0.0.1:3000]
     healthcheck:
       type: http
       url: http://127.0.0.1:3000/health
@@ -176,6 +177,7 @@ devd graph --profile staging --format mermaid > dependencies.mmd
 | `devd top` | 在交互式终端查看运行中的服务和实时日志 |
 | `devd events [service] [--type TYPE] [--since DURATION] [--tail N] [--cursor RUN_UUID:NEXT_SEQUENCE] [--json] [--follow \| --stored]` | 查询生命周期经过、游标与历史缺口 |
 | `devd explain <service> [--json] [--stored]` | 基于确定性事件证据解释一个服务最近的故障或状态 |
+| `devd doctor [--json]` | 检查服务启动前置条件，不启动服务 |
 | `devd logs [service] [--tail N] [--level info|warn|error] [--since DURATION] [--grep TEXT] [--follow \| --stored]` | 查询内存或离线磁盘日志，跟随实时输出 |
 | `devd check` | 校验配置、命令引号、依赖关系及当前支持的设置 |
 | `devd graph [--format text|dot|mermaid]` | 显示依赖边与启动层，或导出依赖图 |
@@ -271,6 +273,13 @@ devd explain api --stored --json
 
 在线模式连接正在运行的 supervisor，不重新读取 YAML。`--stored` 在 writer 停止后读取保留的事件文件，即使 YAML 已删除也可用；报告会标记 `source: stored`，历史 PID 只作为证据。报告中的 `complete: false` 表示存在明确缺口或被省略的缺口，结论只对保留下来的历史负责。没有匹配事件时会明确说无法确定原因，并给出下一步只读检查。任何模式都不会自动修复。
 
+**启动前先查环境。** `devd doctor` 检查服务工作目录、dotenv 文件、服务命令和脚本探测程序是否可找到，以及显式声明的 TCP 监听地址。它不会启动服务、执行命令或探测脚本，也不会改动文件和进程。用 `listen` 声明服务自己的端口，例如 `listen: [127.0.0.1:3000]`；健康检查目标不会被当作服务自有端口。检查会短暂绑定后释放地址，只说明检查当时是否可用。没有声明时会标记为 `not-checked`。可用 `--profile` 检查合并后的配置，用 `--json` 获取带版本的机器可读报告。发现失败时返回非零退出码；通过检查不代表之后启动必然成功。
+
+```bash
+devd doctor
+devd doctor --profile staging --json
+```
+
 **日志默认保存在内存里。** 保留全栈最近 1000 条，单行最多 16 KiB；没有开启持久化时，停止后无法再查询。`logs --follow` 先输出指定条数的历史日志，再持续接收新日志，按 Ctrl+C 或 supervisor 停止时退出；跟随者落后过多会报错退出。最多同时连接 16 个跟随者，为控制命令保留连接槽位。前台输出过慢时会丢弃部分实时条目并告警；前台输出管道断开会触发服务清理。
 
 **需要留案底，就显式写盘。** 用 `devd start --persist-logs` 启动，退出后用 `devd logs --stored` 查询：
@@ -289,7 +298,7 @@ devd logs api --stored --level error --since 1h --tail 50
 
 `--level`、`--since`、`--grep` 可单独使用或组合，用于筛选历史和实时日志。例如 `devd logs api --level error --since 5m --grep database --tail 50 --follow` 先显示最多 50 条匹配的内存历史，再持续接收匹配的新日志。级别精确匹配；`--grep` 对原始消息做区分大小写的字面匹配。`--since` 支持 `ms`、`s`、`m`、`h`（如 `500ms`、`2h`），在命令发起时固定截止时间。筛选无法找回已从内存淘汰的日志。
 
-**诊断反映当前实例。** `status` 离线时返回错误，遗留状态文件仅用于诊断。配置内容被改坏后，仍可通过活实例执行 `stop`、`status`、`logs`、`restart` 和 `top`。`check` 做静态校验，可执行文件、环境文件和探测端点是否可用，要到运行时确认。命令失败返回非零退出码。
+**诊断各管一层。** `status` 离线时返回错误，遗留状态文件仅用于诊断。配置内容被改坏后，仍可通过活实例执行 `stop`、`status`、`logs`、`restart` 和 `top`。`check` 校验配置结构和关系，`doctor` 不执行项目命令，只检查启动前置条件；健康探测只由 supervisor 在运行时执行。命令失败返回非零退出码。
 
 `devd top` 连接与 `status`、`logs` 相同的运行实例，展示服务状态、PID、重启次数、CPU／RSS 和有界的实时日志。上下方向键（或 j/k）选服务，`r` 重启选中服务，Page Up/Down 翻日志，End 回到最新记录。`s` 会先要求确认停止整个服务栈；Enter 或再次按 `s` 确认，Esc 或 `n` 取消。`q` 和 Ctrl+C 只退出界面。需要交互式终端，也不会自行启动 supervisor。
 

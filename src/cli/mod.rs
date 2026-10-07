@@ -1,3 +1,4 @@
+mod doctor;
 mod events;
 mod explain;
 mod graph;
@@ -94,6 +95,8 @@ enum Command {
     Events(events::Args),
     /// Explain the latest deterministic cause for one service.
     Explain(explain::Args),
+    /// Inspect local service prerequisites without starting or executing them.
+    Doctor(doctor::Args),
     /// Print buffered logs, or query stored logs after shutdown (oldest first).
     Logs {
         service: Option<String>,
@@ -250,6 +253,9 @@ impl Cli {
             }
             Command::Events(args) => events::run(args, &socket, &state_dir).await?,
             Command::Explain(args) => explain::run(args, &socket, &state_dir).await?,
+            Command::Doctor(args) => {
+                doctor::run(args, &config_path, self.profile.as_deref()).await?;
+            }
             Command::Check => {
                 ServiceManager::new(
                     load_config(&config_path, self.profile.as_deref()).await?,

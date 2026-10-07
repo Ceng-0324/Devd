@@ -394,6 +394,7 @@ devd/
 │   │
 │   ├── cli/                   # Implemented CLI layer
 │   │   ├── mod.rs             # clap, paths, commands and presentation
+│   │   ├── doctor.rs          # Read-only local launch prerequisite report
 │   │   ├── graph.rs           # Text, DOT and Mermaid dependency views
 │   │   ├── protocol.rs        # Bounded local request/response transport
 │   │   ├── server.rs          # Foreground runtime and client lifecycle
@@ -469,6 +470,8 @@ pub struct DevdConfig {
 #[derive(Debug, Deserialize)]
 pub struct ServiceConfig {
     pub command: String,
+    #[serde(default)]
+    pub listen: Vec<SocketAddr>,
     #[serde(default)]
     pub cwd: Option<PathBuf>,
     #[serde(default)]

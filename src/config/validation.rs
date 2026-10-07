@@ -55,6 +55,12 @@ impl DevdConfig {
                     "command must be non-empty and contain no NUL bytes",
                 ));
             }
+            if service.listen.iter().any(|address| address.port() == 0) {
+                return Err(invalid(
+                    format!("{prefix}.listen"),
+                    "listening port must be between 1 and 65535",
+                ));
+            }
             if let Some(limits) = &service.limits {
                 if limits.on_exceed == super::ResourceLimitAction::Restart
                     && service.restart.policy == RestartPolicyType::Never
@@ -376,6 +382,17 @@ mod tests {
                 matches!(error, ConfigValidationError::InvalidField { field, .. } if field == "services.api.command")
             );
         }
+    }
+
+    #[test]
+    fn test_config_validation_rejects_ephemeral_listen_ports() {
+        let error = validate("  api: {command: api, listen: ['127.0.0.1:0']}\n").unwrap_err();
+        assert!(matches!(
+            error,
+            ConfigValidationError::InvalidField { field, .. }
+                if field == "services.api.listen"
+        ));
+        validate("  api: {command: api, listen: ['127.0.0.1:3000', '[::1]:3001']}\n").unwrap();
     }
 
     #[test]

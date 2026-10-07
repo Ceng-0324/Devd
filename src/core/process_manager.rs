@@ -360,28 +360,7 @@ async fn spawn_child(
     if let Some(cwd) = &config.cwd {
         command.current_dir(cwd);
     }
-    if let Some(env_file) = &config.env_file {
-        let path = config
-            .cwd
-            .as_ref()
-            .map_or_else(|| env_file.clone(), |cwd| cwd.join(env_file));
-        let contents =
-            tokio::fs::read(&path)
-                .await
-                .map_err(|source| ProcessError::EnvironmentRead {
-                    service: service.to_owned(),
-                    path: path.clone(),
-                    source,
-                })?;
-        for entry in dotenvy::from_read_iter(contents.as_slice()) {
-            let (key, value) = entry.map_err(|source| ProcessError::EnvironmentParse {
-                service: service.to_owned(),
-                path: path.clone(),
-                source,
-            })?;
-            command.env(key, value);
-        }
-    }
+    command.envs(load_environment_file(service, config).await?);
     command.envs(&config.env);
     #[cfg(unix)]
     let spawned = command.spawn().map(|child| {
@@ -398,7 +377,7 @@ async fn spawn_child(
     })
 }
 
-pub(super) fn parse_command(service: &str, command: &str) -> Result<Vec<String>, ProcessError> {
+pub(crate) fn parse_command(service: &str, command: &str) -> Result<Vec<String>, ProcessError> {
     let arguments = shell_words::split(command).map_err(|source| ProcessError::CommandParse {
         service: service.to_owned(),
         source,
@@ -409,6 +388,42 @@ pub(super) fn parse_command(service: &str, command: &str) -> Result<Vec<String>,
         });
     }
     Ok(arguments)
+}
+
+pub(crate) fn environment_file_path(config: &ServiceConfig) -> Option<PathBuf> {
+    config.env_file.as_ref().map(|env_file| {
+        config
+            .cwd
+            .as_ref()
+            .map_or_else(|| env_file.clone(), |cwd| cwd.join(env_file))
+    })
+}
+
+pub(crate) async fn load_environment_file(
+    service: &str,
+    config: &ServiceConfig,
+) -> Result<Vec<(String, String)>, ProcessError> {
+    let Some(path) = environment_file_path(config) else {
+        return Ok(Vec::new());
+    };
+    let contents =
+        tokio::fs::read(&path)
+            .await
+            .map_err(|source| ProcessError::EnvironmentRead {
+                service: service.to_owned(),
+                path: path.clone(),
+                source,
+            })?;
+    let mut environment = Vec::new();
+    for entry in dotenvy::from_read_iter(contents.as_slice()) {
+        let (key, value) = entry.map_err(|source| ProcessError::EnvironmentParse {
+            service: service.to_owned(),
+            path: path.clone(),
+            source,
+        })?;
+        environment.push((key, value));
+    }
+    Ok(environment)
 }
 
 #[cfg(test)]

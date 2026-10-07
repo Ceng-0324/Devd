@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Add read-only `devd doctor` environment reports in text or versioned JSON,
+  checking service directories, dotenv files, executable discovery, script
+  probe executables, and explicitly declared TCP listen addresses without
+  running commands or changing processes. Profiles select the effective
+  configuration; bind checks are momentary observations.
+- Add optional service `listen` declarations for owned TCP addresses, separate
+  from healthcheck targets, and reject ephemeral port zero in configuration.
 - Add read-only `explain` reports for deterministic, event-backed service failure
   diagnosis in live and stored history, with cited evidence and explicit gaps.
 - Add `events` text/JSON queries with service/type/time filters, filtered tails,
