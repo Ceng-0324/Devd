@@ -1,14 +1,14 @@
-name: MVP Task
-description: Track a scoped implementation or validation task for the devd MVP.
-title: "[MVP] "
+name: Development Task
+description: Track one scoped design, implementation, or validation task for devd.
+title: "[Task] "
 labels:
-  - "stage:mvp"
+  - "enhancement"
 assignees: []
 body:
   - type: markdown
     attributes:
       value: |
-        Keep this issue focused on one independently deliverable task.
+        Keep this issue focused on one independently deliverable task. Link prerequisite issues and keep acceptance criteria testable.
 
   - type: textarea
     id: problem
