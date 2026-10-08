@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import tarfile
+import tomllib
 import zipfile
 
 
@@ -28,13 +29,14 @@ def main():
     if subprocess.check_output(["git", "status", "--porcelain", "--untracked-files=no"], text=True).strip():
         raise SystemExit("commit tracked source changes before packaging a release")
     version = subprocess.check_output([str(binary.resolve()), "--version"], text=True).strip()
+    cargo_version = tomllib.loads(Path("Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
+    if version != f"devd {cargo_version}":
+        raise SystemExit("release binary version does not match Cargo.toml; rebuild it")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     version_path = args.output_dir / "VERSION"
     revision_path = args.output_dir / "REVISION"
     version_path.write_text(version + "\n", encoding="utf-8", newline="\n")
     revision_path.write_text(revision + "\n", encoding="utf-8", newline="\n")
-    subprocess.run([sys.executable, "examples/local-stack/smoke.py", "--binary", str(binary),
-                    "--duration", "5", "--restarts", "2"], check=True)
     files = [(binary, binary.name)] + [(Path(name), name) for name in (
         "LICENSE", "README.md", "README.zh-CN.md")]
     files.extend([(version_path, "VERSION"), (revision_path, "REVISION")])
@@ -43,20 +45,17 @@ def main():
         with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as output:
             for source, name in files:
                 output.write(source, name)
-        with zipfile.ZipFile(archive) as output:
-            assert output.testzip() is None
-            assert set(output.namelist()) == {name for _, name in files}
     else:
         with tarfile.open(archive, "w:gz") as output:
             for source, name in files:
                 output.add(source, arcname=name)
-        with tarfile.open(archive) as output:
-            assert set(output.getnames()) == {name for _, name in files}
     with archive.open("rb") as source:
         digest = hashlib.file_digest(source, "sha256").hexdigest()
     Path(str(archive) + ".sha256").write_text(
         f"{digest}  {archive.name}\n", encoding="utf-8", newline="\n"
     )
+    subprocess.run([sys.executable, "scripts/verify-release.py", str(archive),
+                    "--version", cargo_version, "--revision", revision, "--smoke"], check=True)
     print(f"Verified {archive} ({version}, {revision})")
 
 

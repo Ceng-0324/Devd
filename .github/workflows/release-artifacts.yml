@@ -58,7 +58,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Exercise release binary recovery
+      - name: Verify archive provenance and packaged binary recovery
         env:
           DEVD_RELEASE_TARGET: ${{ matrix.target }}
         run: python scripts/package-release.py "$DEVD_RELEASE_TARGET"

@@ -1,13 +1,13 @@
 [package]
 name = "devd"
-version = "0.5.0-alpha.1"
+version = "0.6.0-alpha.1"
 edition = "2021"
 rust-version = "1.95"
 description = "A lightweight local development service supervisor"
 license = "MIT"
 repository = "https://github.com/Ceng-0324/Devd"
 readme = "README.md"
-exclude = ["/TECHNICAL_DESIGN.md"]
+exclude = ["/TECHNICAL_DESIGN.md", "/AGENTS.md"]
 keywords = ["development", "process", "supervisor", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 

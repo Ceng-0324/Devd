@@ -332,3 +332,87 @@ mod tests {
         );
     }
 }
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+    use std::{os::windows::fs::symlink_file, process::Command};
+
+    #[test]
+    fn test_windows_symlink_targets_dangling_cycles_and_replacement() {
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("target");
+        fs::write(&target, "initial").unwrap();
+        symlink_file("target", root.path().join("link"))
+            .expect("native Windows validation requires symlink creation privileges");
+        let requirement = PathRequirement {
+            kind: PathRequirementType::Symlink,
+            path: "link".into(),
+        };
+        assert!(evaluate(&requirement, Some(root.path())).is_ok());
+        fs::remove_file(&target).unwrap();
+        assert_eq!(
+            evaluate(&requirement, Some(root.path())).unwrap_err().kind,
+            PathRequirementFailureKind::DanglingSymlink
+        );
+        symlink_file("link", &target).unwrap();
+        assert_eq!(
+            evaluate(&requirement, Some(root.path())).unwrap_err().kind,
+            PathRequirementFailureKind::SymlinkCycle
+        );
+        fs::remove_file(&target).unwrap();
+        fs::write(root.path().join("next"), "replacement").unwrap();
+        fs::rename(root.path().join("next"), &target).unwrap();
+        assert!(evaluate(&requirement, Some(root.path())).is_ok());
+        std::os::windows::fs::symlink_dir("directory", root.path().join("directory-link")).unwrap();
+        fs::create_dir(root.path().join("directory")).unwrap();
+        let directory = PathRequirement {
+            kind: PathRequirementType::Symlink,
+            path: "directory-link".into(),
+        };
+        assert!(evaluate(&directory, Some(root.path())).is_ok());
+    }
+
+    #[test]
+    fn test_windows_file_read_permission_loss_and_recovery() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("private-input");
+        fs::write(&path, "contents").unwrap();
+        let output = Command::new("whoami.exe").output().unwrap();
+        assert!(output.status.success());
+        let account = String::from_utf8(output.stdout).unwrap().trim().to_owned();
+        struct RestoreAccess<'a>(&'a Path, &'a str);
+        impl Drop for RestoreAccess<'_> {
+            fn drop(&mut self) {
+                let result = Command::new("icacls.exe")
+                    .arg(self.0)
+                    .args(["/remove:d", self.1])
+                    .output();
+                if !result.is_ok_and(|output| output.status.success()) {
+                    eprintln!("failed to restore test-file ACL");
+                }
+            }
+        }
+        let requirement = PathRequirement {
+            kind: PathRequirementType::File,
+            path: path.clone(),
+        };
+        assert!(evaluate(&requirement, None).is_ok());
+        let restore = RestoreAccess(&path, &account);
+        let output = Command::new("icacls.exe")
+            .arg(&path)
+            .arg("/deny")
+            .arg(format!("{account}:(RD)"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let failure = evaluate(&requirement, None).unwrap_err();
+        drop(restore);
+        assert_eq!(failure.kind, PathRequirementFailureKind::NotReadable);
+        assert!(evaluate(&requirement, None).is_ok());
+    }
+}

@@ -18,13 +18,13 @@ Broken file dependencies still need fixing. devd takes care of the services you 
 
 ## What it does
 
-devd is a local development service manager written in Rust. **v0.5.0-alpha.1 is available for Linux, macOS, and Windows.**
+devd is a local development service manager written in Rust. **This checkout prepares v0.6.0-alpha.1; v0.5.0-alpha.1 is the latest published prerelease.**
 
-v0.4 brings opt-in disk logs, an interactive terminal view, resource warnings and explicitly enabled recovery, custom script health checks, and Windows process supervision. Download Linux x86_64, macOS Apple Silicon, or Windows x86_64 binaries and their SHA-256 checksums from [GitHub Releases](https://github.com/Ceng-0324/Devd/releases/tag/v0.4.0-alpha.1), or install from source. The release passed native CI and recovery smoke tests on all three platforms.
+v0.6 brings the original accident a little closer to something you can catch: declare required files, directories, and symlinks before a service starts, then opt in to observing them while it runs. When configuration changes, preview the affected services and explicitly apply the reviewed plan. File monitoring reports what changed; it does not repair files or authorize restarts. Reload failures stop the whole stack without automatic rollback. The candidate still needs native CI and archive verification on Linux, macOS, and Windows before publication.
 
 v0.5 adds `events` to trace what happened, `explain` to connect failures to recorded evidence, and `doctor` to check the environment before starting. It also adds the `listen` setting for declared TCP ports. Download Linux x86_64, macOS Apple Silicon, or Windows x86_64 binaries and their SHA-256 checksums from [GitHub Releases](https://github.com/Ceng-0324/Devd/releases/tag/v0.5.0-alpha.1). The release passed native CI and recovery smoke tests on all three platforms.
 
-It also includes CPU and memory samples, opt-in restarts after dependency recovery, named configuration profiles, configuration snapshots, dependency diagram export, and log filters.
+It also includes opt-in disk logs, an interactive terminal view, CPU and memory samples, resource warnings and explicitly enabled recovery, custom script health checks, opt-in restarts after dependency recovery, named configuration profiles, configuration snapshots, dependency diagram export, and log filters.
 
 Describe your services and their dependencies in `devd.yml`, then run `devd start` in the foreground. Use another terminal to check status, read logs, or restart a service.
 
@@ -189,7 +189,7 @@ devd graph --profile staging --format mermaid > dependencies.mmd
 
 Diagram arrows point from each prerequisite to the service that depends on it; edge labels show the readiness condition. Services without dependencies also appear. `graph` validates the configuration but does not start services or create runtime state. DOT and Mermaid output are source text for their respective renderers, not image files.
 
-### Preview and apply configuration changes (v0.6 development)
+### Preview and apply configuration changes (v0.6)
 
 Editing one service can affect half the stack. Before restarting anything, ask the running supervisor what would change:
 
@@ -225,7 +225,7 @@ Choose exactly one of `--dry-run` or `--apply`. Preview validates YAML, quoting,
 | `devd start [--persist-logs] [--persist-events]` | Start the stack in the foreground, optionally retaining logs and lifecycle events with separate size/retention options |
 | `devd stop` | Request ordered shutdown; the foreground process exits after cleanup |
 | `devd restart <service>` | Restart one service using the current effective configuration, rechecking dependencies |
-| `devd reload --dry-run / --apply --plan ID [--candidate PATH] [--json]` | Preview or explicitly apply affected service changes (v0.6 development) |
+| `devd reload --dry-run / --apply --plan ID [--candidate PATH] [--json]` | Preview or explicitly apply affected service changes (v0.6) |
 | `devd status [--json]` | Show live state, PIDs, CPU / RSS, restart counts, and diagnostics |
 | `devd top` | Inspect a running stack and its live logs in an interactive terminal |
 | `devd events [service] [--type TYPE] [--since DURATION] [--tail N] [--cursor RUN_UUID:NEXT_SEQUENCE] [--json] [--follow \| --stored]` | Query lifecycle facts, cursors and history gaps |
@@ -386,7 +386,7 @@ services:
 
 The same metric must exceed its threshold in 3 consecutive valid samples (roughly one sample per second). A value within range or a missing value resets that metric's count; CPU warmup resets only CPU's count. The decision is retained until that process generation ends. devd stops the process group, drains logs, applies the existing backoff, and rechecks dependencies before starting again. Resource, crash, health, and dependency recovery restarts share the cumulative restart budget; exhaustion fails the service and shuts down the stack. Stop interrupts backoff, and manual restart can supersede it. The reason appears in logs and failure diagnostics. `on-exceed: restart` conflicts with `restart.policy: never` and is rejected before startup. Profiles replace the entire `limits` block, so a replacement that omits `on-exceed` returns to `warn`; `limits: null` disables thresholds. Configuration changes take effect on the next supervisor start or through explicit selective reload, without root privileges or an interactive permission prompt.
 
-The current scope is local process management. `init` creates a starter file; project scanning and interactive templates are planned. File watching and automatic reload remain deferred; manual selective reload is available in v0.6 development.
+The current scope is local process management. `init` creates a starter file; project scanning and interactive templates are planned. File watching and automatic reload remain deferred; v0.6 provides manual selective reload.
 
 Configuration rejects unknown fields and invalid `limits` settings. YAML values are literal; `${VAR}` expansion is not implemented. With `backoff: exponential`, retries start at `initial-delay`, double with the cumulative restart count, and cap at `max-delay` (default 60s, must be at least `initial-delay`). Healthy probes do not reset that count. Fixed backoff ignores `max-delay`; either wait can be interrupted by stopping the service.
 

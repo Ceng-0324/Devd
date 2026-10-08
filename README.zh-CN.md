@@ -16,13 +16,13 @@
 
 ## 它能做什么
 
-devd 是用 Rust 编写的本地开发服务管理器。**v0.5.0-alpha.1 已发布，支持 Linux、macOS 和 Windows。**
+devd 是用 Rust 编写的本地开发服务管理器。**当前源码正在准备 v0.6.0-alpha.1；最新已发布预发布版本是 v0.5.0-alpha.1。**
 
-v0.4 补上了可选磁盘日志、交互式终端界面、资源告警与显式授权的自动恢复、自定义脚本健康检查，以及 Windows 进程管理。可以从 [GitHub Releases](https://github.com/Ceng-0324/Devd/releases/tag/v0.4.0-alpha.1) 下载 Linux x86_64、macOS Apple Silicon、Windows x86_64 制品及 SHA-256 校验文件，也可以从源码安装。该版本已通过三平台原生 CI 和故障恢复演练。
+v0.6 开始能提前发现当初那场事故里的问题：启动前声明必需的文件、目录和软链接，运行中可以显式开启监测；改了配置，先看影响范围，再明确应用审阅过的计划。文件监测只报告变化，不会修文件，也不等于授权重启。重载失败会停止全栈，不自动回滚。候选版本仍需完成 Linux、macOS 和 Windows 原生 CI 与归档核验后才能发布。
 
 v0.5 补上了诊断闭环：`events` 查经过，`explain` 根据记录解释故障，`doctor` 在启动前检查环境，并新增用于声明 TCP 监听端口的 `listen` 配置。可以从 [GitHub Releases](https://github.com/Ceng-0324/Devd/releases/tag/v0.5.0-alpha.1) 下载 Linux x86_64、macOS Apple Silicon、Windows x86_64 制品及 SHA-256 校验文件。该版本已通过三平台原生 CI 和故障恢复演练。
 
-已有的 CPU／内存采样、依赖恢复联动、多环境配置、配置快照、依赖图导出和日志筛选继续保留。
+已有的可选磁盘日志、交互式终端界面、CPU／内存采样、资源告警与显式授权的自动恢复、自定义脚本健康检查、依赖恢复联动、多环境配置、配置快照、依赖图导出和日志筛选继续保留。
 
 一份 `devd.yml` 描述服务和依赖，`devd start` 在前台管理它们。你可以继续在另一个终端查状态、翻日志或重启某个服务。
 
@@ -187,7 +187,7 @@ devd graph --profile staging --format mermaid > dependencies.mmd
 
 图中的箭头从前置服务指向依赖它的服务，边上的标签是就绪条件；没有依赖边的服务也会显示。`graph` 会校验配置，但不启动服务或创建运行状态。DOT 和 Mermaid 输出是供相应渲染器使用的源码，不是图片文件。
 
-### 配置变更预览与应用（v0.6 开发中）
+### 配置变更预览与应用（v0.6）
 
 改一个服务，可能牵动半个栈。动进程之前，先让正在运行的 supervisor 列出影响：
 
@@ -223,7 +223,7 @@ devd reload --apply --plan 'sha256:<64位十六进制摘要>' --candidate devd.n
 | `devd start [--persist-logs] [--persist-events]` | 前台启动全栈，可选保留日志和生命周期事件，分别设置大小与保留数 |
 | `devd stop` | 请求有序关闭，前台进程完成清理后退出 |
 | `devd restart <service>` | 用当前有效配置重启一个服务，重新检查依赖 |
-| `devd reload --dry-run / --apply --plan ID [--candidate PATH] [--json]` | 预览或显式应用受影响服务的配置变化（v0.6 开发中） |
+| `devd reload --dry-run / --apply --plan ID [--candidate PATH] [--json]` | 预览或显式应用受影响服务的配置变化（v0.6） |
 | `devd status [--json]` | 查看实时状态、PID、CPU／RSS、重启次数和诊断信息 |
 | `devd top` | 在交互式终端查看运行中的服务和实时日志 |
 | `devd events [service] [--type TYPE] [--since DURATION] [--tail N] [--cursor RUN_UUID:NEXT_SEQUENCE] [--json] [--follow \| --stored]` | 查询生命周期经过、游标与历史缺口 |
@@ -384,7 +384,7 @@ services:
 
 同一指标连续 3 次有效采样超限才触发，大约每秒采样一次。恢复到阈值内或缺样会重置该指标的计数；CPU 预热只重置 CPU 计数。触发决定保留到当前进程代次结束。devd 停止进程组、排空日志，沿用现有退避并重新检查依赖后再启动。超限、崩溃、健康检查和依赖恢复重启共用累计预算；耗尽后服务失败并清理全栈。停止可以打断退避，手动重启可以接管等待，动作原因会写入日志和失败诊断。`on-exceed: restart` 与 `restart.policy: never` 冲突，启动前直接报错。profile 整体替换 `limits`，替换时省略 `on-exceed` 会回到 `warn`，`limits: null` 清除阈值。配置修改在下次启动 supervisor 或显式选择性重载时生效，不需要 root 权限或运行中弹窗确认。
 
-当前范围是本地进程管理。`init` 可生成初始配置；项目扫描、交互式模板和文件监听自动重载仍在后续规划里；v0.6 开发中已支持手动选择性重载。
+当前范围是本地进程管理。`init` 可生成初始配置；项目扫描、交互式模板和文件监听自动重载仍在后续规划里；v0.6 提供手动选择性重载。
 
 配置会拒绝未知字段和无效的 `limits`。YAML 值按字面使用，尚未实现 `${VAR}` 替换。`backoff: exponential` 从 `initial-delay` 开始，随累计重启次数翻倍，到 `max-delay` 封顶（默认 60s，不能小于初始延时）；健康检查成功不会重置计数。fixed 不使用 `max-delay`；两种等待均可被停止操作中断。
 

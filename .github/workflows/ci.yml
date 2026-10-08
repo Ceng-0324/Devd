@@ -37,6 +37,8 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Run Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Verify Cargo package
+        run: cargo package --locked
 
   test:
     name: Build and test (${{ matrix.os }})
@@ -71,9 +73,11 @@ jobs:
           cargo run --locked -- check --config examples/profiles/devd.yml --profile dev
           cargo run --locked -- check --config examples/profiles/devd.yml --profile staging
           cargo run --locked -- check --config examples/profiles/devd.yml --profile prod
-      - name: Install Python for the example stack
+      - name: Install Python for validation
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Test release verification and public package contents
+        run: python -m unittest discover -s scripts -p 'test_*.py' -v
       - name: Exercise API, web and worker recovery
         run: python examples/local-stack/smoke.py --duration 5 --restarts 2

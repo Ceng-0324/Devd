@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased — v0.6 development
+## v0.6.0-alpha.1 — Unreleased Candidate
+
+Prerelease candidate for local development on Linux, macOS, and Windows.
+Publication requires successful native CI and verified release archives for the
+same source SHA; see `RELEASING.md`. No automatic file repair, file-triggered
+restart, automatic reload, or transactional rollback is included.
 
 - Apply a reviewed configuration plan with `reload --apply --plan ID`. Reject
   stale plans before process changes, stop affected old services in reverse
@@ -19,6 +24,11 @@
   check them before spawn and through `doctor`. Optionally observe changes with
   `monitor-requires`, deduplicated events, and evidence in `explain`, without
   authorizing restarts or changing user files.
+- Flush followed event and application-log output before waiting for more data,
+  including when stdout is redirected to a file.
+- Expand native filesystem and reload failure coverage, and verify release
+  archive checksums, exact public contents, version, and source revision before
+  running recovery smoke tests from the packaged binary.
 
 ## v0.5.0-alpha.1 — 2026-10-07
 

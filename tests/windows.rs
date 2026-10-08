@@ -1,5 +1,8 @@
 #![cfg(windows)]
 
+#[path = "support/http.rs"]
+mod http;
+
 use devd::{
     config::{HealthCheck, ServiceConfig},
     core::{health_check::HealthChecker, process_manager::ManagedProcess},
@@ -297,8 +300,38 @@ async fn test_windows_runtime_path_monitor_records_failure_and_recovery_without_
         first["services"]["worker"]["pid"]
     );
     assert_eq!(current["services"]["worker"]["restart_count"], 0);
+    assert!(cli(root.path(), &["restart", "worker"]).status.success());
+    let replacement: serde_json::Value =
+        serde_json::from_slice(&cli(root.path(), &["status", "--json"]).stdout).unwrap();
+    let generation = replacement["services"]["worker"]["event_generation"]
+        .as_u64()
+        .unwrap();
+    assert_ne!(
+        replacement["services"]["worker"]["event_generation"],
+        first["services"]["worker"]["event_generation"]
+    );
+    fs::remove_file(&input).unwrap();
+    wait_until(|| {
+        let output = cli(
+            root.path(),
+            &[
+                "events",
+                "worker",
+                "--json",
+                "--type",
+                "path-condition-changed",
+            ],
+        );
+        let batch: EventBatch = serde_json::from_slice(&output.stdout).unwrap();
+        batch
+            .entries
+            .iter()
+            .any(|event| event.generation == Some(generation))
+    })
+    .await;
     assert!(cli(root.path(), &["stop"]).status.success());
     wait_until(|| supervisor.0.try_wait().unwrap().is_some()).await;
+    fs::write(&input, "restore after stopping").unwrap();
     let output = cli(
         root.path(),
         &[
@@ -311,7 +344,22 @@ async fn test_windows_runtime_path_monitor_records_failure_and_recovery_without_
     );
     assert!(output.status.success());
     let batch: EventBatch = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(batch.entries.len(), 2);
+    assert_eq!(batch.entries.len(), 3);
+    let complete: EventBatch =
+        serde_json::from_slice(&cli(root.path(), &["events", "--stored", "--json"]).stdout)
+            .unwrap();
+    for stopped in complete
+        .entries
+        .iter()
+        .filter(|event| matches!(event.data, EventData::ServiceStopRequested { .. }))
+    {
+        assert!(!complete
+            .entries
+            .iter()
+            .any(|event| event.generation == stopped.generation
+                && event.sequence > stopped.sequence
+                && matches!(event.data, EventData::PathConditionChanged { .. })));
+    }
     assert!(!String::from_utf8_lossy(&output.stdout).contains("private file contents"));
     assert!(cli(root.path(), &["explain", "worker", "--stored"])
         .status
@@ -484,6 +532,183 @@ async fn test_windows_reload_preview_and_apply_preserve_unrelated_job() {
     wait_until(|| supervisor.0.try_wait().unwrap().is_some()).await;
     for pid in descendants(root.path()) {
         wait_until(|| !alive(pid)).await;
+    }
+}
+
+#[tokio::test]
+async fn test_windows_reload_rejects_stale_input_and_cleans_jobs_on_failure_or_stop() {
+    use devd::core::{
+        reload::{ReloadOutcome, ReloadPlan, ReloadReport},
+        service_manager::RuntimeSnapshot,
+    };
+
+    for interrupt in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let service = config(root.path(), "tree");
+        let mut document = serde_json::json!({
+            "version": "1", "services": {"worker": {
+                "command": service.command, "cwd": service.cwd, "env": service.env,
+                "restart": {"policy": "never"}
+            }}
+        });
+        let write = |name: &str, value: &serde_json::Value| {
+            fs::write(
+                root.path().join(name),
+                serde_yaml::to_string(value).unwrap(),
+            )
+            .unwrap();
+        };
+        write("devd.yml", &document);
+        let mut supervisor = Supervisor(
+            Command::new(env!("CARGO_BIN_EXE_devd"))
+                .args(["start", "--persist-events", "--color", "never"])
+                .current_dir(root.path())
+                .stdout(Stdio::null())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .unwrap(),
+        );
+        wait_until(|| !descendants(root.path()).is_empty()).await;
+        let before: RuntimeSnapshot =
+            serde_json::from_slice(&cli(root.path(), &["status", "--json"]).stdout).unwrap();
+        let old_pid = before.services["worker"].pid.unwrap();
+        document["services"]["worker"]["env"]["REVISION"] = "next".into();
+        write("candidate.yml", &document);
+        let preview = || -> ReloadPlan {
+            let output = cli(
+                root.path(),
+                &[
+                    "reload",
+                    "--dry-run",
+                    "--candidate",
+                    "candidate.yml",
+                    "--json",
+                ],
+            );
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            serde_json::from_slice(&output.stdout).unwrap()
+        };
+        let apply = |id: &str| {
+            cli(
+                root.path(),
+                &[
+                    "reload",
+                    "--apply",
+                    "--plan",
+                    id,
+                    "--candidate",
+                    "candidate.yml",
+                    "--json",
+                ],
+            )
+        };
+        let stale = preview();
+        document["services"]["worker"]["env"]["REVISION"] = "changed-again".into();
+        write("candidate.yml", &document);
+        let output = apply(&stale.plan_id);
+        assert!(!output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("stale"));
+        document["services"]["worker"]["healthcheck"] =
+            serde_json::json!({"type": "socket", "path": "invalid.sock"});
+        write("candidate.yml", &document);
+        assert!(!apply(&stale.plan_id).status.success());
+        let unchanged: RuntimeSnapshot =
+            serde_json::from_slice(&cli(root.path(), &["status", "--json"]).stdout).unwrap();
+        assert_eq!(unchanged.services["worker"].pid, Some(old_pid));
+        assert_eq!(
+            unchanged.services["worker"].event_generation,
+            before.services["worker"].event_generation
+        );
+
+        let mock = http::HttpMock::start();
+        mock.api.set(200);
+        document["services"]["worker"]
+            .as_object_mut()
+            .unwrap()
+            .remove("healthcheck");
+        if interrupt {
+            // A test-owned listener holds the port while the HTTP gate stays closed.
+            document["services"]["worker"]["healthcheck"] = serde_json::json!({
+                "type": "http", "url": format!("{}/database", mock.url),
+                "interval": "20ms", "timeout": "1s", "retries": 10000
+            });
+            document["services"]["child"] = serde_json::json!({
+                "command": service.command, "cwd": service.cwd,
+                "env": {"DEVD_TEST_ROLE": "leaf"},
+                "depends-on": [{"service": "worker", "condition": "http-ready"}],
+                "restart": {"policy": "never"}
+            });
+        } else {
+            document["services"]["broken"] = serde_json::json!({
+                "command": "missing-devd-test-program.exe",
+                "depends-on": [{"service": "worker", "condition": "started"}],
+                "restart": {"policy": "always", "max-attempts": 10000}
+            });
+        }
+        write("candidate.yml", &document);
+        let plan = preview();
+        let request_root = root.path().to_owned();
+        let id = plan.plan_id.clone();
+        let request = std::thread::spawn(move || {
+            cli(
+                &request_root,
+                &[
+                    "reload",
+                    "--apply",
+                    "--plan",
+                    &id,
+                    "--candidate",
+                    "candidate.yml",
+                    "--json",
+                ],
+            )
+        });
+        if interrupt {
+            wait_until(|| mock.database.requests() > 0).await;
+            assert!(!cli(root.path(), &["restart", "worker"]).status.success());
+            let competing = apply(&plan.plan_id);
+            assert!(!competing.status.success());
+            assert!(String::from_utf8_lossy(&competing.stderr).contains("already in progress"));
+            let snapshot: RuntimeSnapshot =
+                serde_json::from_slice(&cli(root.path(), &["status", "--json"]).stdout).unwrap();
+            assert!(snapshot.services["child"].pid.is_none());
+            assert!(cli(root.path(), &["stop"]).status.success());
+        }
+        let output = request.join().unwrap();
+        assert!(!output.status.success(), "reload must not succeed");
+        let report: ReloadReport = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(
+            report.outcome,
+            if interrupt {
+                ReloadOutcome::Interrupted
+            } else {
+                ReloadOutcome::Failed
+            }
+        );
+        assert!(report.config_committed);
+        assert_eq!(report.stopped, ["worker"]);
+        assert!(report.started.contains(&"worker".to_string()));
+        if interrupt {
+            assert!(!report.started.contains(&"child".to_string()));
+        } else {
+            assert!(report.ready.contains(&"worker".to_string()));
+            assert!(report.failure.is_some());
+        }
+        wait_until(|| supervisor.0.try_wait().unwrap().is_some()).await;
+        assert!(!alive(old_pid));
+        for pid in descendants(root.path()) {
+            wait_until(|| !alive(pid)).await;
+        }
+        let output = cli(root.path(), &["events", "--stored", "--json"]);
+        assert!(output.status.success());
+        let batch: devd::core::events::query::EventBatch =
+            serde_json::from_slice(&output.stdout).unwrap();
+        assert!(batch.entries.iter().any(|event| matches!(&event.data,
+            devd::core::events::EventData::ReloadFinished { outcome, .. } if *outcome == report.outcome)));
     }
 }
 

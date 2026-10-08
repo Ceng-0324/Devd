@@ -9,6 +9,7 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo run --locked -- check --config tests/fixtures/simple.yml
 cargo build --locked
 cargo doc --locked --no-deps
+python3 -m unittest discover -s scripts -p 'test_*.py' -v
 ```
 
 The CI matrix builds, lints, and runs all applicable test targets on Linux, macOS,
@@ -21,6 +22,9 @@ foreground-output cancellation, and cleanup after supervisor termination. Shared
 storage tests also cover native rotation and hard-link rejection; Windows unit
 tests cover reserved filenames and profile directory identities. Its ignored
 fixture is invoked by the parent tests.
+Windows path tests require symlink privileges and `icacls.exe`; denied setup
+fails validation rather than silently skipping coverage. The Python release
+checks require Python 3.11 or newer; the Rust suite itself does not need Python.
 Run the complete Unix MVP scenario suite separately with:
 
 ```bash
@@ -28,6 +32,25 @@ cargo test --locked --test integration
 ```
 
 ## Coverage
+
+`path_requirements` unit tests and `doctor.rs` cover file/directory/symlink
+requirements, dangling and cyclic links, target replacement, read permissions,
+cwd resolution, and startup refusal. `events.rs` exercises runtime loss/recovery,
+debouncing, atomic replacement, cyclic links, permissions, generation changes,
+and monitor cancellation. Native Windows tests check symlinks and ACL changes,
+and verify monitor retirement after restart and stop.
+
+`reload.rs` and the core reload tests cover invalid candidates, stale plans,
+selective stop/start order, unchanged processes, partial failure, competing
+reload/restart requests, and whole-stack stop before and after configuration
+commit. Windows tests additionally verify Job-owned descendant cleanup after
+reload success, application failure, and stop preemption.
+
+`scripts/test_release_verification.py` checks tar/zip provenance and rejects
+corruption, wrong versions/revisions, private or escaping paths, duplicates,
+empty files, and nonregular entries. It also verifies Cargo excludes local-only
+documents. The release workflow tests recovery using the verified archive's
+binary on each native platform; synthetic archive tests do not replace this.
 
 `config_profiles.rs` covers map inheritance, list/probe replacement, optional-field
 clearing, aliases, duplicate and unknown fields, invalid names, added services,

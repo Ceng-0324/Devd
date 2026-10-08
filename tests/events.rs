@@ -171,7 +171,9 @@ fn test_cli_runtime_path_monitor_drops_old_generation_and_stops_publishing_on_sh
 
 #[test]
 fn test_cli_runtime_path_monitor_observes_symlink_loss_permissions_and_atomic_replacement() {
-    use devd::core::path_requirements::PathRequirementFailureKind::{DanglingSymlink, NotReadable};
+    use devd::core::path_requirements::PathRequirementFailureKind::{
+        DanglingSymlink, NotReadable, SymlinkCycle,
+    };
     use std::os::unix::fs::{symlink, PermissionsExt};
 
     let project = Project::new(
@@ -199,6 +201,19 @@ fn test_cli_runtime_path_monitor_observes_symlink_loss_permissions_and_atomic_re
             fs::rename(project.path().join("next"), &target).unwrap();
         }
     }
+    fs::remove_file(&target).unwrap();
+    symlink("current", &target).unwrap();
+    wait(|| {
+        path_events(&project, false).entries.iter().any(|event| {
+            matches!(&event.data, EventData::PathConditionChanged { evidence } if evidence.failure == Some(SymlinkCycle))
+        }).then_some(())
+    });
+    fs::remove_file(&target).unwrap();
+    fs::write(&target, "recovered from cycle").unwrap();
+    wait(|| {
+        let entries = path_events(&project, false).entries;
+        matches!(entries.last().map(|event| &event.data), Some(EventData::PathConditionChanged { evidence }) if evidence.failure.is_none()).then_some(())
+    });
     if unsafe { nix::libc::geteuid() } != 0 {
         fs::set_permissions(&target, fs::Permissions::from_mode(0o000)).unwrap();
         wait(|| {
