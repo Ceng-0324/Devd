@@ -1,4 +1,4 @@
-//! Read-only configuration impact planning. No process or filesystem access.
+//! Configuration impact planning and execution reports. No process access.
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     path::{Component, Path, PathBuf},
@@ -64,10 +64,35 @@ pub struct ReloadPlan {
     pub services: BTreeMap<String, ServiceImpact>,
     pub stop_layers: Vec<Vec<String>>,
     pub start_layers: Vec<Vec<String>>,
-    /// This release only previews. These orders are never an execution token.
+    /// Application still requires recomputation and matching plan identity.
     pub apply_available: bool,
     pub unsupported_changes: Vec<String>,
     pub limitations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum ReloadOutcome {
+    Applied,
+    Failed,
+    Interrupted,
+}
+
+/// Progress is factual: stopped actors have finished; started services acquired
+/// a PID. Neither list implies rollback or that a process is still alive.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReloadReport {
+    pub schema_version: u16,
+    pub plan_id: String,
+    pub run_id: String,
+    pub base_config_id: String,
+    pub candidate_config_id: String,
+    pub outcome: ReloadOutcome,
+    pub config_committed: bool,
+    pub stopped: Vec<String>,
+    pub started: Vec<String>,
+    pub ready: Vec<String>,
+    pub failure: Option<String>,
 }
 
 /// Validate the entire candidate, compare effective definitions, and compute a
@@ -182,15 +207,14 @@ pub fn preview(
         profile: profile.map(str::to_owned),
         base_config_id: fingerprint(&old)?, candidate_config_id: fingerprint(&new)?,
         plan_id: String::new(), runtime, services, stop_layers, start_layers,
-        apply_available: false,
-        unsupported_changes: if changed.is_empty() { Vec::new() } else {
-            vec!["Online application is not available in this version; all listed changes are preview-only.".into()]
-        },
+        apply_available: true,
+        unsupported_changes: Vec::new(),
         limitations: vec![
             "Instance/profile, state directory and supervisor logging options are fixed; this command cannot change them.".into(),
             "Only YAML definitions are compared. Env-file contents, inherited environment, program contents and current path/port readiness are not inspected.".into(),
-            "Orders conservatively include all downstream services in both graphs, independently of restart-on-dep-recovery. No process is changed.".into(),
-            "The plan describes one candidate read and runtime snapshot. Re-run preview after any input or lifecycle change; saved plans cannot be applied.".into(),
+            "Orders conservatively include all downstream services in both graphs, independently of restart-on-dep-recovery. Preview changes no process.".into(),
+            "Apply requires --apply --plan <plan_id> and a fresh matching candidate/runtime. Re-run preview after any input or lifecycle change.".into(),
+            "Reload failure stops the whole stack. There is no automatic rollback; affected services do not automatically recover during application.".into(),
         ],
     };
     plan.plan_id = fingerprint(&serde_json::to_value(&plan)?)?;
@@ -319,8 +343,8 @@ mod tests {
             plan.start_layers,
             [vec!["db"], vec!["added", "api"], vec!["web"]]
         );
-        assert!(!plan.apply_available);
-        assert!(!plan.unsupported_changes.is_empty());
+        assert!(plan.apply_available);
+        assert!(plan.unsupported_changes.is_empty());
     }
 
     #[test]

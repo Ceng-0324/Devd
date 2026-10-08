@@ -376,7 +376,7 @@ impl Alarms {
 pub(super) async fn run(
     snapshots: watch::Sender<RuntimeSnapshot>,
     logs: LogCollector,
-    limits: BTreeMap<String, ResourceThresholds>,
+    limits: watch::Receiver<BTreeMap<String, ResourceThresholds>>,
     events: EventRecorder,
 ) -> ! {
     let mut sampler = Sampler::default();
@@ -394,7 +394,7 @@ pub(super) async fn run(
                 let mut alerts = Vec::new();
                 snapshots.send_modify(|snapshot| {
                     apply(snapshot, samples);
-                    alerts = alarms.evaluate(snapshot, &limits, Some(&events));
+                    alerts = alarms.evaluate(snapshot, &limits.borrow(), Some(&events));
                 });
                 for alert in alerts {
                     logs.record(
@@ -416,7 +416,7 @@ pub(super) async fn run(
                         changed |= state.resources.take().is_some();
                     }
                     // Missing observations break every consecutive streak.
-                    alarms.evaluate(snapshot, &limits, Some(&events));
+                    alarms.evaluate(snapshot, &limits.borrow(), Some(&events));
                     changed
                 });
             }

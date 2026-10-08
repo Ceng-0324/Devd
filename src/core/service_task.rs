@@ -24,6 +24,7 @@ use super::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Control {
     Running,
+    Loading,
     Quiescing,
     Stopping(Option<u64>),
     Restarting(u64),
@@ -349,17 +350,18 @@ impl ServiceTask {
     }
 
     fn running(&self) -> bool {
-        *self.control.borrow() == Control::Running
+        matches!(*self.control.borrow(), Control::Running | Control::Loading)
     }
 
     fn mark_stopped(&mut self) {
-        self.transition(
-            if matches!(*self.control.borrow(), Control::Restarting(_)) {
-                ServiceState::Restarting
-            } else {
-                ServiceState::Stopped
-            },
-        );
+        // Never hold a control read lock while publishing a snapshot: reload
+        // verifies the snapshot before changing controls in the opposite order.
+        let restarting = matches!(*self.control.borrow(), Control::Restarting(_));
+        self.transition(if restarting {
+            ServiceState::Restarting
+        } else {
+            ServiceState::Stopped
+        });
     }
 
     async fn wait_stop(&mut self) {
@@ -519,15 +521,17 @@ impl ServiceTask {
                 };
                 tokio::select! {
                     biased;
-                    _ = self.control.changed() => return GenerationEnd::Shutdown,
+                    changed = self.control.changed() => {
+                        if changed.is_err() || !self.running() { return GenerationEnd::Shutdown; }
+                    },
                     result = process.wait() => return match result {
                         Ok(status) => GenerationEnd::Exit(status),
                         Err(error) => GenerationEnd::Error(error),
                     },
-                    _ = std::future::ready(()), if !recovered.is_empty() => {
+                    _ = std::future::ready(()), if !recovered.is_empty() && *self.control.borrow() == Control::Running => {
                         return GenerationEnd::DependencyRecovery(recovered);
                     },
-                    _ = std::future::ready(()), if resource_reason.is_some() => {
+                    _ = std::future::ready(()), if resource_reason.is_some() && *self.control.borrow() == Control::Running => {
                         self.cause = resource_event;
                         return GenerationEnd::ResourceLimit(resource_reason.unwrap());
                     },
@@ -570,7 +574,8 @@ impl ServiceTask {
                 HealthState::Unhealthy => ServiceState::Unhealthy,
             });
             if observation.state == HealthState::Unhealthy
-                && self.config.restart.policy != RestartPolicyType::Never
+                && (self.config.restart.policy != RestartPolicyType::Never
+                    || *self.control.borrow() == Control::Loading)
             {
                 self.trigger(RestartCause::HealthFailure);
                 return GenerationEnd::HealthFailure;
@@ -583,6 +588,14 @@ impl ServiceTask {
         if !self.running() {
             self.wait_stop().await;
             self.mark_stopped();
+            return false;
+        }
+        if *self.control.borrow() == Control::Loading {
+            self.transition(if failed {
+                ServiceState::Failed
+            } else {
+                ServiceState::Stopped
+            });
             return false;
         }
         let retry = should_restart(&self.config, failed, self.state.restart_count);

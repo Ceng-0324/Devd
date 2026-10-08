@@ -2,11 +2,19 @@
 
 ## Unreleased — v0.6 development
 
+- Apply a reviewed configuration plan with `reload --apply --plan ID`. Reject
+  stale plans before process changes, stop affected old services in reverse
+  dependency layers, and start/readiness-check the new layers. Unrelated services
+  retain their processes on success. Serialize reload against manual restart,
+  support stop preemption, and report partial progress through JSON and events.
+  Application failures stop the whole stack without automatic rollback; file
+  watching remains deferred.
+
 - Preview configuration changes against a live supervisor with `reload --dry-run`,
   an optional candidate file, and text or versioned JSON output. Validate the
   candidate and selected profile, report direct and transitive dependency impact,
   and show conservative stop/start layers with instance/configuration identities.
-  Preview does not change processes or runtime state; applying changes is pending.
+  Preview does not change processes or runtime state.
 - Declare file, directory, and symlink prerequisites with service `requires`;
   check them before spawn and through `doctor`. Optionally observe changes with
   `monitor-requires`, deduplicated events, and evidence in `explain`, without

@@ -8,7 +8,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use crate::{
     core::diagnostics::ExplainReport,
     core::events::query::{EventBatch, EventQuery},
-    core::reload::ReloadPlan,
+    core::reload::{ReloadPlan, ReloadReport},
     core::service_manager::{RuntimeSnapshot, ServiceSnapshot},
     logging::{LogEntry, LogFilter},
 };
@@ -23,6 +23,10 @@ pub(super) enum Request {
     Status,
     PreviewReload {
         candidate: std::path::PathBuf,
+    },
+    ApplyReload {
+        candidate: std::path::PathBuf,
+        plan_id: String,
     },
     Stop,
     Events {
@@ -56,6 +60,7 @@ pub(super) enum Request {
 pub(super) enum Response {
     Status(RuntimeSnapshot),
     ReloadPlan(ReloadPlan),
+    Reloaded(ReloadReport),
     Stopping,
     Events(EventBatch),
     Explain(ExplainReport),

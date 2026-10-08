@@ -121,6 +121,23 @@ pub enum EventData {
         cancelled: bool,
     },
     ManualRestartRequested,
+    ReloadStarted {
+        plan_id: String,
+        base_config_id: String,
+        candidate_config_id: String,
+    },
+    ReloadServiceSelected {
+        plan_id: String,
+    },
+    ReloadFinished {
+        plan_id: String,
+        outcome: super::reload::ReloadOutcome,
+        config_committed: bool,
+        stopped: Vec<String>,
+        started: Vec<String>,
+        ready: Vec<String>,
+        failure: Option<String>,
+    },
     ServiceStopRequested {
         manual_restart: bool,
     },
@@ -158,6 +175,7 @@ pub enum ShutdownReason {
     ServiceFailed,
     StateWriteFailed,
     ActorFailed,
+    ReloadFailed,
     Completed,
 }
 
@@ -443,6 +461,7 @@ impl EventRecorder {
                 EventData::DependencyFailed { .. } => "dependency-failed",
                 EventData::RestartTriggered { .. } => "restart-triggered",
                 EventData::PathConditionChanged { .. } => "path-condition-changed",
+                EventData::ReloadFinished { .. } => "reload-finished",
                 _ => "unknown",
             }
             .to_owned();

@@ -319,7 +319,7 @@ async fn test_windows_runtime_path_monitor_records_failure_and_recovery_without_
 }
 
 #[tokio::test]
-async fn test_windows_reload_preview_preserves_running_job_and_validates_candidate() {
+async fn test_windows_reload_preview_and_apply_preserve_unrelated_job() {
     use devd::core::{
         reload::{ChangeKind, ReloadPlan},
         service_manager::RuntimeSnapshot,
@@ -331,6 +331,10 @@ async fn test_windows_reload_preview_preserves_running_job_and_validates_candida
             "command": service.command, "cwd": service.cwd, "env": service.env,
             "restart": {"policy": "never"}
         }}
+    });
+    document["services"]["isolated"] = serde_json::json!({
+        "command": service.command, "cwd": service.cwd,
+        "env": {"DEVD_TEST_ROLE": "leaf"}, "restart": {"policy": "never"}
     });
     fs::write(
         root.path().join("devd.yml"),
@@ -347,6 +351,12 @@ async fn test_windows_reload_preview_preserves_running_job_and_validates_candida
             .unwrap(),
     );
     wait_until(|| !descendants(root.path()).is_empty()).await;
+    wait_until(|| {
+        let output = cli(root.path(), &["status", "--json"]);
+        serde_json::from_slice::<RuntimeSnapshot>(&output.stdout)
+            .is_ok_and(|snapshot| snapshot.services.values().all(|state| state.pid.is_some()))
+    })
+    .await;
     let before: RuntimeSnapshot =
         serde_json::from_slice(&cli(root.path(), &["status", "--json"]).stdout).unwrap();
     let preview = |args: &[&str]| -> ReloadPlan {
@@ -376,7 +386,7 @@ async fn test_windows_reload_preview_preserves_running_job_and_validates_candida
     assert_eq!(changed.services["worker"].change, ChangeKind::Modified);
     assert_eq!(changed.services["worker"].changed_fields, ["env"]);
     assert_eq!(changed.base_config_id, baseline.base_config_id);
-    assert!(!changed.apply_available);
+    assert!(changed.apply_available);
     assert!(!serde_json::to_string(&changed)
         .unwrap()
         .contains("candidate-secret"));
@@ -402,6 +412,74 @@ async fn test_windows_reload_preview_preserves_running_job_and_validates_candida
         after.services["worker"].event_generation
     );
     assert!(descendants(root.path()).into_iter().all(alive));
+    // Apply must dispose of the old Windows Job before starting its replacement.
+    let old_descendants = descendants(root.path());
+    document["services"]["worker"]
+        .as_object_mut()
+        .unwrap()
+        .remove("healthcheck");
+    fs::write(
+        root.path().join("candidate.yml"),
+        serde_yaml::to_string(&document).unwrap(),
+    )
+    .unwrap();
+    let current = preview(&[
+        "reload",
+        "--dry-run",
+        "--candidate",
+        "candidate.yml",
+        "--json",
+    ]);
+    let output = cli(
+        root.path(),
+        &[
+            "reload",
+            "--apply",
+            "--plan",
+            &current.plan_id,
+            "--candidate",
+            "candidate.yml",
+            "--json",
+        ],
+    );
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: devd::core::reload::ReloadReport = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report.outcome, devd::core::reload::ReloadOutcome::Applied);
+    assert_eq!(report.stopped, ["worker"]);
+    assert_eq!(report.ready, ["worker"]);
+    for pid in old_descendants {
+        wait_until(|| !alive(pid)).await;
+    }
+    let applied: RuntimeSnapshot =
+        serde_json::from_slice(&cli(root.path(), &["status", "--json"]).stdout).unwrap();
+    assert_eq!(
+        applied.services["isolated"].pid,
+        before.services["isolated"].pid
+    );
+    assert_eq!(
+        applied.services["isolated"].event_generation,
+        before.services["isolated"].event_generation
+    );
+    assert!(alive(applied.services["isolated"].pid.unwrap()));
+    assert_ne!(
+        applied.services["worker"].event_generation,
+        before.services["worker"].event_generation
+    );
+    assert_eq!(
+        preview(&[
+            "reload",
+            "--dry-run",
+            "--candidate",
+            "candidate.yml",
+            "--json"
+        ])
+        .base_config_id,
+        current.candidate_config_id
+    );
     assert!(cli(root.path(), &["stop"]).status.success());
     wait_until(|| supervisor.0.try_wait().unwrap().is_some()).await;
     for pid in descendants(root.path()) {

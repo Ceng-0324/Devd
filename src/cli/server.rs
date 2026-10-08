@@ -42,7 +42,7 @@ pub(super) async fn start(
         PersistenceState::Disabled
     });
     let controller = manager.controller();
-    let running_config = Arc::new(manager.configuration().clone());
+    let configurations = manager.configurations();
     let profile = options.profile.clone();
     let previews = Arc::new(Semaphore::new(2));
     let logs = manager.subscribe_logs();
@@ -156,9 +156,14 @@ pub(super) async fn start(
                 let shutdown = shutdown.clone();
                 let followers = followers.clone();
                 let previews = previews.clone();
-                let running_config = running_config.clone();
+                let configurations = configurations.clone();
                 let profile = profile.clone();
                 clients.spawn(async move {
+                    // Reload can remove a service while its bounded diagnostic
+                    // history remains useful. Control still requires a live name.
+                    let known_service = |name: &str| snapshots.borrow().services.contains_key(name)
+                        || !history.recent(Some(name), 1).is_empty()
+                        || event_history.snapshot().entries.iter().any(|event| event.service.as_deref() == Some(name));
                     let response = match protocol::read_request(&mut stream).await {
                         Err(error) => Response::Error(error.to_string()),
                         Ok(Request::Status) => Response::Status(snapshots.borrow().clone()),
@@ -173,15 +178,39 @@ pub(super) async fn start(
                                 tokio::select! {
                                     biased;
                                     _ = stopping.changed() => Response::Error("supervisor is stopping".into()),
-                                    result = super::reload::preview(candidate, running_config, profile, snapshots, permit) => match result {
+                                    result = super::reload::preview(candidate, configurations, profile, snapshots, permit) => match result {
                                         Ok(plan) => Response::ReloadPlan(plan),
                                         Err(error) => Response::Error(format!("cannot preview configuration: {error:#}")),
                                     },
                                 }
                             }
                         }
+                        Ok(Request::ApplyReload { candidate, plan_id }) => {
+                            if let Err(error) = super::reload::plan_id(&plan_id) {
+                                return protocol::write(&mut stream, &Response::Error(error)).await;
+                            }
+                            let Ok(permit) = previews.try_acquire_owned() else {
+                                return protocol::write(&mut stream, &Response::Error("too many configuration reads (maximum 2)".into())).await;
+                            };
+                            let mut stopping = shutdown.subscribe();
+                            if *stopping.borrow() { Response::Error("supervisor is stopping".into()) }
+                            else {
+                                let candidate = tokio::select! {
+                                    biased;
+                                    _ = stopping.changed() => return protocol::write(&mut stream, &Response::Error("supervisor is stopping".into())).await,
+                                    result = super::reload::load_candidate(candidate, profile, permit) => result,
+                                };
+                                match candidate {
+                                    Err(error) => Response::Error(format!("cannot read candidate configuration: {error:#}")),
+                                    Ok(config) => match controller.reload(config, plan_id).await {
+                                        Ok(report) => Response::Reloaded(report),
+                                        Err(error) => Response::Error(error),
+                                    },
+                                }
+                            }
+                        }
                         Ok(Request::Explain { service }) => {
-                            if !snapshots.borrow().services.contains_key(&service) {
+                            if !known_service(&service) {
                                 Response::Error(format!("unknown service '{service}'"))
                             } else {
                                 let query = crate::core::events::query::EventQuery {
@@ -209,7 +238,7 @@ pub(super) async fn start(
                                 return protocol::write(&mut stream, &Response::Error(error)).await;
                             }
                             if let Some(name) = &query.filter.service {
-                                if !snapshots.borrow().services.contains_key(name) {
+                                if !known_service(name) {
                                     return protocol::write(&mut stream, &Response::Error(format!("unknown service '{name}'"))).await;
                                 }
                             }
@@ -233,7 +262,7 @@ pub(super) async fn start(
                             return result;
                         }
                         Ok(Request::Logs { service, tail, filter }) => {
-                            if service.as_ref().is_some_and(|name| !snapshots.borrow().services.contains_key(name)) {
+                            if service.as_ref().is_some_and(|name| !known_service(name)) {
                                 Response::Error(format!("unknown service '{}'", service.unwrap()))
                             } else if !(1..=1000).contains(&tail) {
                                 Response::Error("tail must be between 1 and 1000".into())
@@ -242,7 +271,7 @@ pub(super) async fn start(
                             }
                         }
                         Ok(Request::FollowLogs { service, tail, filter }) => {
-                            if service.as_ref().is_some_and(|name| !snapshots.borrow().services.contains_key(name)) {
+                            if service.as_ref().is_some_and(|name| !known_service(name)) {
                                 return protocol::write(&mut stream, &Response::Error(format!("unknown service '{}'", service.unwrap()))).await;
                             }
                             if !(1..=1000).contains(&tail) {

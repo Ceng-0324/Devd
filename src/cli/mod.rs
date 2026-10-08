@@ -85,7 +85,7 @@ enum Command {
     Stop,
     /// Stop and start one service using the running configuration.
     Restart { service: String },
-    /// Preview configuration changes against the running supervisor.
+    /// Preview or explicitly apply configuration changes to a running supervisor.
     Reload(reload::Args),
     /// Query live service states and PIDs.
     Status {

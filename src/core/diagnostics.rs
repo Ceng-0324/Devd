@@ -472,6 +472,15 @@ fn event_detail(event: &LifecycleEvent) -> String {
             format!("收到服务停止请求，manual_restart={manual_restart}")
         }
         EventData::ManualRestartRequested => "收到手动重启请求".into(),
+        EventData::ReloadStarted { plan_id, .. } => format!("开始应用配置计划 {plan_id}"),
+        EventData::ReloadServiceSelected { plan_id } => format!("配置计划 {plan_id} 选中此服务"),
+        EventData::ReloadFinished {
+            outcome,
+            config_committed,
+            ..
+        } => {
+            format!("配置重载结束：{outcome:?}，config_committed={config_committed}")
+        }
         EventData::StateChanged { from, to } => format!("状态从 {from:?} 变为 {to:?}"),
         EventData::Starting => "开始启动".into(),
         EventData::Started { pid } => format!("进程已启动，pid={pid:?}"),

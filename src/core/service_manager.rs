@@ -19,10 +19,14 @@ use super::{
     },
     health_check::{HealthCheckError, HealthChecker},
     process_manager::{parse_command, ProcessError},
+    reload::ReloadReport,
     resource_monitor::{self, ResourceUsage},
     service_task::{Control, ServiceTask},
     state_store::StateStore,
 };
+
+mod reload_apply;
+use reload_apply::{ReloadExecution, ReloadRequest};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -144,6 +148,8 @@ pub enum ServiceManagerError {
     Task(#[source] JoinError),
     #[error("services failed: {failures:?}")]
     FailedServices { failures: BTreeMap<String, String> },
+    #[error("configuration reload failed: {0}")]
+    ReloadFailed(String),
 }
 
 /// Owns all service actors. Subscribe before calling run. A terminal failure
@@ -157,7 +163,8 @@ pub struct ServiceManager {
     logs: LogCollector,
     events: EventRecorder,
     resource_limits: BTreeMap<String, ResourceThresholds>,
-    commands: mpsc::Receiver<RestartRequest>,
+    configurations: watch::Sender<Arc<DevdConfig>>,
+    commands: mpsc::Receiver<ManagerCommand>,
     controller: ServiceController,
 }
 
@@ -166,20 +173,45 @@ struct RestartRequest {
     reply: oneshot::Sender<Result<ServiceSnapshot, String>>,
 }
 
+enum ManagerCommand {
+    Restart(RestartRequest),
+    Reload(ReloadRequest),
+}
+
 /// Requests are serialized by the manager; actors retain process ownership.
 #[derive(Clone)]
-pub struct ServiceController(mpsc::Sender<RestartRequest>);
+pub struct ServiceController(mpsc::Sender<ManagerCommand>);
 
 impl ServiceController {
     pub async fn restart(&self, service: String) -> Result<ServiceSnapshot, String> {
         let (reply, response) = oneshot::channel();
         self.0
-            .send(RestartRequest { service, reply })
+            .send(ManagerCommand::Restart(RestartRequest { service, reply }))
             .await
             .map_err(|_| "supervisor is stopping".to_string())?;
         response
             .await
             .map_err(|_| "supervisor stopped before restart completed".to_string())?
+    }
+
+    /// Apply only a freshly verified configuration/runtime plan identity.
+    pub async fn reload(
+        &self,
+        candidate: DevdConfig,
+        plan_id: String,
+    ) -> Result<ReloadReport, String> {
+        let (reply, response) = oneshot::channel();
+        self.0
+            .send(ManagerCommand::Reload(ReloadRequest {
+                candidate,
+                plan_id,
+                reply,
+            }))
+            .await
+            .map_err(|_| "supervisor is stopping".to_string())?;
+        response
+            .await
+            .map_err(|_| "supervisor stopped before reload completed".to_string())?
     }
 }
 
@@ -221,6 +253,7 @@ impl ServiceManager {
         let (snapshots, _) = watch::channel(initial);
         let logs = LogCollector::new(options.logging)?;
         let (sender, commands) = mpsc::channel(32);
+        let (configurations, _) = watch::channel(Arc::new(config.clone()));
         Ok(Self {
             config,
             options,
@@ -230,13 +263,14 @@ impl ServiceManager {
             logs,
             events,
             resource_limits,
+            configurations,
             commands,
             controller: ServiceController(sender),
         })
     }
 
-    pub(crate) fn configuration(&self) -> &DevdConfig {
-        &self.config
+    pub(crate) fn configurations(&self) -> watch::Receiver<Arc<DevdConfig>> {
+        self.configurations.subscribe()
     }
 
     pub fn subscribe(&self) -> watch::Receiver<RuntimeSnapshot> {
@@ -322,27 +356,52 @@ impl ServiceManager {
             BTreeMap::new();
         let mut starting: BTreeMap<String, oneshot::Sender<Result<ServiceSnapshot, String>>> =
             BTreeMap::new();
+        let mut reloading: Option<ReloadExecution> = None;
         let mut error = None;
         let mut shutdown_reason = if shutdown_requested {
             ShutdownReason::Requested
         } else {
             ShutdownReason::Completed
         };
+        let (limits, resource_limits) = watch::channel(self.resource_limits.clone());
         let monitor = resource_monitor::run(
             self.snapshots.clone(),
             self.logs.clone(),
-            self.resource_limits.clone(),
+            resource_limits,
             self.events.clone(),
         );
         tokio::pin!(monitor);
-        while !shutdown_requested && !tasks.is_empty() {
+        while !shutdown_requested && (!tasks.is_empty() || reloading.is_some()) {
+            let reload_deadline = reloading.as_ref().and_then(ReloadExecution::deadline);
             tokio::select! {
                 biased;
                 _ = &mut shutdown => { shutdown_reason = ShutdownReason::Requested; break; },
                 _ = &mut monitor => {},
-                Some(request) = self.commands.recv() => {
+                _ = async {
+                    if let Some(deadline) = reload_deadline { tokio::time::sleep_until(deadline).await; }
+                    else { std::future::pending::<()>().await; }
+                } => {},
+                Some(command) = self.commands.recv() => { match command {
+                ManagerCommand::Reload(request) => {
+                    if reloading.is_some() || !restarting.is_empty() || !starting.is_empty() {
+                        let _ = request.reply.send(Err("configuration reload or manual restart is already in progress".into()));
+                    } else {
+                        match ReloadExecution::begin(&self, request, &controls) {
+                            Ok(execution) => {
+                                limits.send_replace(self.resource_limits.iter()
+                                    .filter(|(name, _)| !execution.affects(name))
+                                    .map(|(name, value)| (name.clone(), *value)).collect());
+                                reloading = Some(execution);
+                            },
+                            Err((reply, message)) => { let _ = reply.send(Err(message)); },
+                        }
+                    }
+                },
+                ManagerCommand::Restart(request) => {
                     let name = request.service;
-                    let rejection = if !controls.contains_key(&name) {
+                    let rejection = if reloading.is_some() {
+                        Some("configuration reload is in progress".into())
+                    } else if !controls.contains_key(&name) {
                         Some(format!("unknown service '{name}'"))
                     } else if restarting.contains_key(&name) || starting.contains_key(&name) {
                         Some(format!("service '{name}' is already restarting"))
@@ -360,6 +419,7 @@ impl ServiceManager {
                         restarting.insert(name, request.reply);
                     }
                 },
+                } },
                 _ = updates.changed() => {
                     let snapshot = updates.borrow_and_update().clone();
                     let completed: Vec<_> = starting.keys().filter(|name| {
@@ -390,6 +450,43 @@ impl ServiceManager {
                     }
                 },
             }
+            // State persistence may have yielded while a stop arrived. Never
+            // start the next reload layer after that cancellation is ready.
+            if tokio::select! { biased; _ = &mut shutdown => true, _ = std::future::ready(()) => false }
+            {
+                shutdown_reason = ShutdownReason::Requested;
+                break;
+            }
+            if let Some(execution) = &mut reloading {
+                match execution.advance(
+                    &mut self,
+                    &mut controls,
+                    &mut tasks,
+                    &mut names,
+                    &store,
+                    &limits,
+                ) {
+                    Ok(true) => {
+                        let execution = reloading.take().unwrap();
+                        // Persist the committed snapshot before reporting completion.
+                        let snapshot = self.snapshots.borrow().clone();
+                        if let Err(failure) = store.write(&snapshot).await {
+                            error = Some(failure);
+                            shutdown_reason = ShutdownReason::StateWriteFailed;
+                            reloading = Some(execution);
+                            break;
+                        }
+                        execution.finish(&self.events, super::reload::ReloadOutcome::Applied, None);
+                    }
+                    Ok(false) => {}
+                    Err(message) => {
+                        execution.failure = Some(message.clone());
+                        error = Some(ServiceManagerError::ReloadFailed(message));
+                        shutdown_reason = ShutdownReason::ReloadFailed;
+                        break;
+                    }
+                }
+            }
             let ready: Vec<_> = restarting
                 .keys()
                 .filter(|name| !names.values().any(|active| active == *name))
@@ -412,6 +509,9 @@ impl ServiceManager {
                 starting.insert(name.clone(), restarting.remove(&name).unwrap());
             }
         }
+        if let Some(execution) = &mut reloading {
+            execution.observe(&self.snapshots.borrow(), &names);
+        }
         if shutdown_reason == ShutdownReason::Completed
             && self
                 .snapshots
@@ -427,7 +527,7 @@ impl ServiceManager {
             None,
             None,
             EventData::SupervisorStopping {
-                reason: shutdown_reason,
+                reason: shutdown_reason.clone(),
             },
         );
         for control in controls.values() {
@@ -451,7 +551,34 @@ impl ServiceManager {
                 error.get_or_insert(failure);
             }
         }
+        // New layers not yet spawned when stop preempts a reload have no actor
+        // to publish their terminal state.
+        self.snapshots.send_if_modified(|snapshot| {
+            let mut changed = false;
+            for state in snapshot.services.values_mut() {
+                if state.pid.is_none() && state.status == ServiceState::Pending {
+                    state.status = ServiceState::Stopped;
+                    changed = true;
+                }
+            }
+            changed
+        });
         let snapshot = self.snapshots.borrow().clone();
+        if let Err(failure) = store.write(&snapshot).await {
+            error.get_or_insert(failure);
+        }
+        if let Some(mut execution) = reloading {
+            execution.observe(&snapshot, &names);
+            let outcome = if shutdown_reason == ShutdownReason::Requested {
+                super::reload::ReloadOutcome::Interrupted
+            } else {
+                super::reload::ReloadOutcome::Failed
+            };
+            let failure = execution.failure.take().unwrap_or_else(|| {
+                format!("supervisor stopped during reload: {shutdown_reason:?}")
+            });
+            execution.finish(&self.events, outcome, Some(failure));
+        }
         for (name, reply) in restarting.into_iter().chain(starting) {
             let message = snapshot.services[&name]
                 .last_error

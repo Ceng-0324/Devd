@@ -189,7 +189,7 @@ devd graph --profile staging --format mermaid > dependencies.mmd
 
 Diagram arrows point from each prerequisite to the service that depends on it; edge labels show the readiness condition. Services without dependencies also appear. `graph` validates the configuration but does not start services or create runtime state. DOT and Mermaid output are source text for their respective renderers, not image files.
 
-### Preview configuration changes (v0.6 development)
+### Preview and apply configuration changes (v0.6 development)
 
 Editing one service can affect half the stack. Before restarting anything, ask the running supervisor what would change:
 
@@ -203,9 +203,20 @@ Use the same `--config`, `--profile`, and `--state-dir` as the running instance.
 
 The report lists `added`, `removed`, `modified`, `dependency-affected`, and `unchanged` services, changed field names, and the directly changed prerequisites behind each impact. It follows all downstream edges in both dependency graphs, regardless of `restart-on-dep-recovery`. The conservative plan stops affected old services in reverse dependency layers, then starts affected new services in forward layers. Unrelated services stay out of both lists. Configuration values, commands, and environment contents are excluded from a successful report; validation errors use the usual configuration diagnostics.
 
-`--json` returns `schema_version: 1`, the supervisor `run_id`, base/candidate configuration fingerprints, process generations, and a `plan_id`. These identify one candidate read and one runtime snapshot. Re-run after input or lifecycle changes; a saved report cannot be applied. `apply_available` is always `false` in this module, and `unsupported_changes` states that all listed changes are preview-only. Instance/profile, state-directory, and supervisor logging options cannot be changed here.
+`--json` returns `schema_version: 1`, the supervisor `run_id`, base/candidate configuration fingerprints, process generations, and a `plan_id`. Apply explicitly using the ID you reviewed and the same candidate:
 
-`--dry-run` is required. Preview validates the candidate, quoting, settings, and dependency graph; it never runs service commands or probes, reads dotenv contents, checks live path/port readiness, writes runtime state, or restarts a process. Changes to dotenv contents, inherited environment, and program files are outside this comparison. Manual application comes in the next module.
+```bash
+devd reload --apply --plan 'sha256:<64-hex-digits>' --candidate devd.next.yml
+# Add --json for an execution report, including partial failure or interruption.
+```
+
+Application re-reads and validates the candidate, then recomputes the plan against the live instance. Changed configuration, process generations, or lifecycle states invalidate the ID; preview again. Services must be in stable states. `apply_available: true` describes support, not a guarantee that a later application will succeed. Instance/profile, state-directory, and supervisor logging options stay fixed. The candidate is an in-memory configuration update; neither source YAML nor the default candidate path is rewritten.
+
+Only affected services are stopped, in old reverse dependency order. After they finish, the supervisor commits the candidate baseline and starts new forward layers. Each affected service must start and, when configured, pass its health check; each layer has the existing dependency timeout (30 seconds). Unchanged services retain their processes. No-op configurations restart nothing. Manual restart and a second reload are rejected while application is active. Affected services pause automatic recovery until application completes; unrelated services keep their existing policies. `stop` can interrupt any phase.
+
+A failure stops the whole stack, including unrelated services. There is no automatic rollback: once committed, the new in-memory baseline remains until the supervisor exits. The execution report lists completed stops, observed starts, ready layers, and `config_committed`; it returns a nonzero exit code on failure or interruption. Lifecycle events record the plan and outcome, with progress available through `events` (and `--stored` when event persistence was enabled). Client disconnect or the 60-second response timeout does not cancel an accepted reload; inspect status/events before retrying.
+
+Choose exactly one of `--dry-run` or `--apply`. Preview validates YAML, quoting, settings, and the dependency graph without executing service/probe commands, reading dotenv contents, checking live path/port readiness, or writing runtime state. Only YAML definitions are compared; dotenv contents, inherited environment, and program-file changes need an explicit restart. File watching and automatic reload are deferred.
 
 ### Command reference
 
@@ -213,8 +224,8 @@ The report lists `added`, `removed`, `modified`, `dependency-affected`, and `unc
 | --- | --- |
 | `devd start [--persist-logs] [--persist-events]` | Start the stack in the foreground, optionally retaining logs and lifecycle events with separate size/retention options |
 | `devd stop` | Request ordered shutdown; the foreground process exits after cleanup |
-| `devd restart <service>` | Restart one service using the configuration loaded at startup, rechecking dependencies |
-| `devd reload --dry-run [--candidate PATH] [--json]` | Preview configuration changes and dependency impact against a live instance (v0.6 development) |
+| `devd restart <service>` | Restart one service using the current effective configuration, rechecking dependencies |
+| `devd reload --dry-run / --apply --plan ID [--candidate PATH] [--json]` | Preview or explicitly apply affected service changes (v0.6 development) |
 | `devd status [--json]` | Show live state, PIDs, CPU / RSS, restart counts, and diagnostics |
 | `devd top` | Inspect a running stack and its live logs in an interactive terminal |
 | `devd events [service] [--type TYPE] [--since DURATION] [--tail N] [--cursor RUN_UUID:NEXT_SEQUENCE] [--json] [--follow \| --stored]` | Query lifecycle facts, cursors and history gaps |
@@ -268,7 +279,7 @@ Declaring the script probe enables its execution under the same user as devd. It
 
 Probes start immediately and run serially. Defaults are `interval: 10s`, `timeout: 2s`, and `retries: 3`. A nonzero exit, signal, execution failure, or timeout counts as a failed check; success resets the failure count. The existing restart policy applies when the failure threshold is reached. `script-ready` waits for the first successful check and requires a script probe on the prerequisite. The timeout includes environment loading, execution, and normal process-tree cleanup. On timeout, cancellation, service restart, or shutdown, devd kills the probe's Unix process group or Windows Job. Unix probes must keep subprocesses in that group. Normal completion also cleans up background descendants. `check` and `graph` validate without executing probes. Profiles replace the entire health check as usual.
 
-**Restarts have a defined scope.** A manual restart targets the named service using the configuration loaded at startup. Success means that process has started, not that its health checks or any opted-in dependent restarts have completed. Manual restarts can bypass `never` and the automatic retry limit, but don't reset the cumulative restart count. Terminal failures, such as a startup failure with no retries remaining or an exhausted retry budget, trigger cleanup of the whole stack.
+**Restarts have a defined scope.** A manual restart targets the named service using the current effective configuration, including any committed reload. Success means that process has started, not that its health checks or any opted-in dependent restarts have completed. Manual restarts can bypass `never` and the automatic retry limit, but don't reset the cumulative restart count. Terminal failures, such as a startup failure with no retries remaining or an exhausted retry budget, trigger cleanup of the whole stack.
 
 **A service can restart when its dependencies come back.** Add the following to a service that already declares `depends-on`:
 
@@ -373,9 +384,9 @@ services:
       max-attempts: 3
 ```
 
-The same metric must exceed its threshold in 3 consecutive valid samples (roughly one sample per second). A value within range or a missing value resets that metric's count; CPU warmup resets only CPU's count. The decision is retained until that process generation ends. devd stops the process group, drains logs, applies the existing backoff, and rechecks dependencies before starting again. Resource, crash, health, and dependency recovery restarts share the cumulative restart budget; exhaustion fails the service and shuts down the stack. Stop interrupts backoff, and manual restart can supersede it. The reason appears in logs and failure diagnostics. `on-exceed: restart` conflicts with `restart.policy: never` and is rejected before startup. Profiles replace the entire `limits` block, so a replacement that omits `on-exceed` returns to `warn`; `limits: null` disables thresholds. Configuration changes take effect on the next supervisor start, without root privileges or an interactive permission prompt.
+The same metric must exceed its threshold in 3 consecutive valid samples (roughly one sample per second). A value within range or a missing value resets that metric's count; CPU warmup resets only CPU's count. The decision is retained until that process generation ends. devd stops the process group, drains logs, applies the existing backoff, and rechecks dependencies before starting again. Resource, crash, health, and dependency recovery restarts share the cumulative restart budget; exhaustion fails the service and shuts down the stack. Stop interrupts backoff, and manual restart can supersede it. The reason appears in logs and failure diagnostics. `on-exceed: restart` conflicts with `restart.policy: never` and is rejected before startup. Profiles replace the entire `limits` block, so a replacement that omits `on-exceed` returns to `warn`; `limits: null` disables thresholds. Configuration changes take effect on the next supervisor start or through explicit selective reload, without root privileges or an interactive permission prompt.
 
-The current scope is local process management. `init` creates a starter file; project scanning and interactive templates are planned. Hot reload remains a later module.
+The current scope is local process management. `init` creates a starter file; project scanning and interactive templates are planned. File watching and automatic reload remain deferred; manual selective reload is available in v0.6 development.
 
 Configuration rejects unknown fields and invalid `limits` settings. YAML values are literal; `${VAR}` expansion is not implemented. With `backoff: exponential`, retries start at `initial-delay`, double with the cumulative restart count, and cap at `max-delay` (default 60s, must be at least `initial-delay`). Healthy probes do not reset that count. Fixed backoff ignores `max-delay`; either wait can be interrupted by stopping the service.
 
