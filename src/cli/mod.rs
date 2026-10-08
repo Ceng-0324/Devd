@@ -411,7 +411,10 @@ impl Cli {
                     let line = formatter.format(&entry);
                     tokio::select! {
                         _ = tokio::signal::ctrl_c() => return Ok(()),
-                        result = stdout.write_all(line.as_bytes()) => result?,
+                        result = async {
+                            stdout.write_all(line.as_bytes()).await?;
+                            stdout.flush().await
+                        } => result?,
                     }
                 }
                 loop {
@@ -424,7 +427,10 @@ impl Cli {
                             let line = formatter.format(&entry);
                             tokio::select! {
                                 _ = tokio::signal::ctrl_c() => break,
-                                result = stdout.write_all(line.as_bytes()) => result?,
+                                result = async {
+                                    stdout.write_all(line.as_bytes()).await?;
+                                    stdout.flush().await
+                                } => result?,
                             }
                         }
                         Some(Response::Error(error)) => bail!("{error}"),

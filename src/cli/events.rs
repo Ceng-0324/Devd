@@ -82,7 +82,10 @@ pub(super) async fn run(args: Args, socket: &Path, state_dir: &Path) -> Result<(
                 let text = render(&batch, args.json)?;
                 tokio::select! {
                     _ = tokio::signal::ctrl_c() => break,
-                    result = stdout.write_all(text.as_bytes()) => result?,
+                    result = async {
+                        stdout.write_all(text.as_bytes()).await?;
+                        stdout.flush().await
+                    } => result?,
                 }
             }
             Some(Response::Error(error)) => bail!("{error}"),
