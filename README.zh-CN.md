@@ -16,11 +16,13 @@
 
 ## 它能做什么
 
-devd 是用 Rust 编写的本地开发服务管理器。**当前源码正在准备 v0.6.0-alpha.1；最新已发布预发布版本是 v0.5.0-alpha.1。**
+devd 是用 Rust 编写的本地开发服务管理器。**v0.6.0-alpha.1 已发布，支持 Linux、macOS 和 Windows。**
 
 v0.6 开始能提前发现当初那场事故里的问题：启动前声明必需的文件、目录和软链接，运行中可以显式开启监测；改了配置，先看影响范围，再明确应用审阅过的计划。文件监测只报告变化，不会修文件，也不等于授权重启。重载失败会停止全栈，不自动回滚。发布要求同一源码提交通过 Linux、macOS 和 Windows 原生 CI 与归档核验。
 
-v0.5 补上了诊断闭环：`events` 查经过，`explain` 根据记录解释故障，`doctor` 在启动前检查环境，并新增用于声明 TCP 监听端口的 `listen` 配置。可以从 [GitHub Releases](https://github.com/Ceng-0324/Devd/releases/tag/v0.5.0-alpha.1) 下载 Linux x86_64、macOS Apple Silicon、Windows x86_64 制品及 SHA-256 校验文件。该版本已通过三平台原生 CI 和故障恢复演练。
+可以从 [GitHub Releases](https://github.com/Ceng-0324/Devd/releases/tag/v0.6.0-alpha.1) 下载 Linux x86_64、macOS Apple Silicon、Windows x86_64 制品及 SHA-256 校验文件。发布源码提交 `e9ca335` 已通过三平台原生 CI 和归档二进制故障恢复演练。
+
+v0.5 补上的诊断工具也贯穿这套流程：`events` 查经过，`explain` 根据记录解释故障，`doctor` 在启动前检查环境，`listen` 声明服务自己的 TCP 监听端口。
 
 已有的可选磁盘日志、交互式终端界面、CPU／内存采样、资源告警与显式授权的自动恢复、自定义脚本健康检查、依赖恢复联动、多环境配置、配置快照、依赖图导出和日志筛选继续保留。
 

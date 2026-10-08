@@ -18,11 +18,13 @@ Broken file dependencies still need fixing. devd takes care of the services you 
 
 ## What it does
 
-devd is a local development service manager written in Rust. **This checkout prepares v0.6.0-alpha.1; v0.5.0-alpha.1 is the latest published prerelease.**
+devd is a local development service manager written in Rust. **v0.6.0-alpha.1 is available for Linux, macOS, and Windows.**
 
 v0.6 brings the original accident a little closer to something you can catch: declare required files, directories, and symlinks before a service starts, then opt in to observing them while it runs. When configuration changes, preview the affected services and explicitly apply the reviewed plan. File monitoring reports what changed; it does not repair files or authorize restarts. Reload failures stop the whole stack without automatic rollback. Publication requires native CI and archive verification on Linux, macOS, and Windows for the same source revision.
 
-v0.5 adds `events` to trace what happened, `explain` to connect failures to recorded evidence, and `doctor` to check the environment before starting. It also adds the `listen` setting for declared TCP ports. Download Linux x86_64, macOS Apple Silicon, or Windows x86_64 binaries and their SHA-256 checksums from [GitHub Releases](https://github.com/Ceng-0324/Devd/releases/tag/v0.5.0-alpha.1). The release passed native CI and recovery smoke tests on all three platforms.
+Download Linux x86_64, macOS Apple Silicon, or Windows x86_64 binaries and their SHA-256 checksums from [GitHub Releases](https://github.com/Ceng-0324/Devd/releases/tag/v0.6.0-alpha.1). This release passed native CI and packaged-binary recovery tests on all three platforms at source revision `e9ca335`.
+
+The diagnostic tools introduced in v0.5 remain part of that workflow: `events` traces what happened, `explain` connects failures to recorded evidence, and `doctor` checks the environment before starting. The `listen` setting declares owned TCP ports.
 
 It also includes opt-in disk logs, an interactive terminal view, CPU and memory samples, resource warnings and explicitly enabled recovery, custom script health checks, opt-in restarts after dependency recovery, named configuration profiles, configuration snapshots, dependency diagram export, and log filters.
 

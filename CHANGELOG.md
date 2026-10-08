@@ -1,11 +1,12 @@
 # Changelog
 
-## v0.6.0-alpha.1 — Unreleased Candidate
+## v0.6.0-alpha.1 — 2026-10-08
 
-Prerelease candidate for local development on Linux, macOS, and Windows.
-Publication requires successful native CI and verified release archives for the
-same source SHA; see `RELEASING.md`. No automatic file repair, file-triggered
-restart, automatic reload, or transactional rollback is included.
+Prerelease for local development on Linux, macOS, and Windows. Native CI and
+packaged-binary recovery tests passed on all three platforms for source revision
+`e9ca335f2aedc90c2c67f568ee7a926067a257d4`; archives, SHA-256 checksums, and all six
+uploaded assets were verified. No automatic file repair, file-triggered restart,
+automatic reload, or transactional rollback is included.
 
 - Apply a reviewed configuration plan with `reload --apply --plan ID`. Reject
   stale plans before process changes, stop affected old services in reverse
