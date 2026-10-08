@@ -38,7 +38,8 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --locked --all-targets -- -D warnings
       - name: Verify Cargo package
-        run: cargo package --locked
+        # Keep extracted package sources out of rust-cache's target traversal.
+        run: cargo package --locked --target-dir "$RUNNER_TEMP/devd-package"
 
   test:
     name: Build and test (${{ matrix.os }})
