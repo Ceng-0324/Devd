@@ -189,6 +189,24 @@ devd graph --profile staging --format mermaid > dependencies.mmd
 
 Diagram arrows point from each prerequisite to the service that depends on it; edge labels show the readiness condition. Services without dependencies also appear. `graph` validates the configuration but does not start services or create runtime state. DOT and Mermaid output are source text for their respective renderers, not image files.
 
+### Preview configuration changes (v0.6 development)
+
+Editing one service can affect half the stack. Before restarting anything, ask the running supervisor what would change:
+
+```bash
+devd reload --dry-run
+devd reload --dry-run --candidate devd.next.yml --json
+devd reload --dry-run --profile staging --candidate devd.next.yml
+```
+
+Use the same `--config`, `--profile`, and `--state-dir` as the running instance. The baseline is the effective configuration held by that supervisor, even if its YAML has since changed. The candidate defaults to `--config`; `--candidate` chooses another file without changing the target instance. Its relative `cwd` values resolve against the candidate file's own directory, and the supervisor applies its existing profile to it. The candidate must contain that profile. Preview requires a live supervisor and a readable regular YAML file of at most 1 MiB.
+
+The report lists `added`, `removed`, `modified`, `dependency-affected`, and `unchanged` services, changed field names, and the directly changed prerequisites behind each impact. It follows all downstream edges in both dependency graphs, regardless of `restart-on-dep-recovery`. The conservative plan stops affected old services in reverse dependency layers, then starts affected new services in forward layers. Unrelated services stay out of both lists. Configuration values, commands, and environment contents are excluded from a successful report; validation errors use the usual configuration diagnostics.
+
+`--json` returns `schema_version: 1`, the supervisor `run_id`, base/candidate configuration fingerprints, process generations, and a `plan_id`. These identify one candidate read and one runtime snapshot. Re-run after input or lifecycle changes; a saved report cannot be applied. `apply_available` is always `false` in this module, and `unsupported_changes` states that all listed changes are preview-only. Instance/profile, state-directory, and supervisor logging options cannot be changed here.
+
+`--dry-run` is required. Preview validates the candidate, quoting, settings, and dependency graph; it never runs service commands or probes, reads dotenv contents, checks live path/port readiness, writes runtime state, or restarts a process. Changes to dotenv contents, inherited environment, and program files are outside this comparison. Manual application comes in the next module.
+
 ### Command reference
 
 | Command | Purpose |
@@ -196,6 +214,7 @@ Diagram arrows point from each prerequisite to the service that depends on it; e
 | `devd start [--persist-logs] [--persist-events]` | Start the stack in the foreground, optionally retaining logs and lifecycle events with separate size/retention options |
 | `devd stop` | Request ordered shutdown; the foreground process exits after cleanup |
 | `devd restart <service>` | Restart one service using the configuration loaded at startup, rechecking dependencies |
+| `devd reload --dry-run [--candidate PATH] [--json]` | Preview configuration changes and dependency impact against a live instance (v0.6 development) |
 | `devd status [--json]` | Show live state, PIDs, CPU / RSS, restart counts, and diagnostics |
 | `devd top` | Inspect a running stack and its live logs in an interactive terminal |
 | `devd events [service] [--type TYPE] [--since DURATION] [--tail N] [--cursor RUN_UUID:NEXT_SEQUENCE] [--json] [--follow \| --stored]` | Query lifecycle facts, cursors and history gaps |

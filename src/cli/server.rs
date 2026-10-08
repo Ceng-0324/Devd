@@ -42,6 +42,9 @@ pub(super) async fn start(
         PersistenceState::Disabled
     });
     let controller = manager.controller();
+    let running_config = Arc::new(manager.configuration().clone());
+    let profile = options.profile.clone();
+    let previews = Arc::new(Semaphore::new(2));
     let logs = manager.subscribe_logs();
     // Open under the state lock, before polling the manager and spawning any
     // services. Each blocking writer owns its disk lock until drain completes.
@@ -152,10 +155,31 @@ pub(super) async fn start(
                 let controller = controller.clone();
                 let shutdown = shutdown.clone();
                 let followers = followers.clone();
+                let previews = previews.clone();
+                let running_config = running_config.clone();
+                let profile = profile.clone();
                 clients.spawn(async move {
                     let response = match protocol::read_request(&mut stream).await {
                         Err(error) => Response::Error(error.to_string()),
                         Ok(Request::Status) => Response::Status(snapshots.borrow().clone()),
+                        Ok(Request::PreviewReload { candidate }) => {
+                            let Ok(permit) = previews.try_acquire_owned() else {
+                                return protocol::write(&mut stream, &Response::Error("too many configuration previews (maximum 2)".into())).await;
+                            };
+                            let mut stopping = shutdown.subscribe();
+                            if *stopping.borrow() {
+                                Response::Error("supervisor is stopping".into())
+                            } else {
+                                tokio::select! {
+                                    biased;
+                                    _ = stopping.changed() => Response::Error("supervisor is stopping".into()),
+                                    result = super::reload::preview(candidate, running_config, profile, snapshots, permit) => match result {
+                                        Ok(plan) => Response::ReloadPlan(plan),
+                                        Err(error) => Response::Error(format!("cannot preview configuration: {error:#}")),
+                                    },
+                                }
+                            }
+                        }
                         Ok(Request::Explain { service }) => {
                             if !snapshots.borrow().services.contains_key(&service) {
                                 Response::Error(format!("unknown service '{service}'"))

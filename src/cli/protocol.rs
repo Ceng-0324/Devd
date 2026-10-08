@@ -8,6 +8,7 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use crate::{
     core::diagnostics::ExplainReport,
     core::events::query::{EventBatch, EventQuery},
+    core::reload::ReloadPlan,
     core::service_manager::{RuntimeSnapshot, ServiceSnapshot},
     logging::{LogEntry, LogFilter},
 };
@@ -20,6 +21,9 @@ pub(super) const IO_TIMEOUT: Duration = Duration::from_secs(5);
 #[serde(tag = "command", rename_all = "kebab-case", deny_unknown_fields)]
 pub(super) enum Request {
     Status,
+    PreviewReload {
+        candidate: std::path::PathBuf,
+    },
     Stop,
     Events {
         query: EventQuery,
@@ -51,6 +55,7 @@ pub(super) enum Request {
 #[serde(tag = "result", content = "data", rename_all = "kebab-case")]
 pub(super) enum Response {
     Status(RuntimeSnapshot),
+    ReloadPlan(ReloadPlan),
     Stopping,
     Events(EventBatch),
     Explain(ExplainReport),

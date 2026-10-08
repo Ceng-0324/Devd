@@ -2,7 +2,7 @@ use std::{collections::HashMap, net::SocketAddr, path::PathBuf, time::Duration};
 
 use serde::{de::Deserializer, Deserialize, Serialize};
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct DevdConfig {
     pub version: String,
@@ -10,7 +10,7 @@ pub struct DevdConfig {
     pub services: HashMap<String, ServiceConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ServiceConfig {
     pub command: String,
@@ -45,8 +45,8 @@ pub struct ServiceConfig {
     pub limits: Option<ResourceLimits>,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
-#[serde(tag = "type", rename_all = "lowercase", deny_unknown_fields)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct PathRequirement {
     #[serde(rename = "type")]
     pub kind: PathRequirementType,
@@ -61,7 +61,7 @@ pub enum PathRequirementType {
     Symlink,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct Dependency {
     pub service: String,
     pub condition: DependencyCondition,
@@ -104,7 +104,7 @@ pub enum DependencyCondition {
     ScriptReady,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", deny_unknown_fields)]
 pub enum HealthCheck {
     #[serde(rename = "script")]
@@ -112,12 +112,14 @@ pub enum HealthCheck {
         command: String,
         #[serde(
             default = "default_health_interval",
-            deserialize_with = "deserialize_duration"
+            deserialize_with = "deserialize_duration",
+            serialize_with = "serialize_duration"
         )]
         interval: Duration,
         #[serde(
             default = "default_health_timeout",
-            deserialize_with = "deserialize_duration"
+            deserialize_with = "deserialize_duration",
+            serialize_with = "serialize_duration"
         )]
         timeout: Duration,
         #[serde(default = "default_health_retries")]
@@ -128,12 +130,14 @@ pub enum HealthCheck {
         url: String,
         #[serde(
             default = "default_health_interval",
-            deserialize_with = "deserialize_duration"
+            deserialize_with = "deserialize_duration",
+            serialize_with = "serialize_duration"
         )]
         interval: Duration,
         #[serde(
             default = "default_health_timeout",
-            deserialize_with = "deserialize_duration"
+            deserialize_with = "deserialize_duration",
+            serialize_with = "serialize_duration"
         )]
         timeout: Duration,
         #[serde(default = "default_health_retries")]
@@ -146,12 +150,14 @@ pub enum HealthCheck {
         port: u16,
         #[serde(
             default = "default_health_interval",
-            deserialize_with = "deserialize_duration"
+            deserialize_with = "deserialize_duration",
+            serialize_with = "serialize_duration"
         )]
         interval: Duration,
         #[serde(
             default = "default_health_timeout",
-            deserialize_with = "deserialize_duration"
+            deserialize_with = "deserialize_duration",
+            serialize_with = "serialize_duration"
         )]
         timeout: Duration,
         #[serde(default = "default_health_retries")]
@@ -162,12 +168,14 @@ pub enum HealthCheck {
         path: PathBuf,
         #[serde(
             default = "default_health_interval",
-            deserialize_with = "deserialize_duration"
+            deserialize_with = "deserialize_duration",
+            serialize_with = "serialize_duration"
         )]
         interval: Duration,
         #[serde(
             default = "default_health_timeout",
-            deserialize_with = "deserialize_duration"
+            deserialize_with = "deserialize_duration",
+            serialize_with = "serialize_duration"
         )]
         timeout: Duration,
         #[serde(default = "default_health_retries")]
@@ -175,7 +183,7 @@ pub enum HealthCheck {
     },
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct RestartPolicy {
     #[serde(default)]
@@ -186,14 +194,16 @@ pub struct RestartPolicy {
         default = "default_initial_delay",
         rename = "initial-delay",
         alias = "initial_delay",
-        deserialize_with = "deserialize_duration"
+        deserialize_with = "deserialize_duration",
+        serialize_with = "serialize_duration"
     )]
     pub initial_delay: Duration,
     #[serde(
         default = "default_max_delay",
         rename = "max-delay",
         alias = "max_delay",
-        deserialize_with = "deserialize_duration"
+        deserialize_with = "deserialize_duration",
+        serialize_with = "serialize_duration"
     )]
     pub max_delay: Duration,
     #[serde(
@@ -233,7 +243,7 @@ pub enum BackoffType {
     Exponential,
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(deny_unknown_fields)]
 pub struct ResourceLimits {
     #[serde(default)]
@@ -245,7 +255,7 @@ pub struct ResourceLimits {
     pub on_exceed: ResourceLimitAction,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum ResourceLimitAction {
     #[default]
@@ -329,6 +339,25 @@ fn default_max_delay() -> Duration {
 
 fn default_max_attempts() -> u32 {
     3
+}
+
+// Preserve the same scalar syntax accepted from YAML; configuration fingerprints
+// must not require an incompatible serialized Duration object.
+fn serialize_duration<S>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    if duration.subsec_nanos() == 0 {
+        return serializer.serialize_str(&format!("{}s", duration.as_secs()));
+    }
+    if !duration.subsec_nanos().is_multiple_of(1_000_000)
+        || duration.as_millis() > u128::from(u64::MAX)
+    {
+        return Err(serde::ser::Error::custom(
+            "duration cannot be represented in configuration syntax",
+        ));
+    }
+    serializer.serialize_str(&format!("{}ms", duration.as_millis()))
 }
 
 fn deserialize_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>

@@ -3,6 +3,7 @@ mod events;
 mod explain;
 mod graph;
 mod protocol;
+mod reload;
 mod server;
 mod snapshot;
 #[cfg(unix)]
@@ -84,6 +85,8 @@ enum Command {
     Stop,
     /// Stop and start one service using the running configuration.
     Restart { service: String },
+    /// Preview configuration changes against the running supervisor.
+    Reload(reload::Args),
     /// Query live service states and PIDs.
     Status {
         #[arg(long)]
@@ -253,6 +256,7 @@ impl Cli {
             }
             Command::Events(args) => events::run(args, &socket, &state_dir).await?,
             Command::Explain(args) => explain::run(args, &socket, &state_dir).await?,
+            Command::Reload(args) => reload::run(args, &socket, &config_path).await?,
             Command::Doctor(args) => {
                 doctor::run(args, &config_path, self.profile.as_deref()).await?;
             }
@@ -544,6 +548,11 @@ mod windows_tests {
 
 async fn load_config(path: &Path, profile: Option<&str>) -> Result<DevdConfig> {
     let mut config = ConfigLoader::new().load_profile(path, profile).await?;
+    resolve_working_directories(&mut config, path);
+    Ok(config)
+}
+
+fn resolve_working_directories(config: &mut DevdConfig, path: &Path) {
     for service in config.services.values_mut() {
         service.cwd = Some(
             path.parent()
@@ -551,7 +560,6 @@ async fn load_config(path: &Path, profile: Option<&str>) -> Result<DevdConfig> {
                 .join(service.cwd.as_deref().unwrap_or(Path::new("."))),
         );
     }
-    Ok(config)
 }
 
 fn output(text: &str) -> Result<()> {

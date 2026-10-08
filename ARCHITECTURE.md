@@ -13,7 +13,7 @@ flowchart LR
     start[devd start: foreground] --> lock[Project state lock]
     lock --> server[Local control server: Unix socket / Windows named pipe]
     server --> manager[ServiceManager]
-    clients[stop / restart / status / logs / events / explain / top] --> server
+    clients[stop / restart / status / logs / events / explain / top / reload --dry-run] --> server
     manager --> actors[Service actors and process groups]
     actors --> logs[Bounded in-memory logs]
     logs --> terminal[Serialized live stdout]
@@ -30,7 +30,11 @@ v0.3 增加单文件 `profiles` 与全局 `--profile`。`config/profile.rs` 独�
 
 配置快照按完整 YAML 文件保存于基础状态目录的 `snapshots/<name>.yml`，不进入 profile 子目录。保存和恢复复制原始字节，支持未完成编辑的配置；校验仍由 `check` 负责。临时文件先写入同一目录并同步，再通过不覆盖的原子发布创建目标；快照名限制为安全的小写 ASCII，恢复目标只能是原配置目录的新文件名，以维持相对路径语义。配置快照不接触 `services.json`、控制 socket 或进程；恢复不会修改运行中实例，也不会接管遗留 PID。
 
-当前可用命令为 start、stop、restart、status、top、logs、events（均含 --follow / --stored）、explain、check、graph、init、snapshot，支持 TCP/HTTP/Unix Socket/Script 健康检查和 fixed/exponential 重启延时。status 提供服务主进程 CPU／RSS 采样。top 仅连接活实例，退出界面不停止服务，停止全栈必须在界面内确认；终端恢复由 RAII 处理。下方总体蓝图仍包含未来的配置监听等扩展，不能视为当前实现。
+当前可用命令为 start、stop、restart、reload --dry-run、status、top、logs、events（均含 --follow / --stored）、explain、doctor、check、graph、init、snapshot，支持 TCP/HTTP/Unix Socket/Script 健康检查和 fixed/exponential 重启延时。status 提供服务主进程 CPU／RSS 采样。top 仅连接活实例，退出界面不停止服务，停止全栈必须在界面内确认；终端恢复由 RAII 处理。下方总体蓝图仍包含未来的配置监听等扩展，不能视为当前实现。
+
+v0.6 的 `reload --dry-run [--candidate PATH] [--json]` 通过控制端点读取 supervisor 持有的启动配置基线。`cli::reload` 在最多两个并发 blocking 任务内读取候选普通文件（上限 1 MiB），沿用实例 profile，按候选目录解析 cwd；`core::reload` 调用与启动共用的静态配置准备函数，校验命令、探测设置、计时器和依赖图，不执行探测或读取 dotenv 内容。任务不持有 controller、状态 writer 或事件记录器；全栈 stop 优先取消等待，即使 OS 读取稍后返回也不能改变服务。并发名额由 blocking 闭包持有直到返回，避免取消后无限积累后台读取。
+
+预览按有效服务定义比较字段；命令参数、默认值、别名、映射/依赖顺序与资源单位归一化，路径不折叠可能穿过软链接的 `..`，保留尾部目录语义。差异传播沿旧、新反向依赖边的并集遍历，visited 集合处理并集成环；旧图逆序停止层、新图正序启动层均只保留受影响服务。报告只输出字段名和原因服务，不传输完整配置。排序 JSON 的 SHA-256 标识旧/新配置，plan 摘要还绑定 run_id、profile、PID、代次及生命周期状态，不受 CPU/RSS 采样影响。它描述一次读取与快照，不锁定后续变化；保存的报告不能应用，输入或生命周期变化后需重算。当前 `apply_available: false`，所有变更仅预览；手动应用与竞争/部分失败语义属于下一模块。
 
 资源采集由 `core::resource_monitor` 每秒通过阻塞线程池读取受管主 PID 的 sysinfo 指标，生命周期仍由 service actor 独占。监控 future 随 manager 驱动、退出时停止轮询；在途 OS 读取只持有局部数据，不能在退出后写回状态。采样以 PID、started_at、restart_count 核对进程代次，actor 发布健康状态时保留同代指标，退出时清除。CPU 首次采样只建立基线；不可用指标保持空值。缓存随代次淘汰，Linux 线程枚举关闭；不统计子进程。可选 `limits` 对采样值执行跨阈值告警与恢复日志，不执行强制限制。
 
@@ -402,6 +406,7 @@ devd/
 │   │   ├── mod.rs             # clap, paths, commands and presentation
 │   │   ├── doctor.rs          # Read-only local launch prerequisite report
 │   │   ├── graph.rs           # Text, DOT and Mermaid dependency views
+│   │   ├── reload.rs          # Read-only live configuration impact preview
 │   │   ├── protocol.rs        # Bounded local request/response transport
 │   │   ├── server.rs          # Foreground runtime and client lifecycle
 │   │   └── stdout.rs          # Cancellable terminal and pipe writes
@@ -411,6 +416,7 @@ devd/
 │   │   ├── service_manager.rs # Main orchestrator
 │   │   ├── service_task.rs    # Per-service task
 │   │   ├── dependency.rs      # Dependency graph + topological sort
+│   │   ├── reload.rs          # Effective config diff, impact layers and identities
 │   │   ├── health_check.rs    # Health check implementations
 │   │   ├── restart_policy.rs  # Restart strategy
 │   │   └── process_manager.rs # Process spawn/kill/signal
@@ -440,6 +446,7 @@ devd/
 │
 ├── tests/
 │   ├── cli.rs                 # Real binary lifecycle and failure tests
+│   ├── reload.rs              # Live preview validation and no-side-effect tests
 │   ├── integration.rs         # Full MVP scenarios through the public CLI
 │   ├── support/               # Bounded command harness and local HTTP mock
 │   ├── integration/           # Integration tests

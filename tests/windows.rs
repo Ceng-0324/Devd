@@ -318,6 +318,97 @@ async fn test_windows_runtime_path_monitor_records_failure_and_recovery_without_
         .success());
 }
 
+#[tokio::test]
+async fn test_windows_reload_preview_preserves_running_job_and_validates_candidate() {
+    use devd::core::{
+        reload::{ChangeKind, ReloadPlan},
+        service_manager::RuntimeSnapshot,
+    };
+    let root = tempfile::tempdir().unwrap();
+    let service = config(root.path(), "tree");
+    let mut document = serde_json::json!({
+        "version": "1", "services": {"worker": {
+            "command": service.command, "cwd": service.cwd, "env": service.env,
+            "restart": {"policy": "never"}
+        }}
+    });
+    fs::write(
+        root.path().join("devd.yml"),
+        serde_yaml::to_string(&document).unwrap(),
+    )
+    .unwrap();
+    let mut supervisor = Supervisor(
+        Command::new(env!("CARGO_BIN_EXE_devd"))
+            .args(["start", "--color", "never"])
+            .current_dir(root.path())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap(),
+    );
+    wait_until(|| !descendants(root.path()).is_empty()).await;
+    let before: RuntimeSnapshot =
+        serde_json::from_slice(&cli(root.path(), &["status", "--json"]).stdout).unwrap();
+    let preview = |args: &[&str]| -> ReloadPlan {
+        let output = cli(root.path(), args);
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+    let baseline = preview(&["reload", "--dry-run", "--json"]);
+    assert_eq!(baseline.base_config_id, baseline.candidate_config_id);
+    document["services"]["worker"]["env"]["TOKEN"] = "candidate-secret".into();
+    fs::write(
+        root.path().join("candidate.yml"),
+        serde_yaml::to_string(&document).unwrap(),
+    )
+    .unwrap();
+    let changed = preview(&[
+        "reload",
+        "--dry-run",
+        "--candidate",
+        "candidate.yml",
+        "--json",
+    ]);
+    assert_eq!(changed.services["worker"].change, ChangeKind::Modified);
+    assert_eq!(changed.services["worker"].changed_fields, ["env"]);
+    assert_eq!(changed.base_config_id, baseline.base_config_id);
+    assert!(!changed.apply_available);
+    assert!(!serde_json::to_string(&changed)
+        .unwrap()
+        .contains("candidate-secret"));
+    document["services"]["worker"]["healthcheck"] =
+        serde_json::json!({"type": "socket", "path": "unsupported.sock"});
+    fs::write(
+        root.path().join("candidate.yml"),
+        serde_yaml::to_string(&document).unwrap(),
+    )
+    .unwrap();
+    let invalid = cli(
+        root.path(),
+        &["reload", "--dry-run", "--candidate", "candidate.yml"],
+    );
+    assert!(!invalid.status.success());
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("not supported on Windows"));
+    let after: RuntimeSnapshot =
+        serde_json::from_slice(&cli(root.path(), &["status", "--json"]).stdout).unwrap();
+    assert!(before.services["worker"].pid.is_some());
+    assert_eq!(before.services["worker"].pid, after.services["worker"].pid);
+    assert_eq!(
+        before.services["worker"].event_generation,
+        after.services["worker"].event_generation
+    );
+    assert!(descendants(root.path()).into_iter().all(alive));
+    assert!(cli(root.path(), &["stop"]).status.success());
+    wait_until(|| supervisor.0.try_wait().unwrap().is_some()).await;
+    for pid in descendants(root.path()) {
+        wait_until(|| !alive(pid)).await;
+    }
+}
+
 #[test]
 fn test_windows_cli_control_persistence_and_supervisor_death_cleanup() {
     let root = tempfile::tempdir().unwrap();

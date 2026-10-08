@@ -186,7 +186,6 @@ impl ServiceController {
 impl ServiceManager {
     /// Validate every service before any child or state file is created.
     pub fn new(config: DevdConfig, options: ManagerOptions) -> Result<Self, ServiceManagerError> {
-        config.validate()?;
         if options.dependency_timeout.is_zero() {
             return Err(ServiceManagerError::ZeroDependencyTimeout);
         }
@@ -196,35 +195,7 @@ impl ServiceManager {
         ] {
             validate_duration(field.into(), duration)?;
         }
-        let graph = DependencyGraph::from_config(&config).map_err(ConfigValidationError::from)?;
-        let layers = graph
-            .startup_layers()
-            .map_err(ConfigValidationError::from)?;
-        let mut checkers = BTreeMap::new();
-        for name in graph.service_names() {
-            let service = &config.services[name];
-            parse_command(name, &service.command)?;
-            if service.restart.backoff == BackoffType::Exponential {
-                validate_duration(
-                    format!("services.{name}.restart.max-delay"),
-                    service.restart.max_delay,
-                )?;
-            }
-            validate_duration(
-                format!("services.{name}.restart.initial-delay"),
-                service.restart.initial_delay,
-            )?;
-            let checker = service
-                .healthcheck
-                .as_ref()
-                .map(|check| HealthChecker::for_service(check, service))
-                .transpose()
-                .map_err(|source| ServiceManagerError::Health {
-                    service: name.into(),
-                    source,
-                })?;
-            checkers.insert(name.into(), checker);
-        }
+        let PreparedConfig { layers, checkers } = prepare_config(&config)?;
         let resource_limits = config
             .services
             .iter()
@@ -241,9 +212,10 @@ impl ServiceManager {
         let initial = RuntimeSnapshot {
             supervisor_pid: std::process::id(),
             event_run_id: Some(events.run_id().to_owned()),
-            services: graph
-                .service_names()
-                .map(|name| (name.into(), ServiceSnapshot::default()))
+            services: config
+                .services
+                .keys()
+                .map(|name| (name.clone(), ServiceSnapshot::default()))
                 .collect(),
         };
         let (snapshots, _) = watch::channel(initial);
@@ -261,6 +233,10 @@ impl ServiceManager {
             commands,
             controller: ServiceController(sender),
         })
+    }
+
+    pub(crate) fn configuration(&self) -> &DevdConfig {
+        &self.config
     }
 
     pub fn subscribe(&self) -> watch::Receiver<RuntimeSnapshot> {
@@ -559,6 +535,46 @@ impl Drop for RunEventGuard {
                 .record(None, None, None, EventData::SupervisorCancelled);
         }
     }
+}
+
+pub(crate) struct PreparedConfig {
+    pub(crate) layers: Vec<Vec<String>>,
+    checkers: BTreeMap<String, Option<HealthChecker>>,
+}
+
+/// Shared launch validation without probes, env-file reads or runtime state.
+pub(crate) fn prepare_config(config: &DevdConfig) -> Result<PreparedConfig, ServiceManagerError> {
+    config.validate()?;
+    let graph = DependencyGraph::from_config(config).map_err(ConfigValidationError::from)?;
+    let layers = graph
+        .startup_layers()
+        .map_err(ConfigValidationError::from)?;
+    let mut checkers = BTreeMap::new();
+    for name in graph.service_names() {
+        let service = &config.services[name];
+        parse_command(name, &service.command)?;
+        if service.restart.backoff == BackoffType::Exponential {
+            validate_duration(
+                format!("services.{name}.restart.max-delay"),
+                service.restart.max_delay,
+            )?;
+        }
+        validate_duration(
+            format!("services.{name}.restart.initial-delay"),
+            service.restart.initial_delay,
+        )?;
+        let checker = service
+            .healthcheck
+            .as_ref()
+            .map(|check| HealthChecker::for_service(check, service))
+            .transpose()
+            .map_err(|source| ServiceManagerError::Health {
+                service: name.into(),
+                source,
+            })?;
+        checkers.insert(name.into(), checker);
+    }
+    Ok(PreparedConfig { layers, checkers })
 }
 
 fn validate_duration(field: String, duration: Duration) -> Result<(), ServiceManagerError> {

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — v0.6 development
+
+- Preview configuration changes against a live supervisor with `reload --dry-run`,
+  an optional candidate file, and text or versioned JSON output. Validate the
+  candidate and selected profile, report direct and transitive dependency impact,
+  and show conservative stop/start layers with instance/configuration identities.
+  Preview does not change processes or runtime state; applying changes is pending.
+- Declare file, directory, and symlink prerequisites with service `requires`;
+  check them before spawn and through `doctor`. Optionally observe changes with
+  `monitor-requires`, deduplicated events, and evidence in `explain`, without
+  authorizing restarts or changing user files.
+
 ## v0.5.0-alpha.1 — 2026-10-07
 
 Prerelease for local development on Linux, macOS, and Windows. Native CI and

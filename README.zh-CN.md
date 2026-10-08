@@ -187,6 +187,24 @@ devd graph --profile staging --format mermaid > dependencies.mmd
 
 图中的箭头从前置服务指向依赖它的服务，边上的标签是就绪条件；没有依赖边的服务也会显示。`graph` 会校验配置，但不启动服务或创建运行状态。DOT 和 Mermaid 输出是供相应渲染器使用的源码，不是图片文件。
 
+### 配置变更预览（v0.6 开发中）
+
+改一个服务，可能牵动半个栈。动进程之前，先让正在运行的 supervisor 列出影响：
+
+```bash
+devd reload --dry-run
+devd reload --dry-run --candidate devd.next.yml --json
+devd reload --dry-run --profile staging --candidate devd.next.yml
+```
+
+使用与启动时相同的 `--config`、`--profile` 和 `--state-dir` 定位实例。比较基线是 supervisor 内存里保留的有效配置，磁盘 YAML 改了也不会偷换基线。候选默认取 `--config`；`--candidate` 可指定另一份文件，不改变连接的实例。候选里的相对 `cwd` 按候选文件自己的目录解析，并使用该实例已有的 profile；候选必须包含这个 profile。预览需要活实例和不超过 1 MiB 的可读普通 YAML 文件。
+
+报告区分 `added`、`removed`、`modified`、`dependency-affected` 和 `unchanged`，列出变化字段，以及哪些直接变更的前置服务带来了影响。沿旧、新两张依赖图追踪全部下游，不受 `restart-on-dep-recovery` 开关限制。预计顺序是先按旧图逆序分层停止受影响服务，再按新图正序分层启动；无关服务不进入这两份列表。成功报告只列字段名，不输出配置值、命令正文或环境内容；校验错误沿用通常的配置诊断。
+
+`--json` 返回 `schema_version: 1`、supervisor 的 `run_id`、旧/新有效配置摘要、进程代次和 `plan_id`，标识这次候选读取与运行快照。输入或生命周期变化后要重新预览，保存的报告不能拿去执行。本模块的 `apply_available` 始终为 `false`，`unsupported_changes` 明确说明所有列出的变更都只供预览。实例/profile、状态目录和 supervisor 日志选项不能在这里修改。
+
+`--dry-run` 是必填项。预览会校验完整候选、命令引号、设置和依赖图；不会执行服务或探测命令、读取 dotenv 正文、检查实时路径/端口就绪、写运行状态或重启进程。dotenv 内容、继承环境和程序文件本身的变化不在比较范围内。真正应用变更留到下一模块。
+
 ### 命令速查
 
 | 命令 | 用途 |
@@ -194,6 +212,7 @@ devd graph --profile staging --format mermaid > dependencies.mmd
 | `devd start [--persist-logs] [--persist-events]` | 前台启动全栈，可选保留日志和生命周期事件，分别设置大小与保留数 |
 | `devd stop` | 请求有序关闭，前台进程完成清理后退出 |
 | `devd restart <service>` | 用启动时的配置重启一个服务，重新检查依赖 |
+| `devd reload --dry-run [--candidate PATH] [--json]` | 对活实例预览配置变化与依赖影响（v0.6 开发中） |
 | `devd status [--json]` | 查看实时状态、PID、CPU／RSS、重启次数和诊断信息 |
 | `devd top` | 在交互式终端查看运行中的服务和实时日志 |
 | `devd events [service] [--type TYPE] [--since DURATION] [--tail N] [--cursor RUN_UUID:NEXT_SEQUENCE] [--json] [--follow \| --stored]` | 查询生命周期经过、游标与历史缺口 |
