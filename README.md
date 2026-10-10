@@ -179,6 +179,51 @@ profiles, and state directories. `identity` uses the same selectors as `status` 
 the YAML has been removed. Neither command isolates ports, files, or databases.
 Reports include local paths; consider that before sharing them.
 
+### Wait for readiness (v0.7 development)
+
+Starting a process does not mean the next step can use it. Before running tests
+or handing a stack to another tool, wait for the live supervisor's readiness:
+
+```bash
+devd wait                              # Whole stack, up to 30 seconds
+devd wait api worker --timeout 1m --json
+devd wait api --profile staging --state-dir ./runtime
+```
+
+This command is in the development branch. Omit names to select every service
+in the supervisor's effective configuration; supplied names match exactly and
+duplicates are ignored. Services with a health check need `healthy` and a PID;
+others need `running` and a PID. Use the same `--config`, `--profile`, and
+`--state-dir` as `start`. The YAML can be edited or removed: `wait` reads live
+state without loading it or running extra probes.
+
+The default deadline is `30s`, including connection setup; `--timeout` accepts
+`1ms` through `1h`. Manual and automatic restarts within the same supervisor
+can continue into a new process generation. A pending manual restart prevents
+the old generation from satisfying the wait. Whole-stack stop, an accepted
+reload (even an equivalent configuration), or a disconnected control stream
+ends the wait. Previewing or rejecting a reload does not. There is no reconnect
+to a replacement supervisor. Ctrl+C cancels only the waiting command.
+
+Exit code `0` means every selected service was ready in one live observation;
+it does not reserve those processes or promise they will stay healthy. Other
+wait outcomes exit `1`; invalid CLI arguments exit `2`. A stopped/failed selected
+service terminates the wait; pending, starting, unhealthy, and restarting
+services can continue waiting. An observed whole-stack stop or reload takes
+precedence over service readiness. Each supervisor allows eight concurrent
+waits; excess callers receive `busy`, leaving capacity for control commands.
+
+`--json` prints one final report on stdout, including unsuccessful waits:
+`schema_version: 1`, `outcome`, `instance_id`, `run_id`, `observed_at`,
+`elapsed_ms`, `services`, `blocking`, and `message`. Each service includes its
+health requirement, observed state, PID, generation, readiness, pending manual
+restart, and last error. Outcomes are `ready`, `failed`, `timed-out`,
+`cancelled`, `stopping`, `reloaded`, `disconnected`, `unavailable`,
+`invalid-service`, or `busy`. Timeout/cancellation/disconnect preserve the last
+received evidence, which may be stale; identity and observation fields are null
+if no report arrived. `waiting` is internal stream progress, not a final CLI
+outcome. Argument errors may occur before a report can be produced.
+
 ### Named environments
 
 Keep environment differences in the same YAML file:

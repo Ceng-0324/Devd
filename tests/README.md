@@ -33,6 +33,16 @@ cargo test --locked --test integration
 
 ## Coverage
 
+`wait.rs` runs real CLI/supervisor processes on all three platforms: whole-stack
+and named readiness, health gates, deduplication, timeout evidence, invalid
+names/deadlines, profiles/custom state, deleted YAML, same-run manual/automatic
+replacement, no-op reload invalidation, rejected plans, concurrent wait limits,
+and stop/status capacity. Unix also sends SIGINT to prove cancellation preserves
+service PIDs. Two ignored test functions are executable service/probe fixtures;
+no platform shell or external probe server is needed. In-memory protocol tests
+cover coalesced reload barriers, pending restarts, EOF and run-ID mismatch,
+deadline expiry, terminal states, and prompt permit release after disconnect.
+
 `instances.rs` runs natively on all three platforms: live identity, profiles,
 external state directories, restart identity/run separation, removed YAML,
 linked/detached worktrees, nested configurations, branch-at-start provenance,

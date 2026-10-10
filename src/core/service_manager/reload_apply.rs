@@ -75,6 +75,10 @@ impl ReloadExecution {
             Ok(value) => value,
             Err(error) => return Err((request.reply, error)),
         };
+        manager.readiness.send_modify(|state| {
+            state.reload_epoch += 1;
+            state.reloading = true;
+        });
         let cause = manager.events.record(
             None,
             None,

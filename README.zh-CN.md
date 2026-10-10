@@ -152,6 +152,24 @@ devd identity --profile staging --json # 指定活实例的身份
 
 `instances` 以当前目录确定范围，不接受非默认配置路径、profile 或状态目录选择器；`identity` 沿用 `status` 的选择器，YAML 删除后仍可查询。它们不隔离端口、应用文件或数据库。报告包含本地路径，分享前请留意。
 
+### 等待就绪（v0.7 开发中）
+
+进程启动了，不代表下一步就能用。跑测试、执行脚本，或者把环境交给另一个工具之前，可以先等活实例报告就绪：
+
+```bash
+devd wait                              # 等全栈，默认最多 30 秒
+devd wait api worker --timeout 1m --json
+devd wait api --profile staging --state-dir ./runtime
+```
+
+该命令已在开发分支实现。不写服务名时选择 supervisor 当前有效配置中的全部服务；指定名称时精确匹配、自动去重。有健康检查的服务必须达到 `healthy` 且持有 PID，其余必须为 `running` 且持有 PID。沿用启动时的 `--config`、`--profile` 和 `--state-dir`。YAML 改坏或删除后仍能等待：命令只读取活状态，不重读配置，也不额外执行探测。
+
+默认期限 `30s` 包含连接建立，可用 `--timeout` 设置 `1ms` 到 `1h`。同一 supervisor 内手动重启或崩溃恢复可以继续等待新代次；手动重启请求一旦被接受，旧代次就不能满足等待。全栈停止、已接受的配置重载（包括等价配置）或控制连接断开会终止本次等待。预览和被拒绝的重载不影响等待，也不会自动重连新的 supervisor。Ctrl+C 只取消等待命令。
+
+退出码 `0` 表示在同一次活观测中，所选服务全部就绪；它不会锁住这些进程，也不保证之后持续健康。其他等待结果退出 `1`，CLI 参数错误退出 `2`。所选服务进入 stopped/failed 会终止等待；pending、starting、unhealthy 和 restarting 可以继续等。已观测到的全栈停止或重载优先于服务就绪。每个 supervisor 最多接受 8 个并发等待，多出的请求返回 `busy`，为控制命令保留连接余量。
+
+`--json` 在 stdout 输出一份最终报告，失败也有报告：`schema_version: 1`、`outcome`、`instance_id`、`run_id`、`observed_at`、`elapsed_ms`、`services`、`blocking` 和 `message`。每个服务包含健康要求、观测状态、PID、代次、是否就绪、是否有手动重启待完成，以及最近错误。结果为 `ready`、`failed`、`timed-out`、`cancelled`、`stopping`、`reloaded`、`disconnected`、`unavailable`、`invalid-service` 或 `busy`。超时、取消或断连时保留最后收到的证据，可能已经过时；未收到报告时身份和观测字段为 null。`waiting` 仅用于内部流式进度，不是 CLI 最终结果。参数错误可能在生成报告前退出。
+
 ### 多环境配置
 
 环境之间的差异可以留在同一份 YAML 里：

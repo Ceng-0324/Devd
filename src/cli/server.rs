@@ -44,6 +44,8 @@ pub(super) async fn start(
     });
     let controller = manager.controller();
     let configurations = manager.configurations();
+    let readiness = manager.readiness();
+    let waiters = Arc::new(Semaphore::new(8));
     let profile = options.profile.clone();
     let previews = Arc::new(Semaphore::new(2));
     let logs = manager.subscribe_logs();
@@ -171,6 +173,8 @@ pub(super) async fn start(
                 let configurations = configurations.clone();
                 let profile = profile.clone();
                 let identity = identity.clone();
+                let readiness = readiness.clone();
+                let waiters = waiters.clone();
                 clients.spawn(async move {
                     // Reload can remove a service while its bounded diagnostic
                     // history remains useful. Control still requires a live name.
@@ -181,6 +185,12 @@ pub(super) async fn start(
                         Err(error) => Response::Error(error.to_string()),
                         Ok(Request::Status) => Response::Status(snapshots.borrow().clone()),
                         Ok(Request::Identity) => Response::Identity(Box::new(identity)),
+                        Ok(Request::Wait { services, timeout_ms }) => {
+                            let permit = waiters.try_acquire_owned().ok();
+                            return super::wait::serve(&mut stream, services, timeout_ms, super::wait::Source {
+                                identity, snapshots, configurations, control: readiness, stopping: shutdown.subscribe(),
+                            }, permit).await;
+                        },
                         Ok(Request::PreviewReload { candidate }) => {
                             let Ok(permit) = previews.try_acquire_owned() else {
                                 return protocol::write(&mut stream, &Response::Error("too many configuration previews (maximum 2)".into())).await;

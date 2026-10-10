@@ -2,6 +2,11 @@
 
 ## Unreleased — v0.7 development
 
+- Add read-only `wait [service…] --timeout 30s [--json]` with live health/PID
+  readiness, per-run and generation evidence, bounded concurrent waits, and
+  explicit timeout, cancellation, stop, reload, and disconnect outcomes.
+  Follow restarts within one supervisor; never reconnect across runs or infer
+  readiness from an old state file. Cancelling a wait leaves services running.
 - Add read-only `identity` and project/worktree-scoped `instances` commands with
   stable instance identity, per-run identity, startup Git context, profile and
   custom-state-directory registration, bounded endpoint verification, and

@@ -164,6 +164,7 @@ pub struct ServiceManager {
     events: EventRecorder,
     resource_limits: BTreeMap<String, ResourceThresholds>,
     configurations: watch::Sender<Arc<DevdConfig>>,
+    readiness: watch::Sender<super::readiness::ControlState>,
     commands: mpsc::Receiver<ManagerCommand>,
     controller: ServiceController,
 }
@@ -254,6 +255,7 @@ impl ServiceManager {
         let logs = LogCollector::new(options.logging)?;
         let (sender, commands) = mpsc::channel(32);
         let (configurations, _) = watch::channel(Arc::new(config.clone()));
+        let (readiness, _) = watch::channel(super::readiness::ControlState::default());
         Ok(Self {
             config,
             options,
@@ -264,6 +266,7 @@ impl ServiceManager {
             events,
             resource_limits,
             configurations,
+            readiness,
             commands,
             controller: ServiceController(sender),
         })
@@ -271,6 +274,10 @@ impl ServiceManager {
 
     pub(crate) fn configurations(&self) -> watch::Receiver<Arc<DevdConfig>> {
         self.configurations.subscribe()
+    }
+
+    pub(crate) fn readiness(&self) -> watch::Receiver<super::readiness::ControlState> {
+        self.readiness.subscribe()
     }
 
     pub fn subscribe(&self) -> watch::Receiver<RuntimeSnapshot> {
@@ -409,6 +416,7 @@ impl ServiceManager {
                     if let Some(error) = rejection {
                         let _ = request.reply.send(Err(error));
                     } else {
+                        self.readiness.send_modify(|state| { state.restarting.insert(name.clone()); });
                         let cause = self.events.record(
                             Some(&name),
                             self.snapshots.borrow().services[&name].event_generation,
@@ -431,6 +439,7 @@ impl ServiceManager {
                             Err(state.last_error.unwrap_or_else(|| format!("service '{name}' exited before restart completed")))
                         };
                         let _ = starting.remove(&name).unwrap().send(result);
+                        self.readiness.send_modify(|state| { state.restarting.remove(&name); });
                     }
                     if let Err(failure) = store.write(&snapshot).await {
                         error = Some(failure);
@@ -477,6 +486,7 @@ impl ServiceManager {
                             break;
                         }
                         execution.finish(&self.events, super::reload::ReloadOutcome::Applied, None);
+                        self.readiness.send_modify(|state| state.reloading = false);
                     }
                     Ok(false) => {}
                     Err(message) => {
@@ -522,6 +532,7 @@ impl ServiceManager {
         {
             shutdown_reason = ShutdownReason::ServiceFailed;
         }
+        self.readiness.send_modify(|state| state.stopping = true);
         let stop_cause = self.events.record(
             None,
             None,

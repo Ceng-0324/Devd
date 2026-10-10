@@ -13,7 +13,7 @@ use crate::{
     logging::{LogEntry, LogFilter},
 };
 
-const MAX_REQUEST: usize = 4096;
+pub(super) const MAX_REQUEST: usize = 4096;
 const MAX_RESPONSE: usize = 128 * 1024 * 1024;
 pub(super) const IO_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -22,6 +22,10 @@ pub(super) const IO_TIMEOUT: Duration = Duration::from_secs(5);
 pub(super) enum Request {
     Status,
     Identity,
+    Wait {
+        services: Vec<String>,
+        timeout_ms: u64,
+    },
     PreviewReload {
         candidate: std::path::PathBuf,
     },
@@ -61,6 +65,7 @@ pub(super) enum Request {
 pub(super) enum Response {
     Status(RuntimeSnapshot),
     Identity(Box<super::instances::Identity>),
+    Wait(Box<super::wait::Report>),
     ReloadPlan(ReloadPlan),
     Reloaded(ReloadReport),
     Stopping,

@@ -14,6 +14,7 @@ mod stdout;
 mod stdout;
 mod top;
 mod transport;
+mod wait;
 
 use std::{
     io::{self, Write},
@@ -88,6 +89,8 @@ enum Command {
     Restart { service: String },
     /// Preview or explicitly apply configuration changes to a running supervisor.
     Reload(reload::Args),
+    /// Wait for selected services (or the whole stack) to become ready.
+    Wait(wait::Args),
     /// Query live service states and PIDs.
     Status {
         #[arg(long)]
@@ -284,6 +287,7 @@ impl Cli {
                 .await?;
             }
             Command::Events(args) => events::run(args, &socket, &state_dir).await?,
+            Command::Wait(args) => wait::run(args, &socket).await?,
             Command::Identity { json } => instances::show(&socket, json).await?,
             Command::Instances { .. } => unreachable!("handled before configuration resolution"),
             Command::Explain(args) => explain::run(args, &socket, &state_dir).await?,

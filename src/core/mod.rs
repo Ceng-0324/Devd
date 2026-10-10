@@ -6,6 +6,7 @@ pub mod health_check;
 mod path_monitor;
 pub mod path_requirements;
 pub mod process_manager;
+pub(crate) mod readiness;
 pub mod reload;
 pub mod resource_monitor;
 pub mod service_manager;
