@@ -89,6 +89,7 @@ pub(super) async fn start(
             .context("control endpoint has no directory")?,
         profile.clone(),
         event_history.snapshot().context.run_id,
+        store.clone(),
     )
     .await
     .context("cannot register project instance")?;

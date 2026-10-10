@@ -174,8 +174,8 @@ index warnings, not that all services are live or all machine instances known.
 Limits are 64 worktrees, 256 records, 64 KiB per record, eight concurrent probes,
 and 750 ms per endpoint. Slow supervisors may appear unreachable; retry later.
 
-`instances` uses the current directory and rejects configuration/profile/state
-selectors. `identity` uses the same selectors as `status` and still works when
+`instances` uses the current directory and rejects nondefault configuration paths,
+profiles, and state directories. `identity` uses the same selectors as `status` and still works when
 the YAML has been removed. Neither command isolates ports, files, or databases.
 Reports include local paths; consider that before sharing them.
 
@@ -269,6 +269,8 @@ Choose exactly one of `--dry-run` or `--apply`. Preview validates YAML, quoting,
 | `devd restart <service>` | Restart one service using the current effective configuration, rechecking dependencies |
 | `devd reload --dry-run / --apply --plan ID [--candidate PATH] [--json]` | Preview or explicitly apply affected service changes (v0.6) |
 | `devd status [--json]` | Show live state, PIDs, CPU / RSS, restart counts, and diagnostics |
+| `devd identity [--json]` | Show the selected live supervisor's instance and run identity (v0.7 development) |
+| `devd instances [--json]` | Discover registered instances in the current repository and its worktrees (v0.7 development) |
 | `devd top` | Inspect a running stack and its live logs in an interactive terminal |
 | `devd events [service] [--type TYPE] [--since DURATION] [--tail N] [--cursor RUN_UUID:NEXT_SEQUENCE] [--json] [--follow \| --stored]` | Query lifecycle facts, cursors and history gaps |
 | `devd explain <service> [--json] [--stored]` | Explain the latest deterministic failure evidence for one service |
@@ -280,7 +282,7 @@ Choose exactly one of `--dry-run` or `--apply`. Preview validates YAML, quoting,
 | `devd snapshot save <NAME>` | Save the complete on-disk YAML under the project state directory |
 | `devd snapshot restore <NAME> --output <FILENAME>` | Restore it to a new file beside the original configuration |
 
-Commands accept `-c / --config <PATH>`, `--profile <NAME>` (except `init` and `snapshot`), `--state-dir <PATH>`, and `--color auto|always|never`. Options work before or after the subcommand:
+Commands accept `-c / --config <PATH>`, `--profile <NAME>` (except `init` and `snapshot`), `--state-dir <PATH>`, and `--color auto|always|never`. `instances` instead selects its scope from the current directory and rejects nondefault configuration paths, profiles, and state directories. Options work before or after the subcommand:
 
 ```bash
 devd start --config ./devd.local.yml

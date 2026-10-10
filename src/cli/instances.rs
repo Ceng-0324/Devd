@@ -4,6 +4,7 @@ use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     process::Stdio,
+    sync::Arc,
     time::Duration,
 };
 
@@ -134,6 +135,7 @@ pub(super) async fn register(
     state: &Path,
     profile: Option<String>,
     run_id: String,
+    lease: Arc<crate::core::state_store::StateStore>,
 ) -> Result<Identity> {
     let state_dir = tokio::fs::canonicalize(state).await?;
     let (project_root, git) =
@@ -152,6 +154,8 @@ pub(super) async fn register(
     };
     let record = identity.clone();
     tokio::task::spawn_blocking(move || -> Result<()> {
+        // Cancellation cannot release endpoint ownership ahead of a late write.
+        let _lease = lease;
         let base = record.project_root.join(".devd");
         let index = base.join("instances");
         // Never follow a project index redirected through a symlink/reparse point.
@@ -164,8 +168,12 @@ pub(super) async fn register(
             regular_directory(directory)?;
         }
         let path = index.join(format!("{}.json", record.instance_id));
-        if path.exists() {
-            crate::platform::files::open_regular(&path, false, true)?;
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) => {
+                crate::platform::files::open_regular(&path, false, true)?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error.into()),
         }
         let bytes = serde_json::to_vec_pretty(&record)?;
         if bytes.len() as u64 > MAX_BYTES {
@@ -471,6 +479,33 @@ mod tests {
             std::fs::read_to_string(root.join("secret")).unwrap(),
             "secret"
         );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn test_registration_preserves_dangling_record_link() {
+        let root = tempfile::tempdir().unwrap();
+        let identity = fixture(root.path());
+        let index = identity.project_root.join(".devd/instances");
+        std::fs::create_dir_all(&index).unwrap();
+        let record = index.join(format!("{}.json", identity.instance_id));
+        std::os::unix::fs::symlink("missing", &record).unwrap();
+        let lease = Arc::new(
+            crate::core::state_store::StateStore::open(&identity.state_dir.join("state.json"))
+                .await
+                .unwrap(),
+        );
+        assert!(register(
+            identity.config,
+            &identity.state_dir,
+            None,
+            identity.run_id,
+            lease,
+        )
+        .await
+        .is_err());
+        assert_eq!(std::fs::read_link(record).unwrap(), Path::new("missing"));
+        assert!(!index.join("missing").exists());
     }
 
     #[tokio::test]

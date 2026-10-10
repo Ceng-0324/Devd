@@ -150,7 +150,7 @@ devd identity --profile staging --json # 指定活实例的身份
 
 索引仅是线索，必须连接控制端点并核对完整身份后才标为 `live`；其他结果为 `unreachable`、`identity-mismatch` 或 `unsupported`。不可达不代表进程已死，停止后的记录会保留，再次启动同一实例时替换。发现命令不改索引、不接管旧 PID、不停止进程、不删除数据。JSON 包含 `schema_version: 1`、`entries`、`warnings` 和 `complete`；`complete` 仅指所选范围的登记记录已检查且没有索引警告，不保证服务在线或已找到本机所有实例。最多检查 64 个 worktree、256 条记录，每条上限 64 KiB；端点并发上限 8，每个等待 750 ms。繁忙实例可能暂时不可达，可稍后重试。
 
-`instances` 以当前目录确定范围，不接受配置/profile/状态目录选择器；`identity` 沿用 `status` 的选择器，YAML 删除后仍可查询。它们不隔离端口、应用文件或数据库。报告包含本地路径，分享前请留意。
+`instances` 以当前目录确定范围，不接受非默认配置路径、profile 或状态目录选择器；`identity` 沿用 `status` 的选择器，YAML 删除后仍可查询。它们不隔离端口、应用文件或数据库。报告包含本地路径，分享前请留意。
 
 ### 多环境配置
 
@@ -242,6 +242,8 @@ devd reload --apply --plan 'sha256:<64位十六进制摘要>' --candidate devd.n
 | `devd restart <service>` | 用当前有效配置重启一个服务，重新检查依赖 |
 | `devd reload --dry-run / --apply --plan ID [--candidate PATH] [--json]` | 预览或显式应用受影响服务的配置变化（v0.6） |
 | `devd status [--json]` | 查看实时状态、PID、CPU／RSS、重启次数和诊断信息 |
+| `devd identity [--json]` | 查看所选活 supervisor 的实例与运行身份（v0.7 开发分支） |
+| `devd instances [--json]` | 发现当前仓库及其 worktree 中已登记的实例（v0.7 开发分支） |
 | `devd top` | 在交互式终端查看运行中的服务和实时日志 |
 | `devd events [service] [--type TYPE] [--since DURATION] [--tail N] [--cursor RUN_UUID:NEXT_SEQUENCE] [--json] [--follow \| --stored]` | 查询生命周期经过、游标与历史缺口 |
 | `devd explain <service> [--json] [--stored]` | 基于确定性事件证据解释一个服务最近的故障或状态 |
@@ -253,7 +255,7 @@ devd reload --apply --plan 'sha256:<64位十六进制摘要>' --candidate devd.n
 | `devd snapshot save <NAME>` | 保存磁盘上整份 YAML 到项目状态目录 |
 | `devd snapshot restore <NAME> --output <FILENAME>` | 恢复成原配置目录中的新文件 |
 
-命令共用 `-c / --config <PATH>`、`--profile <NAME>`（`init`、`snapshot` 除外）、`--state-dir <PATH>` 和 `--color auto|always|never`，选项可以放在子命令前后：
+命令共用 `-c / --config <PATH>`、`--profile <NAME>`（`init`、`snapshot` 除外）、`--state-dir <PATH>` 和 `--color auto|always|never`。`instances` 改用当前目录确定范围，不接受非默认配置路径、profile 或状态目录选择器。选项可以放在子命令前后：
 
 ```bash
 devd start --config ./devd.local.yml

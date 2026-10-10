@@ -2,6 +2,8 @@
 
 ## 当前控制链路
 
+实例登记的阻塞写入持有状态锁直至原子替换结束；取消启动不会提前释放所有权，避免迟到的旧写入覆盖新运行记录。已有记录（含悬空链接）必须通过普通文件安全检查，才允许替换。
+
 v0.7 M1 的 `cli::instances` 在持有 supervisor 状态锁、尚未启动服务时，将身份原子登记到项目/worktree 根目录 `.devd/instances/<instance_id>.json`。身份摘要来自配置绝对路径、规范化状态目录和 profile；run_id 复用事件运行标识，分支/提交仅为启动观测。`identity` 返回活 supervisor 持有的身份，不读取索引或 YAML。`instances` 使用有界只读 Git 命令找到当前仓库 worktree，读取有大小限制、拒绝链接/特殊文件的登记记录；最多 8 个并发、每端点 750 ms 核对完整身份。旧记录不会用来接管 PID，也不会自动删除。损坏或无法读取的索引进入 warnings/complete=false；不可达只代表端点观测失败。该模块不更改运行状态快照格式、端口或应用数据归属。
 
 v0.4 的平台差异集中在 `platform/`、`cli/transport.rs` 与 stdout 实现中。Unix 保留进程组与 socket；Windows 在 CREATE_SUSPENDED 状态下创建服务、绑定带 KILL_ON_JOB_CLOSE 的独立 Job，再通过 ToolHelp 定位并恢复主线程，避免加入 Job 前逃逸。停止先发送定向 Ctrl+Break，超时后终止 Job；无控制台时直接终止。正常退出等待 Job 活动进程数归零，取消/Drop/父进程强杀通过 Job 句柄关闭清理。Script 与服务共用同一所有权机制。
