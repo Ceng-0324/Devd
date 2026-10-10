@@ -16,13 +16,13 @@
 
 ## 它能做什么
 
-devd 是用 Rust 编写的本地开发服务管理器。**当前源码为 v0.7.0-alpha.1 发布候选，支持 Linux、macOS 和 Windows。**
+devd 是用 Rust 编写的本地开发服务管理器。**v0.7.0-alpha.1 已作为预发布版本发布，支持 Linux、macOS 和 Windows。**
 
 v0.7 要解决的是多个开发现场别互相踩脚：看清每个 worktree 跑着哪个实例，等服务真正就绪，出问题时导出证据，再按需把控制权交给 Agent。端口和路径明确声明，事件经过能在终端里追，正常停止后先预览、再清理登记过的可丢弃目录。共享文件留下，另一个 worktree 照常跑。
 
 v0.6 开始能提前发现当初那场事故里的问题：启动前声明必需的文件、目录和软链接，运行中可以显式开启监测；改了配置，先看影响范围，再明确应用审阅过的计划。文件监测只报告变化，不会修文件，也不等于授权重启。重载失败会停止全栈，不自动回滚。发布要求同一源码提交通过 Linux、macOS 和 Windows 原生 CI 与归档核验。
 
-已发布的二进制与 SHA-256 校验文件见 [GitHub Releases](https://github.com/Ceng-0324/Devd/releases)。v0.7 正式出现在该页面前，v0.6.0-alpha.1 归档仍是上一版；下文 v0.7 命令可通过构建当前源码使用。准备好候选不代表已经发布。
+已发布的二进制与 SHA-256 校验文件见 [GitHub Releases](https://github.com/Ceng-0324/Devd/releases/tag/v0.7.0-alpha.1)，包含 Linux x86_64、macOS arm64 和 Windows x86_64 MSVC 归档。本次发布已通过三平台原生 CI 与归档二进制恢复演练。
 
 v0.5 补上的诊断工具也贯穿这套流程：`events` 查经过，`explain` 根据记录解释故障，`doctor` 在启动前检查环境，`listen` 声明服务自己的 TCP 监听端口。
 
@@ -146,7 +146,7 @@ devd instances --json                  # 当前仓库和全部 worktree
 devd identity --profile staging --json # 指定活实例的身份
 ```
 
-这两个命令已包含在 v0.7 候选中，已发布的 v0.6 二进制尚不包含。`start` 会登记配置、profile、规范化状态目录、项目/worktree 根目录、supervisor PID、启动时间和事件 `run_id`。`instance_id` 由配置路径、规范化状态目录和 profile 生成，同一实例重启或切换分支时保持不变，路径移动后会变化。分支和提交是启动时的观测；detached HEAD 的分支为空，尚无提交的分支其提交字段为空。
+这两个命令已包含在 v0.7 中。`start` 会登记配置、profile、规范化状态目录、项目/worktree 根目录、supervisor PID、启动时间和事件 `run_id`。`instance_id` 由配置路径、规范化状态目录和 profile 生成，同一实例重启或切换分支时保持不变，路径移动后会变化。分支和提交是启动时的观测；detached HEAD 的分支为空，尚无提交的分支其提交字段为空。
 
 `instances` 从当前 Git 仓库及其 worktree 的 `.devd/instances/*.json` 读取索引，包括子目录配置和启动时登记的自定义 `--state-dir`。普通目录以配置目录为项目根，请在该目录查询；未安装 Git 时只能发现当前目录。它不扫描全盘，也无法发现尚未登记的旧版 supervisor。即使状态目录在项目外，启动登记仍要求项目索引可写；索引建立失败时不会启动服务。
 
@@ -164,7 +164,7 @@ devd wait api worker --timeout 1m --json
 devd wait api --profile staging --state-dir ./runtime
 ```
 
-该命令已包含在 v0.7 候选中。不写服务名时选择 supervisor 当前有效配置中的全部服务；指定名称时精确匹配、自动去重。有健康检查的服务必须达到 `healthy` 且持有 PID，其余必须为 `running` 且持有 PID。沿用启动时的 `--config`、`--profile` 和 `--state-dir`。YAML 改坏或删除后仍能等待：命令只读取活状态，不重读配置，也不额外执行探测。
+该命令已包含在 v0.7 中。不写服务名时选择 supervisor 当前有效配置中的全部服务；指定名称时精确匹配、自动去重。有健康检查的服务必须达到 `healthy` 且持有 PID，其余必须为 `running` 且持有 PID。沿用启动时的 `--config`、`--profile` 和 `--state-dir`。YAML 改坏或删除后仍能等待：命令只读取活状态，不重读配置，也不额外执行探测。
 
 默认期限 `30s` 包含连接建立，可用 `--timeout` 设置 `1ms` 到 `1h`。同一 supervisor 内手动重启或崩溃恢复可以继续等待新代次；手动重启请求一旦被接受，旧代次就不能满足等待。全栈停止、已接受的配置重载（包括等价配置）或控制连接断开会终止本次等待。预览和被拒绝的重载不影响等待，也不会自动重连新的 supervisor。Ctrl+C 只取消等待命令。
 

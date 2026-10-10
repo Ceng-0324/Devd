@@ -18,13 +18,13 @@ Broken file dependencies still need fixing. devd takes care of the services you 
 
 ## What it does
 
-devd is a local development service manager written in Rust. **This checkout is the v0.7.0-alpha.1 release candidate for Linux, macOS, and Windows.**
+devd is a local development service manager written in Rust. **v0.7.0-alpha.1 is available as a prerelease for Linux, macOS, and Windows.**
 
 v0.7 is about keeping parallel development sessions out of each other's way. Find the instance running in each worktree, wait until its services are ready, export evidence when something goes wrong, and give an Agent only the controls you choose. Declare ports and paths explicitly, inspect a live event timeline, then preview and clean only registered disposable data after a normal stop. Shared files stay shared; another worktree keeps running.
 
 v0.6 brings the original accident a little closer to something you can catch: declare required files, directories, and symlinks before a service starts, then opt in to observing them while it runs. When configuration changes, preview the affected services and explicitly apply the reviewed plan. File monitoring reports what changed; it does not repair files or authorize restarts. Reload failures stop the whole stack without automatic rollback. Publication requires native CI and archive verification on Linux, macOS, and Windows for the same source revision.
 
-Published binaries and SHA-256 checksums are on [GitHub Releases](https://github.com/Ceng-0324/Devd/releases). Until v0.7 is published there, the v0.6.0-alpha.1 archives remain the previous release; build this checkout to use the v0.7 commands below. Candidate preparation alone does not publish a release.
+Published binaries and SHA-256 checksums are on [GitHub Releases](https://github.com/Ceng-0324/Devd/releases/tag/v0.7.0-alpha.1), with Linux x86_64, macOS arm64, and Windows x86_64 MSVC archives. This release passed native CI and archived-binary recovery checks on all three platforms.
 
 The diagnostic tools introduced in v0.5 remain part of that workflow: `events` traces what happened, `explain` connects failures to recorded evidence, and `doctor` checks the environment before starting. The `listen` setting declares owned TCP ports.
 
@@ -148,9 +148,9 @@ devd instances --json                 # Current repository and its worktrees
 devd identity --profile staging --json # Selected live supervisor
 ```
 
-These commands are available in the v0.7 candidate, not the published v0.6
-binaries. `start` now registers the configuration, profile, canonical state
-directory, project/worktree root, supervisor PID, start time, and event `run_id`.
+These commands are included in v0.7. `start` registers the configuration, profile,
+canonical state directory, project/worktree root, supervisor PID, start time,
+and event `run_id`.
 `instance_id` hashes the configuration path, canonical state directory, and
 profile: it survives supervisor restarts and branch switches, but moving those
 paths changes identity. Git branch and commit are observations at startup;
@@ -192,7 +192,7 @@ devd wait api worker --timeout 1m --json
 devd wait api --profile staging --state-dir ./runtime
 ```
 
-This command is included in the v0.7 candidate. Omit names to select every service
+This command is included in v0.7. Omit names to select every service
 in the supervisor's effective configuration; supplied names match exactly and
 duplicates are ignored. Services with a health check need `healthy` and a PID;
 others need `running` and a PID. Use the same `--config`, `--profile`, and

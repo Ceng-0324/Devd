@@ -1,12 +1,13 @@
 # Changelog
 
-## v0.7.0-alpha.1 — release candidate
+## v0.7.0-alpha.1 — 2026-10-11
 
-Candidate for local development on Linux, macOS and Windows. Adds worktree-aware
+Prerelease for local development on Linux, macOS and Windows. Adds worktree-aware
 instance discovery, readiness waits, diagnostic export, explicit bindings,
 an event timeline, owned-directory cleanup and an opt-in Agent control interface.
-Publication is separate from source preparation and requires exact-revision CI
-and native archived-binary recovery verification on all three platforms.
+Native CI and archived-binary recovery tests passed on all three platforms for
+source revision `3e74d87786620a2e85ab8ef08dbbe011faa795a9`; archive contents,
+versions, revisions, SHA-256 checksums and all six uploaded assets were verified.
 Cleanup requires explicit ownership and a reviewed plan after normal shutdown;
 Agent controls are closed by default. No MCP, automatic port allocation, file
 repair, automatic reload or transactional rollback is included.
