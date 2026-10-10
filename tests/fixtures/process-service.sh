@@ -3,14 +3,14 @@
 case "$1" in
     graceful)
         trap 'printf "stopped\n"; exit 0' TERM
-        sleep 10 &
+        sleep 60 &
         printf 'ready\n'
         # A foreground sleep can defer the trap; wait is signal-interruptible.
         # A group signal may wake wait when the descendant exits before this
-        # shell receives TERM. Keep the leader alive for its own trap.
+        # shell receives TERM. Keep the leader alive for its own trap without
+        # forking another child in the middle of group shutdown.
         while :; do
             wait || :
-            sleep 10 &
         done
         ;;
     stubborn)

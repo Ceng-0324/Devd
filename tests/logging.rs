@@ -506,10 +506,13 @@ mod managed {
     async fn test_logging_managed_shutdown_preserves_final_unterminated_stderr() {
         let directory = tempdir().unwrap();
         let child = service(
-            "trap 'printf final-tail >&2; exit 0' TERM; echo ready; sleep 60 & wait",
+            "trap 'printf final-tail >&2; exit 0' TERM; sleep 60 & echo ready; while :; do wait || :; done",
             directory.path(),
         );
-        let manager = ServiceManager::new(config([("api", child)]), options(&directory)).unwrap();
+        let mut settings = options(&directory);
+        // This tests final log draining, not a 100 ms shutdown scheduling race.
+        settings.grace_period = Duration::from_secs(1);
+        let manager = ServiceManager::new(config([("api", child)]), settings).unwrap();
         let history = manager.log_history();
         let mut ready = manager.subscribe_logs();
         let receiver = manager.subscribe_logs();
