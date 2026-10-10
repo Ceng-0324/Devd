@@ -21,6 +21,9 @@ const RUNNING: &str = "services:\n  worker:\n    command: sh -c 'echo ready; exe
 struct Top {
     child: Supervisor,
     master: fs::File,
+    // macOS may discard unread output when the last slave closes. Keep one
+    // open until the test has drained even an immediately exiting command.
+    _slave: fs::File,
     screen: String,
     terminal: vt100::Parser,
 }
@@ -39,7 +42,7 @@ impl Top {
         let child = command
             .stdin(slave.try_clone().unwrap())
             .stdout(slave.try_clone().unwrap())
-            .stderr(slave)
+            .stderr(slave.try_clone().unwrap())
             .spawn()
             .unwrap();
         let master = fs::File::from(pair.master);
@@ -48,6 +51,7 @@ impl Top {
         Self {
             child: Supervisor(child),
             master,
+            _slave: slave,
             screen: String::new(),
             terminal: vt100::Parser::new(size.ws_row, size.ws_col, 0),
         }
@@ -109,8 +113,17 @@ fn test_top_requires_tty_and_running_supervisor() {
     let project = Project::new(RUNNING);
     failure(project.invoke(&["top"]), "interactive terminal");
     let mut top = Top::start(&project);
-    wait(|| top.seen("no reachable devd supervisor").then_some(()));
-    assert!(!top.child.0.wait().unwrap().success());
+    let status = wait(|| {
+        top.drain();
+        top.child.0.try_wait().unwrap()
+    });
+    top.drain();
+    assert!(!status.success(), "unexpected success: {}", top.screen);
+    assert!(
+        top.screen.contains("no reachable devd supervisor"),
+        "missing connection error: {}",
+        top.screen
+    );
 }
 
 #[test]
