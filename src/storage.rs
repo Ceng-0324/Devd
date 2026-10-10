@@ -28,7 +28,7 @@ pub(crate) struct JsonlStorage {
     options: StorageOptions,
     file: File,
     size: u64,
-    _lock: File,
+    _lock: files::FileLock,
     max_record_bytes: usize,
 }
 
@@ -213,20 +213,14 @@ pub(crate) fn open_file(path: &Path, write: bool) -> io::Result<File> {
     Ok(file)
 }
 
-fn lock(directory: &Path, write: bool) -> io::Result<File> {
+fn lock(directory: &Path, write: bool) -> io::Result<files::FileLock> {
     let file = open_file(&directory.join(".lock"), write)?;
-    let result = if write {
-        file.try_lock()
-    } else {
-        file.try_lock_shared()
-    };
-    result.map_err(|error| {
+    files::FileLock::acquire(file, !write).map_err(|error| {
         io::Error::new(
             io::ErrorKind::WouldBlock,
             format!("stored history is in use; stop the supervisor or use a live query: {error}"),
         )
-    })?;
-    Ok(file)
+    })
 }
 
 fn remove_if_present(path: &Path) -> io::Result<()> {

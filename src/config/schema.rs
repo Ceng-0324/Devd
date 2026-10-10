@@ -61,6 +61,13 @@ pub struct ServiceConfig {
 pub struct RuntimePath {
     pub path: PathBuf,
     pub scope: PathScope,
+    /// Authorize creation and later explicit disposal of an owned directory.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cleanup: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

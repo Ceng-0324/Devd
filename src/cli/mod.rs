@@ -1,3 +1,4 @@
+mod clean;
 mod doctor;
 mod events;
 mod explain;
@@ -90,6 +91,8 @@ enum Command {
     Restart { service: String },
     /// Preview or explicitly apply configuration changes to a running supervisor.
     Reload(reload::Args),
+    /// Preview or explicitly remove disposable directories of a stopped instance.
+    Clean(clean::Args),
     /// Wait for selected services (or the whole stack) to become ready.
     Wait(wait::Args),
     /// Query live service states and PIDs.
@@ -223,6 +226,7 @@ impl Cli {
         let socket = state_dir.join("control.sock");
         let mut options = ManagerOptions::new(state_dir.join("services.json"));
         options.profile = self.profile.clone();
+        options.config_path = Some(config_path.clone());
         let formatter = LogFormatter {
             color: match self.color {
                 Color::Auto => ColorMode::Auto,
@@ -299,6 +303,9 @@ impl Cli {
             Command::Instances { .. } => unreachable!("handled before configuration resolution"),
             Command::Explain(args) => explain::run(args, &socket, &state_dir).await?,
             Command::Reload(args) => reload::run(args, &socket, &config_path).await?,
+            Command::Clean(args) => {
+                clean::run(args, &config_path, &state_dir, self.profile.as_deref()).await?
+            }
             Command::Doctor(args) => {
                 doctor::run(args, &config_path, self.profile.as_deref(), &state_dir).await?;
             }

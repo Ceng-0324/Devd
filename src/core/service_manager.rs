@@ -105,6 +105,8 @@ pub struct RuntimeSnapshot {
 #[derive(Debug, Clone)]
 pub struct ManagerOptions {
     pub state_path: PathBuf,
+    /// Original configuration identity for explicitly owned cleanup directories.
+    pub config_path: Option<PathBuf>,
     pub grace_period: Duration,
     pub dependency_timeout: Duration,
     pub logging: LogOptions,
@@ -117,6 +119,7 @@ impl ManagerOptions {
     pub fn new(state_path: impl Into<PathBuf>) -> Self {
         Self {
             state_path: state_path.into(),
+            config_path: None,
             grace_period: Duration::from_secs(5),
             dependency_timeout: Duration::from_secs(30),
             logging: LogOptions::default(),
@@ -163,6 +166,8 @@ pub enum ServiceManagerError {
     FailedServices { failures: BTreeMap<String, String> },
     #[error("configuration reload failed: {0}")]
     ReloadFailed(String),
+    #[error("owned resource operation failed: {0}")]
+    OwnedPaths(String),
 }
 
 /// Owns all service actors. Subscribe before calling run. A terminal failure
@@ -353,6 +358,14 @@ impl ServiceManager {
         shutdown: impl Future<Output = ()>,
         store: Arc<StateStore>,
     ) -> Result<RuntimeSnapshot, ServiceManagerError> {
+        let ownership = super::owned_paths::prepare(
+            &self.config,
+            &self.options,
+            self.events.run_id(),
+            store.clone(),
+        )
+        .await
+        .map_err(|error| ServiceManagerError::OwnedPaths(format!("{error:#}")))?;
         let initial = self.snapshots.borrow().clone();
         store.write(&initial).await?;
         self.events
@@ -651,6 +664,12 @@ impl ServiceManager {
             .collect();
         if !failures.is_empty() {
             return Err(ServiceManagerError::FailedServices { failures });
+        }
+        if let Some(ownership) = ownership {
+            ownership
+                .finish(store.clone())
+                .await
+                .map_err(|error| ServiceManagerError::OwnedPaths(format!("{error:#}")))?;
         }
         Ok(snapshot)
     }

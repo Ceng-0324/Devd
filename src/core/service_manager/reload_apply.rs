@@ -55,6 +55,9 @@ impl ReloadExecution {
                     "configuration plan is stale; run 'devd reload --dry-run' again".into(),
                 );
             }
+            if !plan.apply_available {
+                return Err(plan.unsupported_changes.join("; "));
+            }
             if snapshot.services.values().any(|state| {
                 !matches!(
                     state.status,

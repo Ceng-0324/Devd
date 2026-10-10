@@ -3,6 +3,7 @@ mod dependency_recovery;
 pub mod diagnostics;
 pub mod events;
 pub mod health_check;
+pub(crate) mod owned_paths;
 mod path_monitor;
 pub mod path_requirements;
 pub mod process_manager;

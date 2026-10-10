@@ -9,7 +9,7 @@ use super::service_manager::{RuntimeSnapshot, ServiceManagerError};
 pub(crate) struct StateStore {
     path: PathBuf,
     temporary: PathBuf,
-    lock: Arc<std::fs::File>,
+    lock: Arc<crate::platform::files::FileLock>,
 }
 
 impl StateStore {
@@ -32,14 +32,14 @@ impl StateStore {
             .map_err(|source| state_error(path, source))?
             .into_std()
             .await;
-        file.try_lock()
-            .map_err(|source| state_error(path, source.into()))?;
+        let lock = crate::platform::files::FileLock::acquire(file, false)
+            .map_err(|source| state_error(path, source))?;
         let mut temporary = path.as_os_str().to_owned();
         temporary.push(".tmp");
         Ok(Self {
             path: path.into(),
             temporary: temporary.into(),
-            lock: Arc::new(file),
+            lock: Arc::new(lock),
         })
     }
 

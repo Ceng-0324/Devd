@@ -180,3 +180,16 @@ evidence while the conflicting listener remains held. CLI tests cover shared
 path preservation, dotenv precedence, owner/probe/dependent environments, profile
 and custom-state-directory isolation, doctor, and selective reload. Windows also
 executes a native owner/dependent environment fixture inside supervised Jobs.
+
+## Owned cleanup (v0.7)
+
+`clean.rs` runs native CLI/supervisor fixtures on all three platforms. It covers
+explicit authorization, refusing adoption, live-instance exclusion, successful
+shutdown, config/tree/run plan invalidation, profile/custom-state isolation,
+reload rejection, symlinks, abrupt death, preserved shared/unregistered data and
+diagnostics, and idempotent application after a new user directory appears.
+Windows also injects a read-only-file failure and retries partial cleanup.
+The ignored worker is a child-process fixture, not omitted test coverage.
+`core::owned_paths` unit tests exercise ownership replacement/revocation, shared
+aliases, hard links, moved state, nested ownership markers, preflight ordering,
+already-absent roots and interrupted deletion recovery.

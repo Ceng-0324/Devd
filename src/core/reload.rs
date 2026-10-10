@@ -217,6 +217,10 @@ pub fn preview(
             "Reload failure stops the whole stack. There is no automatic rollback; affected services do not automatically recover during application.".into(),
         ],
     };
+    if super::owned_paths::declarations(base) != super::owned_paths::declarations(candidate) {
+        plan.apply_available = false;
+        plan.unsupported_changes.push("Cleanup directory declarations are fixed for a supervisor run; stop the stack and start with the new configuration.".into());
+    }
     plan.plan_id = fingerprint(&serde_json::to_value(&plan)?)?;
     Ok(plan)
 }

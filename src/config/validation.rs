@@ -88,6 +88,12 @@ impl DevdConfig {
             }
             for (key, binding) in &service.paths {
                 validate_binding_key(&prefix, key)?;
+                if binding.cleanup && binding.scope != PathScope::Instance {
+                    return Err(invalid(
+                        format!("{prefix}.paths.{key}.cleanup"),
+                        "cleanup requires scope: instance",
+                    ));
+                }
                 if binding.path.as_os_str().is_empty()
                     || binding.path.to_string_lossy().contains('\0')
                 {

@@ -209,11 +209,41 @@ profiles:
 
 `api`、它的脚本探测以及直接依赖它的 `web` 都会收到 `API_ADDR`、`API_DATA`、`SHARED_DATA` 环境变量。`API_ADDR` 是完整 TCP 地址（IPv6 为 `[地址]:端口`），不是 URL，也不是纯端口号。应用必须主动读取这些变量；devd 不替换命令、URL 或任意 YAML 字符串。映射必须使用具体单播地址；通配绑定地址仍可通过 `listen` 声明。脚本探测可读取同一环境，内置 TCP/HTTP 探测字段仍需显式配置。
 
-`instance` 路径按 `<所选状态目录>/runtime/` 解析，因此示例中的 `api-data` 随 profile/worktree 隔离。路径分量只允许小写 ASCII 字母、数字、`_`、`-`、`.`，拒绝父目录跳转、设备保留名、空格和尾点。`shared` 路径按声明服务的 `cwd` 解析，即使传给依赖者也保持同一个地址。声明不会创建或删除目录，由应用准备自己的运行目录，共享数据仍然共享。这是配置归属，不是文件系统沙箱，也不授权删除已有文件或在清理时跟随软链接。
+`instance` 路径按 `<所选状态目录>/runtime/` 解析，因此示例中的 `api-data` 随 profile/worktree 隔离。路径分量只允许小写 ASCII 字母、数字、`_`、`-`、`.`，拒绝父目录跳转、设备保留名、空格和尾点。`shared` 路径按声明服务的 `cwd` 解析，即使传给依赖者也保持同一个地址。默认由应用准备自己的运行目录，共享数据仍然共享；显式开启 `cleanup: true` 时由 devd 创建专用可丢弃目录，见下一节。scope 是配置归属，不是文件系统沙箱，也不授权删除已有文件或在清理时跟随软链接。
 
 映射名称采用大写 ASCII 环境变量名；与服务显式 `env` 重名（不区分大小写），或与该服务能看到的另一映射重名，都会拒绝配置。映射覆盖继承环境和 dotenv 值，只传给直接依赖者。profile 对 `ports`、`paths` 分别整体替换，`{}` 清空对应映射。reload 预览会列出变更字段及下游影响，应用后受影响的新代次收到新环境。
 
 `check` 拒绝地址声明冲突和实例独占路径重叠；`doctor` 对 `ports` 与 `listen` 地址实际尝试绑定后立即释放。**检查空闲不等于预约成功。** 启动前仍可能被其他进程抢占，应用绑定失败继续通过日志、退出和健康事件呈现；devd 不自动分配端口，也不凭退出状态猜测失败原因。
+
+### 清理可丢弃的实例数据（v0.7 开发中）
+
+项目就是从一次误删事故开始的，删除权限当然不能靠猜。单独声明 `scope: instance` 不允许删除。确实可以丢弃的缓存，给它一个专用目录，再显式开启：
+
+```yaml
+services:
+  api:
+    command: python api.py
+    paths:
+      API_CACHE: {scope: instance, path: api-cache, cleanup: true}
+```
+
+`start` 会在启动服务前创建并登记该目录。**这表示目录及其后续所有内容都可以丢弃。** 已有但未登记的目录拒绝接管，持久数据请放在别处。`cleanup` 默认 `false`，只允许用于 instance 路径；`check`、`doctor` 和预览不会创建这些目录。
+
+停止全栈，等运行 `start` 的进程成功退出后再操作：
+
+```bash
+devd stop
+devd clean --dry-run --json
+devd clean --apply --plan sha256:... --json  # 使用预览返回的 plan_id
+```
+
+前后使用相同的 `--config`、`--profile`、`--state-dir`。两个清理命令都必须取得已有实例状态锁，并核对上次授权运行的成功结束记录。连不上 supervisor、被强杀或运行失败都不满足这个条件，清理和目录复用会拒绝，需人工核实资源。devd 不会拿旧状态里的 PID 发信号来强行制造清理条件。不确定的数据先保留；急需恢复开发可换一个新的专用状态目录，不要编辑归属记录绕过拒绝。
+
+计划同时检查当前 YAML 授权、创建登记、目录身份、归属标记和有界目录清单。配置字节、运行身份、登记或观测到的目录树变化都会让旧计划失效。所有候选都通过检查后才开始删除。共享映射（含解析后的别名）、未登记路径、日志、事件、快照和实例元数据保留；撤销 `cleanup` 后，旧目录也保留。清理声明发生变化必须全栈 stop/start，reload 预览会标明不能应用。
+
+删除不是事务，失败可能留下部分进度。排除报告中的问题后重新预览再试；已完成计划重复应用不会碰同一路径上后来出现的用户目录。原本已消失的目录只注销记录。JSON 为 schema 1，分别报告 `removed`、`already_absent`、`already_applied` 和失败原因。
+
+清理期间也应停止外部写入者。链接／reparse point、硬链接、特殊文件、跨文件系统目录、嵌套 devd 归属或状态标记、非 UTF-8 文件名都会拒绝；最多登记 128 个根目录，每根最多 10,000 个条目、64 层嵌套目录。清单检查文件元数据，不读取应用文件内容，因此不构成内容哈希，也不抵御同用户恶意进程任意篡改文件系统。父目录和归属记录保留，供重试和后续启动核对。
 
 ### 多环境配置
 
@@ -308,6 +338,8 @@ devd reload --apply --plan 'sha256:<64位十六进制摘要>' --candidate devd.n
 | `devd identity [--json]` | 查看所选活 supervisor 的实例与运行身份（v0.7 开发分支） |
 | `devd instances [--json]` | 发现当前仓库及其 worktree 中已登记的实例（v0.7 开发分支） |
 | `devd export --output FILE [--include-logs]` | 导出有界的活实例诊断报告到新 JSON 文件（v0.7 开发分支） |
+| `devd clean --dry-run [--json]` | 在成功停止后预览已登记、明确授权丢弃的目录 |
+| `devd clean --apply --plan ID [--json]` | 应用当前清理计划，保留共享和未登记数据 |
 | `devd top` | 在交互式终端查看运行中的服务和实时日志 |
 | `devd events [service] [--type TYPE] [--since DURATION] [--tail N] [--cursor RUN_UUID:NEXT_SEQUENCE] [--json] [--follow \| --stored]` | 查询生命周期经过、游标与历史缺口 |
 | `devd explain <service> [--json] [--stored]` | 基于确定性事件证据解释一个服务最近的故障或状态 |

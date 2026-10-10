@@ -2,6 +2,16 @@
 
 ## Unreleased — v0.7 development
 
+- Add opt-in instance directory ownership with `paths.<NAME>.cleanup: true`.
+  Create and register new disposable directories; never adopt existing data.
+  Preview with `clean --dry-run` and apply a current plan after a successful
+  shutdown with `clean --apply --plan ID`. Preserve shared/unregistered data,
+  diagnostic history and snapshots; reject stale plans, links and uncertain
+  shutdowns, checkpoint partial cleanup, and make completed retries harmless.
+  Changes to cleanup declarations require a full stop/start.
+  Explicitly release state/history file locks at the end of their final lease,
+  avoiding transient lock retention during concurrent child-process creation.
+
 - Add a bounded lifecycle event timeline to `top`, with Tab switching between
   logs and events, instance/run identity, event generations, recorded cause
   references, explicit history gaps, and disk recording status. Pin controls
@@ -12,7 +22,8 @@
   environment into owners, script probes, and direct dependents. Isolate instance
   paths under the selected state directory, reject mapping conflicts, include
   mapped ports in doctor, and preserve profile replacement and reload semantics.
-  No automatic port allocation, directory creation, or file deletion is included.
+  No automatic port allocation; directory creation and cleanup require the
+  separate explicit opt-in above.
 
 - Add `export --output FILE [--include-logs]` to save a bounded live diagnostic
   report with instance/run identity, service generations, event gaps and

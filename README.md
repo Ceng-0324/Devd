@@ -293,9 +293,10 @@ An `instance` path resolves beneath `<selected-state-dir>/runtime/`; the example
 uses a different `api-data` path for each profile/worktree. Its components must
 use lowercase ASCII letters, digits, `_`, `-`, or `.`, without parent traversal,
 device names, spaces, or trailing dots. A `shared` path resolves against the
-declaring service's `cwd`, including when passed to a dependent. Directories are
-not created or deleted by these declarations. Your application prepares its own
-runtime directory; shared data stays shared. These are configuration scopes, not
+declaring service's `cwd`, including when passed to a dependent. By default,
+your application prepares its own runtime directory; shared data stays shared.
+Explicit `cleanup: true` creates a disposable directory as described below.
+These are configuration scopes, not
 a filesystem sandbox or permission to delete existing files or follow symlinks
 during cleanup.
 
@@ -311,6 +312,64 @@ paths. `doctor` attempts to bind declared `ports` and `listen` addresses, then
 releases them. **That does not reserve a port.** Another process can take it
 before startup; application bind errors still appear in its logs and exit/health
 evidence. devd does not automatically allocate ports or infer failure causes.
+
+### Clean disposable instance data (v0.7 development)
+
+The accident that started this project is a good reason to make deletion explicit.
+`scope: instance` alone grants no deletion permission. For scratch data you can
+throw away, opt in on a dedicated path:
+
+```yaml
+services:
+  api:
+    command: python api.py
+    paths:
+      API_CACHE: {scope: instance, path: api-cache, cleanup: true}
+```
+
+On `start`, devd creates and registers this directory before starting services.
+**This authorizes discarding the directory and everything subsequently placed
+inside it.** Existing unregistered directories are never adopted. Keep durable
+data elsewhere. The option defaults to `false` and is only valid for instance
+paths; `check`, `doctor`, and previews do not create these directories.
+
+After stopping the stack, wait for the `start` process to exit successfully:
+
+```bash
+devd stop
+devd clean --dry-run --json
+devd clean --apply --plan sha256:... --json  # use the returned plan_id
+```
+
+Use the same `--config`, `--profile`, and `--state-dir` throughout. Both commands
+take the instance's existing state lock and require a recorded successful end
+to its last owned run. An unreachable supervisor, a forced exit, or a failed run
+does not establish that condition: cleanup and reuse refuse until the resources
+are manually reconciled. devd never signals a PID from old state to make cleanup
+possible. Preserve uncertain data and use a new dedicated state directory if
+you need to resume work; do not edit ownership records to bypass the refusal.
+
+A plan checks the current YAML permission, creation records, directory identity,
+ownership marker, and a bounded tree inventory. Configuration bytes, run identity,
+records, or observed tree changes invalidate it. Apply preflights every candidate
+before deleting any. Shared mappings (including resolved aliases), unregistered
+paths, logs, events, snapshots, and instance metadata are retained. Revoking
+`cleanup` retains the old directory. Changes to cleanup declarations require a
+full stop/start; reload previews mark them unavailable for application.
+
+Deletion is not a transaction. A failure can leave partial progress; correct the
+reported problem and preview again before retrying. Completed plans can be
+reapplied harmlessly, even if a new user directory appears at the same path.
+Missing directories only retire their records. JSON uses schema version 1 and
+reports `removed`, `already_absent`, `already_applied`, and failures explicitly.
+
+Keep external writers stopped during cleanup. Links/reparse points, hard links,
+special files, filesystem crossings, nested devd ownership/state markers, and
+non-UTF-8 names are refused. Limits are 128 registered roots, 10,000 entries per
+root, and 64 nested directory levels. Inventories inspect metadata, not file
+contents; they are not content hashes or protection against a malicious process
+running as the same user. Parent directories and ownership records remain so
+that retries and subsequent starts can check what happened.
 
 ### Named environments
 
@@ -405,6 +464,8 @@ Choose exactly one of `--dry-run` or `--apply`. Preview validates YAML, quoting,
 | `devd identity [--json]` | Show the selected live supervisor's instance and run identity (v0.7 development) |
 | `devd instances [--json]` | Discover registered instances in the current repository and its worktrees (v0.7 development) |
 | `devd export --output FILE [--include-logs]` | Save bounded live diagnostics to a new JSON file (v0.7 development) |
+| `devd clean --dry-run [--json]` | Preview registered, explicitly disposable directories after successful shutdown |
+| `devd clean --apply --plan ID [--json]` | Apply a current cleanup plan; preserve shared and unregistered data |
 | `devd top` | Inspect a running stack and its live logs in an interactive terminal |
 | `devd events [service] [--type TYPE] [--since DURATION] [--tail N] [--cursor RUN_UUID:NEXT_SEQUENCE] [--json] [--follow \| --stored]` | Query lifecycle facts, cursors and history gaps |
 | `devd explain <service> [--json] [--stored]` | Explain the latest deterministic failure evidence for one service |

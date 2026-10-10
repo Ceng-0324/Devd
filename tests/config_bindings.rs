@@ -40,6 +40,15 @@ fn test_port_bindings_reject_conflicts_with_other_ports_and_listen() {
 
 #[test]
 fn test_path_bindings_validate_ownership_and_environment_names() {
+    assert!(validate(
+        "  api: {command: api, paths: {DATA: {scope: shared, path: data, cleanup: true}}}\n"
+    )
+    .unwrap_err()
+    .contains("cleanup requires scope: instance"));
+    validate(
+        "  api: {command: api, paths: {DATA: {scope: instance, path: data, cleanup: true}}}\n",
+    )
+    .unwrap();
     for path in [
         "/tmp/data",
         "../data",
@@ -101,6 +110,15 @@ fn test_profile_replaces_binding_maps_and_keeps_path_scope() {
     let empty = ConfigLoader::from_str_profile(yaml, "devd.yml", Some("empty")).unwrap();
     assert!(empty.services["api"].ports.is_empty());
     assert!(empty.services["api"].paths.is_empty());
+    // Replacing a path map must not silently inherit deletion authorization.
+    let authorized = yaml.replace(
+        "scope: shared, path: data",
+        "scope: instance, path: data, cleanup: true",
+    );
+    let base = ConfigLoader::from_str(&authorized, "devd.yml").unwrap();
+    let dev = ConfigLoader::from_str_profile(&authorized, "devd.yml", Some("dev")).unwrap();
+    assert!(base.services["api"].paths["API_DATA"].cleanup);
+    assert!(!dev.services["api"].paths["API_DATA"].cleanup);
 }
 
 #[tokio::test]
