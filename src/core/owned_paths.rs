@@ -7,6 +7,8 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
+#[cfg(windows)]
+use cap_fs_ext::MetadataExt as _;
 use cap_std::fs::{Dir, Metadata, MetadataExt, OpenOptions, OpenOptionsExt};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -125,17 +127,9 @@ struct FileId {
 }
 
 fn identity(metadata: &Metadata) -> Result<FileId> {
-    #[cfg(unix)]
+    // Both platforms obtain this metadata from an opened file/directory handle,
+    // which is required by cap-fs-ext's Windows identity methods.
     let (volume, index) = (metadata.dev(), metadata.ino());
-    #[cfg(windows)]
-    let (volume, index) = (
-        u64::from(
-            metadata
-                .volume_serial_number()
-                .context("missing volume identity")?,
-        ),
-        metadata.file_index().context("missing file identity")?,
-    );
     Ok(FileId {
         volume,
         index,
@@ -178,10 +172,7 @@ fn regular_file(dir: &Dir, name: &Path) -> Result<cap_std::fs::File> {
     options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT);
     let file = dir.open_with(name, &options)?;
     let metadata = file.metadata()?;
-    #[cfg(unix)]
     let single = metadata.nlink() == 1;
-    #[cfg(windows)]
-    let single = metadata.number_of_links() == Some(1);
     if !metadata.is_file() || is_link(&metadata) || !single {
         bail!(
             "links and special files are not eligible: {}",
@@ -371,7 +362,8 @@ pub(crate) async fn prepare(
         let state_path = options
             .state_path
             .parent()
-            .context("missing state directory")?;
+            .filter(|path| !path.as_os_str().is_empty())
+            .unwrap_or(Path::new("."));
         let state_path = std::fs::canonicalize(state_path)?;
         let state = Dir::open_ambient_dir(&state_path, cap_std::ambient_authority())?;
         let exists = match state.symlink_metadata(JOURNAL) {

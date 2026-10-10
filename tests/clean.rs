@@ -331,6 +331,59 @@ fn test_clean_worker() {
 }
 
 #[test]
+fn test_clean_library_accepts_state_filename_without_parent() {
+    let root = project();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .current_dir(root.path())
+        .args([
+            "--ignored",
+            "--exact",
+            "test_clean_library_fixture",
+            "--nocapture",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let journal: Value =
+        serde_json::from_slice(&fs::read(root.path().join("owned-paths.json")).unwrap()).unwrap();
+    assert_eq!(journal["quiescent"], true);
+    assert!(root.path().join("runtime/cache/.devd-owner.json").exists());
+}
+
+#[test]
+#[ignore = "isolated current directory for the public manager API"]
+fn test_clean_library_fixture() {
+    use devd::{
+        config::ConfigLoader,
+        core::service_manager::{ManagerOptions, ServiceManager},
+    };
+    tokio::runtime::Runtime::new().unwrap().block_on(async {
+        let path = fs::canonicalize("devd.yml").unwrap();
+        let config = ConfigLoader::from_str(&fs::read_to_string(&path).unwrap(), &path).unwrap();
+        let mut options = ManagerOptions::new("services.json");
+        options.config_path = Some(path);
+        let manager = ServiceManager::new(config, options).unwrap();
+        let mut snapshots = manager.subscribe();
+        let shutdown = async move {
+            loop {
+                if snapshots.borrow().services["worker"].pid.is_some() {
+                    break;
+                }
+                snapshots.changed().await.unwrap();
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), manager.run_until(shutdown))
+            .await
+            .unwrap()
+            .unwrap();
+    });
+}
+
+#[test]
 fn test_clean_refuses_abrupt_supervisor_death_without_signalling_historical_pids() {
     let root = project();
     let mut process = start(root.path(), &[]);

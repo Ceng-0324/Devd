@@ -122,7 +122,7 @@ pub(crate) fn remove_owned_directory(dir: cap_std::fs::Dir) -> io::Result<()> {
             FileDispositionInfo, SetFileInformationByHandle, FILE_DISPOSITION_INFO,
         };
         fn remove(file: File) -> io::Result<()> {
-            let info = FILE_DISPOSITION_INFO { DeleteFile: 1 };
+            let info = FILE_DISPOSITION_INFO { DeleteFile: true };
             // The caller owns a DELETE-capable handle until the OS accepts
             // disposition; no close-then-reopen race against a replaced path.
             if unsafe {
