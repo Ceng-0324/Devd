@@ -116,7 +116,12 @@ fn temporary() -> tempfile::TempDir {
 
 impl Project {
     fn new(profile: bool) -> Self {
-        let root = temporary();
+        let mut project = Self::prepare(temporary(), profile);
+        project.start();
+        project
+    }
+
+    fn prepare(root: tempfile::TempDir, profile: bool) -> Self {
         let state = temporary();
         let command = format!(
             "{} --ignored --exact test_agent_worker --nocapture",
@@ -141,14 +146,12 @@ impl Project {
         if profile {
             options.extend(["--profile".into(), "dev".into()]);
         }
-        let mut project = Self {
+        Self {
             root,
             _state: state,
             options,
             supervisor: None,
-        };
-        project.start();
-        project
+        }
     }
     fn spawn(&self, args: &[&str]) -> Process {
         Process::spawn(
@@ -473,6 +476,199 @@ fn test_agent_malformed_inputs_never_grant_controls_and_eof_keeps_services() {
 #[test]
 #[ignore = "native service fixture"]
 fn test_agent_worker() {
+    let listener = if let Ok(path) = std::env::var("M8_BINDING_REPORT") {
+        let listener = std::net::TcpListener::bind(std::env::var("API_ADDR").unwrap()).unwrap();
+        let bindings = json!({"cache": std::env::var("CACHE").unwrap(),
+            "shared": std::env::var("SHARED").unwrap(), "address": std::env::var("API_ADDR").unwrap()});
+        fs::write(path, serde_json::to_vec(&bindings).unwrap()).unwrap();
+        Some(listener)
+    } else {
+        None
+    };
     println!("private application log");
-    thread::sleep(Duration::from_secs(120));
+    if let Some(listener) = listener {
+        for stream in listener.incoming() {
+            drop(stream.unwrap());
+        }
+    } else {
+        thread::sleep(Duration::from_secs(120));
+    }
+}
+
+#[test]
+fn test_two_worktrees_keep_agent_controls_reports_and_cleanup_isolated() {
+    fn git(root: &Path, args: &[&str]) {
+        let output = Command::new("git")
+            .current_dir(root)
+            .args(args)
+            .env_remove("GIT_DIR")
+            .env_remove("GIT_WORK_TREE")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    let first = temporary();
+    let second = temporary();
+    git(first.path(), &["init", "-b", "main"]);
+    git(
+        first.path(),
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "fixture",
+        ],
+    );
+    git(
+        first.path(),
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            second.path().to_str().unwrap(),
+        ],
+    );
+    let shared = temporary();
+    fs::write(shared.path().join("sentinel"), "shared across worktrees").unwrap();
+    let mut a = Project::prepare(first, true);
+    let mut b = Project::prepare(second, true);
+    for project in [&mut a, &mut b] {
+        let config = project.root.path().join("devd.yml");
+        let mut yaml: Value = serde_yaml::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
+        yaml["services"]["worker"]["paths"]["SHARED"] =
+            json!({"scope": "shared", "path": shared.path()});
+        let reservation = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = reservation.local_addr().unwrap();
+        yaml["services"]["worker"]["ports"] = json!({"API_ADDR": address});
+        yaml["services"]["worker"]["healthcheck"] = json!({"type": "tcp", "port": address.port(), "interval": "100ms", "timeout": "1s", "retries": 100});
+        yaml["services"]["worker"]["env"]["M8_BINDING_REPORT"] =
+            json!(project.root.path().join("bindings.json"));
+        fs::write(config, serde_yaml::to_string(&yaml).unwrap()).unwrap();
+        drop(reservation);
+        project.start();
+    }
+    let ia = a.cli(&["identity", "--json"]);
+    let ib = b.cli(&["identity", "--json"]);
+    assert_ne!(ia["instance_id"], ib["instance_id"]);
+    assert_ne!(ia["state_dir"], ib["state_dir"]);
+    assert_eq!(ia["git"]["common_dir"], ib["git"]["common_dir"]);
+    for project in [&a, &b] {
+        let mut discovered =
+            Process::spawn(project.root.path(), &["instances".into(), "--json".into()]);
+        assert!(discovered.finish());
+        let report: Value =
+            serde_json::from_slice(&fs::read(discovered.stdout.path()).unwrap()).unwrap();
+        assert_eq!(report["entries"].as_array().unwrap().len(), 2);
+        assert!(report["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| entry["status"] == "live"));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let bindings: Value = loop {
+            if let Ok(bytes) = fs::read(project.root.path().join("bindings.json")) {
+                if let Ok(value) = serde_json::from_slice(&bytes) {
+                    break value;
+                }
+            }
+            assert!(Instant::now() < deadline, "binding report missing");
+            thread::sleep(Duration::from_millis(10));
+        };
+        let identity = project.cli(&["identity", "--json"]);
+        assert_eq!(
+            Path::new(bindings["cache"].as_str().unwrap())
+                .canonicalize()
+                .unwrap(),
+            Path::new(identity["state_dir"].as_str().unwrap())
+                .join("runtime/cache")
+                .canonicalize()
+                .unwrap()
+        );
+        assert_eq!(
+            Path::new(bindings["shared"].as_str().unwrap())
+                .canonicalize()
+                .unwrap(),
+            shared.path().canonicalize().unwrap()
+        );
+        let address: std::net::SocketAddr = bindings["address"].as_str().unwrap().parse().unwrap();
+        std::net::TcpStream::connect_timeout(&address, Duration::from_secs(2)).unwrap();
+    }
+    let before_b = b.cli(&["status", "--json"]);
+    let mut agent = a.agent(Some("restart,stop,reload,clean"));
+    data(agent.request(json!({"method": "identity"})));
+    denied(
+        agent.request(json!({"method": "stop", "target": target(&ib)})),
+        "wrong-instance",
+    );
+    data(agent.request(json!({"method": "restart", "service": "worker", "target": target(&ia)})));
+    assert_eq!(
+        data(agent.request(json!({"method": "wait", "timeout_ms": 10000})))["outcome"],
+        "ready"
+    );
+    let original = fs::read_to_string(a.root.path().join("devd.yml")).unwrap();
+    fs::write(
+        a.root.path().join("candidate.yml"),
+        original.replace("do-not-export-env", "m8-reloaded"),
+    )
+    .unwrap();
+    let plan =
+        data(agent.request(json!({"method": "reload-preview", "candidate": "candidate.yml"})));
+    assert_eq!(data(agent.request(json!({"method": "reload-apply", "candidate": "candidate.yml", "plan_id": plan["plan_id"], "target": target(&ia)})))["outcome"], "applied");
+    let report = data(agent.request(json!({"method": "export"})));
+    assert_eq!(report["identity"]["run_id"], ia["run_id"]);
+    assert_eq!(report["explanations"]["worker"]["conclusion"], "healthy");
+    let events = report["events"]["entries"].as_array().unwrap();
+    assert!(events
+        .iter()
+        .any(|event| event["data"]["type"] == "reload-finished"));
+    assert!(events.iter().all(|event| event["run_id"] == ia["run_id"]));
+    a.stop();
+    let plan = data(agent.request(json!({"method": "clean-preview"})));
+    assert_eq!(
+        data(agent.request(
+            json!({"method": "clean-apply", "plan_id": plan["plan_id"], "target": target(&ia)})
+        ))["outcome"],
+        "applied"
+    );
+    assert!(!Path::new(ia["state_dir"].as_str().unwrap())
+        .join("runtime/cache")
+        .exists());
+    assert!(Path::new(ib["state_dir"].as_str().unwrap())
+        .join("runtime/cache")
+        .exists());
+    assert_eq!(
+        fs::read_to_string(shared.path().join("sentinel")).unwrap(),
+        "shared across worktrees"
+    );
+    let after_b = b.cli(&["status", "--json"]);
+    for field in ["pid", "event_generation", "restart_count"] {
+        assert_eq!(
+            before_b["services"]["worker"][field],
+            after_b["services"]["worker"][field]
+        );
+    }
+    assert_eq!(b.cli(&["wait", "--json"])["outcome"], "ready");
+    a.start();
+    denied(
+        agent.request(json!({"method": "stop", "target": target(&ia)})),
+        "stale-run",
+    );
+    let current = a.cli(&["identity", "--json"]);
+    assert_eq!(current["instance_id"], ia["instance_id"]);
+    assert_ne!(current["run_id"], ia["run_id"]);
+    let mut new_agent = a.agent(None);
+    assert_eq!(
+        data(new_agent.request(json!({"method": "identity"})))["run_id"],
+        current["run_id"]
+    );
+    a.stop();
+    b.stop();
 }

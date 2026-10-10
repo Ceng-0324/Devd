@@ -1,6 +1,15 @@
 # Changelog
 
-## Unreleased — v0.7 development
+## v0.7.0-alpha.1 — release candidate
+
+Candidate for local development on Linux, macOS and Windows. Adds worktree-aware
+instance discovery, readiness waits, diagnostic export, explicit bindings,
+an event timeline, owned-directory cleanup and an opt-in Agent control interface.
+Publication is separate from source preparation and requires exact-revision CI
+and native archived-binary recovery verification on all three platforms.
+Cleanup requires explicit ownership and a reviewed plan after normal shutdown;
+Agent controls are closed by default. No MCP, automatic port allocation, file
+repair, automatic reload or transactional rollback is included.
 
 - Keep final readiness report output cancellable under pipe backpressure, with
   a separate five-second write/flush deadline and explicit incomplete-output errors.
@@ -58,6 +67,9 @@
   explicit stale/unreachable records and index warnings.
 - Make the resource alarm regression test use distinct sample timestamps so
   fast execution cannot accidentally suppress its recovery assertion.
+- Exercise simultaneous worktrees through live discovery, TCP readiness,
+  mapped environments, Agent restart/reload/export, stopped cleanup, and run
+  replacement. Stabilize binding-output and cooperative Unix shutdown fixtures.
 
 ## v0.6.0-alpha.1 — 2026-10-08
 

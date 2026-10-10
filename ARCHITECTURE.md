@@ -4,7 +4,7 @@
 
 v0.7 M7 的 `cli::agent` 提供 schema 1 JSON-lines stdio adapter。启动时读取活 Identity，并核对所选 config/profile/规范化 state 与实例摘要，固定整个会话的 instance/run。授权仅从启动参数 `--allow` 获取，默认空；四类控制在任何 I/O 前验证 grant 与请求 target。在线操作包装成 `Request::Scoped`，supervisor 在分派前验证 instance/run，拒绝嵌套 scope；原有 CLI 请求保留兼容。adapter 不另建控制器，继续调用现有 restart/stop/reload/wait/诊断用例。离线 clean 复用 CLI 的 typed execute，core 在状态锁内、完成回执前再次比较 expected_run。status/restart 复用导出状态白名单，wait 复用严格就绪解码器，export 直接返回结构不写文件。stdin 使用独立线程与有界 channel，避免不可取消的标准输入占据 Tokio blocking pool；串行分派、16 KiB 行／4096 字节内部请求／8 MiB 回复／5 秒输出超时。EOF 排空输入，信号只取消 adapter；已受理控制不回滚。机器回复的 ok 表示报告可用，具体成功由 outcome 决定，id 不保证控制去重。describe 身份标注为会话建立时观测，不冒充持续在线状态。该授权约束 adapter，不构成同用户进程沙箱、多用户 RBAC 或 MCP 服务。
 
-v0.7 M6 的 `core::owned_paths` 管理显式 `cleanup: true` 的 instance 目录。manager 持有 StateStore 锁后创建全新目录、写随机 marker 并原子登记到 `owned-paths.json`，不接管已有未登记目录；运行开始前置非静止，只有 manager 成功完成才登记正常结束。阻塞任务持有锁 lease，取消不会让未完成的写入越过锁生命周期。`cli::clean` 在阻塞任务中只读解析当前 YAML，取得已有状态锁，核对配置/state/profile、文件身份、当前授权与正常结束记录。以 cap-std 目录句柄做有界目录清单，拒绝链接、硬链接、特殊文件、嵌套状态标记和跨文件系统条目；计划摘要包含原始配置字节摘要、run、journal revision、锁身份与目录清单。所有根预检后再逐根写 deleting 检查点、删除、退休记录，最后保存完成回执。Windows 通过从开始就带 DELETE 权限且不共享删除的目录句柄与 FileDispositionInfo 删除；Unix 使用目录句柄相对删除。部分失败需重新预览，已完成计划重复应用不触碰后来出现的数据。共享别名重叠拒绝，日志／事件／快照和未授权路径保留；历史 PID 不参与判断。树清单是元数据观测，不是内容快照或外部并发写入事务。cleanup 声明变化在 reload 预览与 apply 同时拒绝，须完整 stop/start。
+v0.7 M6 的 `core::owned_paths` 管理显式 `cleanup: true` 的 instance 目录。manager 持有 StateStore 锁后创建全新目录、写随机 marker 并原子登记到 `owned-paths.json`，不接管已有未登记目录；运行开始前置非静止，只有 manager 成功完成才登记正常结束。阻塞任务持有锁 lease，取消不会让未完成的写入越过锁生命周期。`cli::clean` 在阻塞任务中只读解析当前 YAML，按配置目录解析有效服务 cwd，再取得已有状态锁，核对配置/state/profile、文件身份、当前授权与正常结束记录。以 cap-std 目录句柄做有界目录清单，拒绝链接、硬链接、特殊文件、嵌套状态标记和跨文件系统条目；计划摘要包含原始配置字节摘要、run、journal revision、锁身份与目录清单。所有根预检后再逐根写 deleting 检查点、删除、退休记录，最后保存完成回执。Windows 通过从开始就带 DELETE 权限且不共享删除的目录句柄与 FileDispositionInfo 删除；Unix 使用目录句柄相对删除。部分失败需重新预览，已完成计划重复应用不触碰后来出现的数据。共享别名重叠拒绝，日志／事件／快照和未授权路径保留；历史 PID 不参与判断。树清单是元数据观测，不是内容快照或外部并发写入事务。cleanup 声明变化在 reload 预览与 apply 同时拒绝，须完整 stop/start。
 
 v0.7 M5 的 `cli::top` 先读取活实例身份，再核对状态的运行标识；独立读取任务以 cursor 每秒增量查询内存事件，保留最多 1000 行事件／缺口，并与日志页分开呈现。时间线严格检查运行和序号，展示事件代次与已记录 cause 引用，引用被淘汰时标为 unavailable，不根据时序生成因果结论。历史缺口计数、最新缺口、本地淘汰及持久化状态持续展示。状态、事件和日志分别采集，不构成原子快照。日志订阅和重启／停止请求携带可选 expected_run_id，服务端在订阅或副作用前检查；旧协议客户端可省略，TUI 必须携带，防止端点换代后误操作新运行。这是实例运行核对，不是用户权限模型。所有读取在独立任务中完成帧解码，退出通过 RAII 恢复终端并取消客户端任务，已接受的控制保持正常生命周期。
 
@@ -12,7 +12,7 @@ v0.7 M4 的服务级 `ports` 与 `paths` 分别保存命名 TCP 地址和带 sha
 
 v0.7 M3 的 `cli::export` 通过单次控制请求从活 supervisor 采集实例身份、状态快照、事件窗口和可选的内存日志。报告为状态字段白名单，省略重载失败自由文本；每个当前或近期服务的解释复用同一批事件。采样前后比较状态与事件水位，只标记观测期间是否稳定，不承诺跨来源原子快照。客户端将 JSON 先写到目标目录的临时文件，再以不覆盖方式发布，失败不会替换既有报告。
 
-v0.7 M2 的 `cli::wait` 使用一条不重连的只读控制连接订阅 supervisor 内存快照，`core::readiness` 将所选服务的状态、PID 和代次归约成就绪报告。有探测要求 Healthy，否则要求 Running，两者均需 PID；手动重启屏障先于控制请求发布，避免旧代次误满足。manager 的独立 watch 保存停止标记、进行中的手动重启和单调递增的 reload epoch；已接受重载即增加 epoch，即使无变化或完成过快也不会被 watch 合并漏掉。拒绝的重载不触发屏障。配置读取、观测与重载提交保持 snapshot → configuration/control 的锁顺序，运行状态磁盘 schema 不变。每个实例最多 8 个等待，与最多 16 个日志/事件跟随者一起为 32 个总连接保留控制余量。客户端整体 deadline 包含连接，服务端也限制期限；断连及时释放名额，取消不持有 controller，不产生生命周期事件或磁盘写入。JSON schema 1 保留最后观测及其时间，不承诺返回时仍健康。
+v0.7 M2 的 `cli::wait` 使用一条不重连的只读控制连接订阅 supervisor 内存快照，`core::readiness` 将所选服务的状态、PID 和代次归约成就绪报告。有探测要求 Healthy，否则要求 Running，两者均需 PID；手动重启屏障先于控制请求发布，避免旧代次误满足。manager 的独立 watch 保存停止标记、进行中的手动重启和单调递增的 reload epoch；已接受重载即增加 epoch，即使无变化或完成过快也不会被 watch 合并漏掉。拒绝的重载不触发屏障。配置读取、观测与重载提交保持 snapshot → configuration/control 的锁顺序，运行状态磁盘 schema 不变。每个实例最多 8 个等待，与最多 16 个日志/事件跟随者一起为 32 个总连接保留控制余量。客户端整体 deadline 包含连接，服务端也限制期限；断连及时释放名额，取消不持有 controller，不产生生命周期事件或磁盘写入。JSON schema 1 保留最后观测及其时间，不承诺返回时仍健康。最终 stdout 写入和 flush 复用平台异步输出，另有 5 秒期限，期间继续响应取消；输出失败可留下不完整 JSON，但不会停止服务。
 
 实例登记的阻塞写入持有状态锁直至原子替换结束；取消启动不会提前释放所有权，避免迟到的旧写入覆盖新运行记录。已有记录（含悬空链接）必须通过普通文件安全检查，才允许替换。
 
@@ -46,7 +46,7 @@ v0.3 增加单文件 `profiles` 与全局 `--profile`。`config/profile.rs` 独�
 
 配置快照按完整 YAML 文件保存于基础状态目录的 `snapshots/<name>.yml`，不进入 profile 子目录。保存和恢复复制原始字节，支持未完成编辑的配置；校验仍由 `check` 负责。临时文件先写入同一目录并同步，再通过不覆盖的原子发布创建目标；快照名限制为安全的小写 ASCII，恢复目标只能是原配置目录的新文件名，以维持相对路径语义。配置快照不接触 `services.json`、控制 socket 或进程；恢复不会修改运行中实例，也不会接管遗留 PID。
 
-当前可用命令为 start、stop、restart、reload、wait、identity、instances、export、status、top、logs、events（均含 --follow / --stored）、explain、doctor、check、graph、init、snapshot，支持 TCP/HTTP/Unix Socket/Script 健康检查和 fixed/exponential 重启延时。status 提供服务主进程 CPU／RSS 采样。top 仅连接活实例，退出界面不停止服务，停止全栈必须在界面内确认；终端恢复由 RAII 处理。下方总体蓝图仍包含未来的配置监听等扩展，不能视为当前实现。
+当前可用命令为 start、stop、restart、reload、wait、identity、instances、export、agent、clean、status、top、logs、events、explain、doctor、check、graph、init、snapshot；logs/events 支持 --follow 和 --stored，支持 TCP/HTTP/Unix Socket/Script 健康检查和 fixed/exponential 重启延时。status 提供服务主进程 CPU／RSS 采样。top 仅连接活实例，退出界面不停止服务，停止全栈必须在界面内确认；终端恢复由 RAII 处理。配置监听、自动重载和文件自动修复尚未实现。
 
 v0.6 的 `reload --dry-run [--candidate PATH] [--json]` 通过控制端点读取 supervisor 持有的当前有效配置基线。`cli::reload` 在最多两个并发 blocking 任务内读取候选普通文件（上限 1 MiB），沿用实例 profile，按候选目录解析 cwd；`core::reload` 调用与启动共用的静态配置准备函数，校验命令、探测设置、计时器和依赖图，不执行探测或读取 dotenv 内容。任务不持有 controller、状态 writer 或事件记录器；全栈 stop 优先取消等待，即使 OS 读取稍后返回也不能改变服务。并发名额由 blocking 闭包持有直到返回，避免取消后无限积累后台读取。
 
@@ -64,7 +64,7 @@ v0.6 的 `reload --dry-run [--candidate PATH] [--json]` 通过控制端点读取
 
 `storage` 统一提供带锁、安全文件访问、有界记录读取、尾部修复与轮转的 JSONL 底层，日志与事件各自持有独立目录、schema 和订阅。`core::events::storage` 仅在 `start --persist-events` 时开启，在阻塞线程中追加运行上下文、事件、缺口与排空结束标记；默认单文件 10 MiB、3 份归档。启动打开失败阻止服务启动；运行写入失败只停用本次事件 writer，通过 watch 发布 `failed`，stderr 限时异步报告，不停止服务。writer 排空结束前持有状态锁租约。`events --stored` 使用共享读锁，在单记录 64 KiB、结果最多 1000 条与 128 个缺口的边界内扫描；明确报告不完整运行、保留窗口缺失和未完成尾记录，拒绝完整损坏记录及不支持的 schema。事件和应用日志的写盘失败策略分别由 server 管理。
 
-`core::diagnostics::explain` 将同一运行的状态快照和 `EventBatch` 转为版本化报告，在线请求由控制协议返回，`--stored` 在 writer 停止后读取保留历史。结论只由结构化事件和当前状态决定，证据包含序号、类型、代次、因果引用与时间；普通生命周期事件也会在无法判断根因时作为最近事实展示。历史缺口降低 `complete` 并进入报告。该路径不探测、不启动或重启服务，也不执行 next steps；文本与 JSON 共用同一报告模型。
+`core::diagnostics::explain` 将同一运行的状态快照和 `EventBatch` 转为版本化报告，在线请求由控制协议返回，`--stored` 在 writer 停止后读取保留历史。在线结论以快照当前代次为准；无活服务的离线或已移除服务按保留的最新代次解释，离线 status 仍为 null。CPU 与内存分别以最新观测判定恢复；旧代故障只通过明确 cause 链作为正在重启的历史证据，不能覆盖新代 Running/Healthy。结论只由结构化事件和当前状态决定，证据包含序号、类型、代次、因果引用与时间；普通生命周期事件也会在无法判断根因时作为最近事实展示。历史缺口降低 `complete` 并进入报告。该路径不探测、不启动或重启服务，也不执行 next steps；文本与 JSON 共用同一报告模型。
 
 `limits.on-exceed` 默认为 `warn`；仅显式 `restart` 授权超限重启，与 `restart.policy: never` 冲突。采样器按进程代次分别维护 CPU/RSS 连续超限次数；同一指标 3 次有效采样超限时，在同一快照锁内写入 `resource_restart_reason`。缺样及正常值打断该指标的连续计数，重复快照不计数。决定保持到该代次退出，避免 watch 合并更新丢失触发；actor 的同代健康更新保留它，退出或换代清除它。actor 核对代次和授权后执行既有停止、日志排空、退避、依赖等待与累计预算流程。停止及进程退出优先于资源触发，资源更新不取消在途健康探测；预算耗尽保留原因并清理全栈。持久化快照中的原因仅用于诊断，不接管旧 PID。
 
@@ -76,701 +76,88 @@ v0.6 的 `core::path_monitor` 仅在服务显式设置 `monitor-requires: true` 
 
 路径事件保存 requires 索引、类型、解析路径与稳定失败分类（null 表示恢复），不保存文件内容或解析后的链接目标，沿用现有事件容量和截断规则。`explain` 按运行实例与进程代次引用每条条件的最近观测，恢复时附上保留的最近失效，并明确观测不等于应用故障因果；历史缺口照常显示。磁盘留存仍由独立的 `--persist-events` 授权。
 
-## 系统架构图
+## 模块与事实源
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│                          devd CLI (User Entry)                       │
-│  ┌──────────┬──────────┬──────────┬──────────┬──────────┬─────────┐ │
-│  │  init    │  start   │  stop    │  logs    │  status  │  graph  │ │
-│  └──────────┴──────────┴──────────┴──────────┴──────────┴─────────┘ │
-└────────────────────────────────┬────────────────────────────────────┘
-                                 │ clap::Parser
-                                 ▼
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Core Service Manager                          │
-│                                                                       │
-│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐  │
-│  │ Config Loader    │  │ Dependency Graph │  │ State Manager    │  │
-│  │ • Parse YAML     │  │ • Build DAG      │  │ • services.json  │  │
-│  │ • Env substitution│ │ • Topological    │  │ • PID tracking   │  │
-│  │ • Validation     │  │   sort           │  │ • Status cache   │  │
-│  └──────────────────┘  └──────────────────┘  └──────────────────┘  │
-│                                                                       │
-│  ┌────────────────────────────────────────────────────────────────┐ │
-│  │                     Service Orchestrator                        │ │
-│  │  • Start/Stop/Restart services in dependency order             │ │
-│  │  • Signal handling (SIGTERM → graceful shutdown)               │ │
-│  │  • Parallel startup for independent services                   │ │
-│  └────────────────────────────────────────────────────────────────┘ │
-└────────────────────────────────┬────────────────────────────────────┘
-                                 │
-        ┌────────────────────────┼────────────────────────┐
-        ▼                        ▼                        ▼
-┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
-│  Service Task 1  │  │  Service Task 2  │  │  Service Task N  │
-│  (postgres)      │  │  (backend)       │  │  (frontend)      │
-├──────────────────┤  ├──────────────────┤  ├──────────────────┤
-│ • Process Handle │  │ • Process Handle │  │ • Process Handle │
-│ • Health Check   │  │ • Health Check   │  │ • Health Check   │
-│ • Log Collector  │  │ • Log Collector  │  │ • Log Collector  │
-│ • Restart Policy │  │ • Restart Policy │  │ • Restart Policy │
-└──────┬───────────┘  └──────┬───────────┘  └──────┬───────────┘
-       │                     │                      │
-       │ tokio::process      │                      │
-       ▼                     ▼                      ▼
-┌──────────────┐      ┌──────────────┐      ┌──────────────┐
-│  postgres    │      │  npm run dev │      │  vite dev    │
-│  (Child PID) │      │  (Child PID) │      │  (Child PID) │
-└──────────────┘      └──────────────┘      └──────────────┘
-```
+目录以当前源码为准；此处列职责，不复制会随实现变动的 Rust struct。
 
----
+| 目录或模块 | 职责 |
+| --- | --- |
+| `src/main.rs`、`src/cli/mod.rs` | 多线程 Tokio 入口、参数解析、配置/profile/state 选择 |
+| `src/cli/server.rs`、`protocol.rs`、`transport.rs` | 活 supervisor、长度受限 JSON、Unix socket / Windows named pipe |
+| `src/cli/agent.rs`、`instances.rs`、`wait.rs`、`export.rs` | 有授权边界的 stdio 接口、实例发现、就绪等待、诊断导出 |
+| `src/cli/top.rs`、`top/` | 状态、日志与事件时间线；终端恢复和绑定 run 的控制 |
+| `src/config/` | YAML schema、严格校验、profile 合并与时长/资源解析 |
+| `src/core/service_manager.rs`、`service_manager/reload_apply.rs` | 编排、控制屏障、配置切换与反向关闭 |
+| `src/core/service_task.rs`、`process_manager.rs` | 单个服务代次、进程所有权、停止、重试与流排空 |
+| `src/core/dependency.rs`、`dependency_recovery.rs` | DAG、依赖就绪与显式恢复联动 |
+| `src/core/health_check.rs`、`resource_monitor.rs` | 探测、CPU/RSS 采样与显式授权的超限恢复 |
+| `src/core/path_requirements.rs`、`path_monitor.rs`、`owned_paths.rs` | 文件前置条件、只读监测与有授权的实例目录清理 |
+| `src/core/events/`、`events.rs`、`diagnostics.rs` | 有界事实、查询/持久化与确定性解释 |
+| `src/core/state_store.rs` | 状态锁、诊断快照与写入 lease |
+| `src/logging/`、`src/storage.rs` | 分行、内存日志、串行输出、安全 JSONL 存储与轮转 |
+| `src/platform/` | Unix / Windows 进程、文件、权限和关闭差异 |
+| `tests/`、`tests/support/` | 单模块集成、真实子进程、并发 worktree 与平台回归 |
+| `examples/local-stack/`、`scripts/` | API/web/worker 恢复演练与发布制品校验 |
 
-## 核心模块架构
+配置字段的唯一代码定义见 [schema.rs](src/config/schema.rs)，覆盖合并见
+[profile.rs](src/config/profile.rs)。公开用法见双语 README；本地规划文件不进入公开源码包或发布归档。
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                             devd Binary                               │
-│                                                                        │
-│  ┌─────────────────────────────────────────────────────────────────┐ │
-│  │                         CLI Layer (clap)                         │ │
-│  │  • Command parsing                                               │ │
-│  │  • Argument validation                                           │ │
-│  │  • Output formatting (colored terminal)                          │ │
-│  └────────────────────────────┬─────────────────────────────────────┘ │
-│                               │                                        │
-│  ┌────────────────────────────▼─────────────────────────────────────┐ │
-│  │                      Application Layer                            │ │
-│  │                                                                    │ │
-│  │  ┌───────────────┐  ┌───────────────┐  ┌───────────────┐        │ │
-│  │  │ StartCommand  │  │ StopCommand   │  │ LogsCommand   │        │ │
-│  │  │ • Load config │  │ • Send signal │  │ • Query logs  │  ...   │ │
-│  │  │ • Start mgr   │  │ • Wait exit   │  │ • Stream out  │        │ │
-│  │  └───────────────┘  └───────────────┘  └───────────────┘        │ │
-│  └────────────────────────────┬─────────────────────────────────────┘ │
-│                               │                                        │
-│  ┌────────────────────────────▼─────────────────────────────────────┐ │
-│  │                         Domain Layer                              │ │
-│  │                                                                    │ │
-│  │  ┌──────────────────────────────────────────────────────────┐   │ │
-│  │  │                   ServiceManager                          │   │ │
-│  │  │  • Service lifecycle orchestration                        │   │ │
-│  │  │  • Event loop (Tokio runtime)                             │   │ │
-│  │  │  • Task spawning and coordination                         │   │ │
-│  │  └──────────────┬───────────────────────────────────────────┘   │ │
-│  │                 │                                                 │ │
-│  │  ┌──────────────▼───────────────┐  ┌────────────────────────┐  │ │
-│  │  │     DependencyResolver        │  │    HealthChecker       │  │ │
-│  │  │  • Build DAG from config      │  │  • HTTP probe          │  │ │
-│  │  │  • Topological sort           │  │  • TCP probe           │  │ │
-│  │  │  • Cycle detection            │  │  • Socket probe        │  │ │
-│  │  └──────────────────────────────┘  │  • Script probe        │  │ │
-│  │                                     └────────────────────────┘  │ │
-│  │  ┌──────────────────────────────┐  ┌────────────────────────┐  │ │
-│  │  │      LogCollector             │  │    RestartPolicy       │  │ │
-│  │  │  • Capture stdout/stderr      │  │  • Exponential backoff │  │ │
-│  │  │  • Ring buffer storage        │  │  • Max attempts        │  │ │
-│  │  │  • Timestamp + level parsing  │  │  • Cooldown timer      │  │ │
-│  │  └──────────────────────────────┘  └────────────────────────┘  │ │
-│  │                                                                   │ │
-│  │  ┌──────────────────────────────┐  ┌────────────────────────┐  │ │
-│  │  │      ProcessManager           │  │    StateStore          │  │
-│  │  │  • tokio::process::Command    │  │  • services.json       │  │
-│  │  │  • Signal forwarding          │  │  • PID registry        │  │
-│  │  │  • Graceful shutdown          │  │  • Restart counters    │  │
-│  │  └──────────────────────────────┘  └────────────────────────┘  │ │
-│  └──────────────────────────────────────────────────────────────────┘ │
-│                                                                        │
-│  ┌─────────────────────────────────────────────────────────────────┐ │
-│  │                      Infrastructure Layer                        │ │
-│  │                                                                   │ │
-│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │ │
-│  │  │ ConfigLoader │  │ LogStorage   │  │ FileWatcher  │          │ │
-│  │  │ (serde_yaml) │  │ (ring buffer)│  │ (notify)     │          │ │
-│  │  └──────────────┘  └──────────────┘  └──────────────┘          │ │
-│  │                                                                   │ │
-│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │ │
-│  │  │ HttpClient   │  │ SystemInfo   │  │ SignalHandler│          │ │
-│  │  │ (reqwest)    │  │ (sysinfo)    │  │ (tokio)      │          │ │
-│  │  └──────────────┘  └──────────────┘  └──────────────┘          │ │
-│  └──────────────────────────────────────────────────────────────────┘ │
-└──────────────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 数据流图
-
-### 1. 服务启动流程
-
-```
-┌──────────┐
-│ devd     │
-│ start    │
-└────┬─────┘
-     │
-     ▼
-┌──────────────────┐
-│ Load devd.yml    │──┐
-└────┬─────────────┘  │
-     │                │ Validation Error
-     ▼                ▼
-┌──────────────────┐  ┌──────────┐
-│ Validate Config  │─>│ Exit(1)  │
-└────┬─────────────┘  └──────────┘
-     │ OK
-     ▼
-┌──────────────────┐
-│ Build Dependency │
-│ Graph (DAG)      │
-└────┬─────────────┘
-     │
-     ▼
-┌──────────────────┐
-│ Topological Sort │──┐
-└────┬─────────────┘  │
-     │                │ Cycle Detected
-     ▼                ▼
-┌──────────────────┐  ┌──────────┐
-│ Cycle Detection  │─>│ Exit(1)  │
-└────┬─────────────┘  └──────────┘
-     │ No Cycle
-     ▼
-┌──────────────────────────────────────┐
-│ Start Services in Topological Order  │
-└────┬─────────────────────────────────┘
-     │
-     ├──> Service 1 (postgres)
-     │    ├─> Spawn Process
-     │    ├─> Wait for SocketReady
-     │    └─> Start Health Check Loop
-     │
-     ├──> Service 2 (redis)
-     │    ├─> Spawn Process
-     │    ├─> Wait for TcpReady
-     │    └─> Start Health Check Loop
-     │
-     └──> Service 3 (backend)
-          ├─> Wait for dependencies (postgres, redis)
-          ├─> Spawn Process
-          ├─> Wait for HttpReady
-          └─> Start Health Check Loop
-```
-
----
-
-### 2. 健康检查流程
-
-```
-┌─────────────────────┐
-│ Health Check Task   │ (Tokio task per service)
-│ (Interval: 10s)     │
-└──────────┬──────────┘
-           │
-           ▼
-      ┌────────┐
-      │ Tick   │<────────────┐
-      └────┬───┘             │
-           │                 │
-           ▼                 │
-    ┌───────────────┐        │
-    │ Perform Check │        │
-    │ (HTTP/TCP/...)│        │
-    └───────┬───────┘        │
-            │                │
-    ┌───────┴───────┐        │
-    ▼               ▼        │
-┌────────┐      ┌────────┐  │
-│ Success│      │ Failure│  │
-└───┬────┘      └───┬────┘  │
-    │               │        │
-    ▼               ▼        │
-┌────────────┐  ┌──────────────────┐
-│ Reset      │  │ Increment        │
-│ fail_count │  │ fail_count       │
-└─────┬──────┘  └────┬─────────────┘
-      │              │
-      │              ▼
-      │         ┌────────────────┐    No
-      │         │ fail_count >=  │────┘
-      │         │ max_retries?   │
-      │         └────┬───────────┘
-      │              │ Yes
-      │              ▼
-      │         ┌──────────────┐
-      │         │ Trigger      │
-      │         │ Restart      │
-      │         └──────────────┘
-      │
-      └──────────────┘
-```
-
----
-
-### 3. 服务重启流程
-
-```
-┌────────────────┐
-│ Restart        │
-│ Triggered      │
-└───────┬────────┘
-        │
-        ▼
-┌─────────────────┐
-│ Send SIGTERM    │
-│ to Process      │
-└───────┬─────────┘
-        │
-        ▼
-┌─────────────────┐
-│ Wait 5s for     │
-│ Graceful Exit   │
-└───────┬─────────┘
-        │
-    ┌───┴────┐
-    ▼        ▼
-┌────────┐  ┌────────┐
-│ Exited │  │Timeout │
-└───┬────┘  └───┬────┘
-    │           │
-    │           ▼
-    │      ┌──────────┐
-    │      │ SIGKILL  │
-    │      └────┬─────┘
-    │           │
-    └───────┬───┘
-            │
-            ▼
-   ┌─────────────────┐
-   │ Check Restart   │
-   │ Policy          │
-   └────────┬────────┘
-            │
-    ┌───────┴────────┐
-    ▼                ▼
-┌──────────┐   ┌─────────────┐
-│ attempts │   │ attempts >  │──> Give Up
-│ <= max   │   │ max         │
-└────┬─────┘   └─────────────┘
-     │
-     ▼
-┌─────────────────┐
-│ Calculate       │
-│ Backoff Delay   │
-│ (Exponential)   │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ Sleep(delay)    │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ Spawn Process   │
-│ Again           │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│ Wait for        │
-│ Health Check    │
-└─────────────────┘
-```
-
----
-
-### 4. 日志收集流程
+## 生命周期与并发
 
 ```mermaid
-flowchart TD
-    process[Service process generation] --> stdout[stdout: Info]
-    process --> stderr[stderr: Error]
-    stdout --> frame[Independent bounded line framing]
-    stderr --> frame
-    frame --> entry[LogEntry: UTC timestamp, service, generation, level, message]
-    entry --> history[Bounded ring buffer: default 1000 entries]
-    entry --> live[Broadcast: 256 complete entries]
-    history --> query[LogHistory.recent: optional service filter]
-    live --> writer[Single async writer: prefixes and colors]
-    live --> disk[Opt-in blocking disk writer: bounded subscription]
-    disk --> files[JSONL current file + size-rotated archives]
-    files --> offline[Offline filtered tail: logs --stored]
+stateDiagram-v2
+    [*] --> Pending
+    Pending --> Starting: 依赖及文件前置条件满足
+    Starting --> Running: spawn 成功
+    Running --> Healthy: 配置的探测成功
+    Healthy --> Unhealthy: 探测失败
+    Unhealthy --> Healthy: 探测恢复
+    Running --> Restarting: 退出且策略允许
+    Unhealthy --> Restarting: 达到阈值且策略允许
+    Restarting --> Pending: 退避完成，新代次
+    Starting --> Failed: 无法继续启动
+    Restarting --> Failed: 重启预算耗尽
+    Running --> Stopping: stop / reload
+    Healthy --> Stopping: stop / reload
+    Stopping --> Stopped: 进程树和日志排空完成
 ```
 
-完整条目在读取管道侧生成，历史插入与 live 分发顺序一致。单行默认最多保留 16 KiB，超长行标记截断；EOF、取消和读取错误记录尾部一次。慢终端只丢失完整 live 条目并报告 WARN，不阻塞采集或服务管理。CLI start 输出实时日志；logs 在 supervisor 端按服务、级别、固定时间下界和字面关键词筛选，`--tail` 对匹配结果计数，follow 的历史快照与订阅仍在同一锁内完成，并沿用相同条件筛选实时条目。
+这是主要状态路径；资源恢复和依赖联动也复用重启路径。每个 actor 独占
+`ManagedProcess`，manager 管理全栈与控制互斥。watch 只保存最新观测，不能作为
+事件历史；事件和日志用独立的有界历史及 broadcast，消费者必须处理缺口。
+健康探测在单代次内串行，资源采样和路径读取的阻塞任务不持有进程控制权。
 
-v0.4 的 `start --persist-logs` 在实例状态目录的 `logs/` 写 JSONL，不改变默认内存模式。CLI 在持有状态锁且启动服务前打开存储；独立 blocking writer 持有磁盘独占锁及状态锁租约，消费同一个有界 broadcast，落后时写入 WARN 缺口记录，I/O 失败触发有序关停。正常退出等待磁盘队列排空和 `sync_data`，不使用终端 writer 的一秒超时。强杀不保证未同步数据。
+`start` 是前台 supervisor。正常关闭先禁止继续恢复，再按反向依赖层停止
+进程并排空日志。Unix 使用进程组；Windows 使用 Job。Unix 的 SIGKILL 无法运行
+析构，不能承诺此时清理所有后代；Windows Job 随最后所有权句柄关闭。
+旧 `services.json` 只作诊断，不能用于恢复所有权或向历史 PID 发信号。
 
-当前文件为 `current.jsonl`；轮转通过逆序 rename 保留 `archive-1.jsonl`（最新）至 `archive-N.jsonl`，默认单文件 10 MiB、3 份归档。跨运行追加，降低保留数会删除多余归档；完整记录不跨文件。新目录/文件权限为 0700/0600，拒绝日志目录符号链接、受管文件符号链接/硬链接及非普通文件。异常中断的当前文件尾部在有界扫描后截掉，并追加诊断；不会静默忽略完整损坏记录。轮转不是多文件事务，强杀期间可能留下编号缺口，读取按已有文件顺序进行。
+## 配置、环境与持久化边界
 
-`logs --stored` 通过 blocking pool 获取磁盘共享锁，按最旧归档至当前文件流式读取，复用 LogFilter 并用有界队列保留匹配的最新条目。它不读 YAML、不接管进程；持久化 writer 仍运行时明确报错，不能搭配 follow。正常 `logs` 继续读取本次运行内存，不隐式切换数据源。磁盘查询每条 JSON 也有大小上限，避免损坏文件导致无界分配。
+- 默认状态位于配置目录的 `.devd/<config-name>/`，profile 再追加独立子目录。
+  显式 `--state-dir` 也遵循 profile 隔离；项目根的 `.devd/instances/` 是发现索引。
+  不使用用户级全局注册中心。
+- 服务 cwd 相对配置目录；dotenv、共享路径与 requires 相对服务 cwd。
+  实例路径位于该实例状态目录的 `runtime/`。普通映射只注入环境；
+  `cleanup: true` 才允许创建并登记新的可丢弃目录。
+- 命令通过 shell-words 分词后直接执行。没有通用 YAML `${VAR}` 替换，
+  也没有隐式 shell；需要 shell 语法时显式调用 `sh -c` 或 PowerShell。
+  进程环境按继承值、dotenv、显式 env、受校验的映射环境依次覆盖。
+- 日志与事件默认只在内存；磁盘留存分别由启动参数显式开启。
+  配置快照保存原始 YAML，不保存进程、内存或应用数据。
+- 应用日志和显式选入报告的日志可能包含敏感内容，不提供通用自动脱敏。
+  诊断的结构化故障字段与 export 状态白名单减少泄漏，不等于所有路径和文本都无敏感信息。
+- Agent grant 只限制本次 adapter 会话。普通 CLI 和同用户进程仍有自己的系统权限。
+  清理必须同时满足声明、登记、当前计划和正常停止证据，不能仅凭 scope 或 PID 删除。
 
----
+## 验证边界
 
-## 目录结构
+每次候选均要求格式、Clippy、全量测试和公开包检查。原生 Linux、macOS、
+Windows CI 验证各自平台代码；跨编译不能替代实际进程、文件系统和控制端点测试。
+并发 worktree 验收同时启动两个实例，核对映射、发现、就绪、报告、重启/重载、
+停止后清理，以及旧 Agent 会话拒绝控制新 run。
 
-```
-devd/
-├── Cargo.toml                 # Rust project manifest
-├── Cargo.lock
-├── README.md
-├── ARCHITECTURE.md            # Architecture diagrams
-├── AGENTS.md                  # AI agent collaboration rules
-│
-├── src/
-│   ├── main.rs                # Entry point
-│   │
-│   ├── cli/                   # Implemented CLI layer
-│   │   ├── mod.rs             # clap, paths, commands and presentation
-│   │   ├── doctor.rs          # Read-only local launch prerequisite report
-│   │   ├── graph.rs           # Text, DOT and Mermaid dependency views
-│   │   ├── reload.rs          # Candidate loading, preview and explicit application
-│   │   ├── protocol.rs        # Bounded local request/response transport
-│   │   ├── server.rs          # Foreground runtime and client lifecycle
-│   │   └── stdout.rs          # Cancellable terminal and pipe writes
-│   │
-│   ├── core/                  # Domain layer
-│   │   ├── mod.rs
-│   │   ├── service_manager.rs # Main orchestrator
-│   │   ├── service_manager/reload_apply.rs # Stop/commit/start state machine
-│   │   ├── service_task.rs    # Per-service task
-│   │   ├── dependency.rs      # Dependency graph + topological sort
-│   │   ├── reload.rs          # Effective config diff, impact layers, identities and reports
-│   │   ├── health_check.rs    # Health check implementations
-│   │   ├── restart_policy.rs  # Restart strategy
-│   │   └── process_manager.rs # Process spawn/kill/signal
-│   │
-│   ├── logging/               # Implemented: collection, output and persistence
-│   │   ├── mod.rs             # LogEntry, LogLevel, public interfaces
-│   │   ├── collector.rs       # Bounded line framing + ring history
-│   │   ├── output.rs          # Serial async writer + colors
-│   │   └── storage.rs         # Bounded JSONL rotation and offline queries
-│   │
-│   ├── config/                # Configuration
-│   │   ├── mod.rs
-│   │   ├── loader.rs          # YAML parsing + validation
-│   │   ├── schema.rs          # Config structs (serde models)
-│   │   └── env_subst.rs       # Environment variable substitution
-│   │
-│   ├── storage/               # State persistence
-│   │   ├── mod.rs
-│   │   ├── state_store.rs     # services.json read/write
-│   │   └── log_storage.rs     # Log file rotation
-│   │
-│   └── utils/                 # Infrastructure utilities
-│       ├── mod.rs
-│       ├── http_client.rs     # HTTP health check client
-│       ├── system_info.rs     # CPU/memory stats (sysinfo)
-│       └── signal_handler.rs  # SIGTERM/SIGINT handling
-│
-├── tests/
-│   ├── cli.rs                 # Real binary lifecycle and failure tests
-│   ├── reload.rs              # Live preview, selective application and failure tests
-│   ├── integration.rs         # Full MVP scenarios through the public CLI
-│   ├── support/               # Bounded command harness and local HTTP mock
-│   ├── integration/           # Integration tests
-│   │   ├── basic_start_stop.rs
-│   │   ├── dependency_order.rs
-│   │   ├── auto_restart.rs
-│   │   └── health_check.rs
-│   └── fixtures/              # Test configs
-│       ├── simple.yml
-│       ├── with-deps.yml
-│       └── mock-server.sh
-│
-└── examples/
-    ├── devd.yml               # Example config
-    └── mock-service/          # Demo HTTP server for testing
-        └── server.js
-```
-
----
-
-## 关键数据结构
-
-### Config Schema (Rust)
-
-```rust
-// src/config/schema.rs
-
-#[derive(Debug, Deserialize)]
-pub struct DevdConfig {
-    pub version: String,
-    pub services: HashMap<String, ServiceConfig>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ServiceConfig {
-    pub command: String,
-    #[serde(default)]
-    pub listen: Vec<SocketAddr>,
-    #[serde(default)]
-    pub cwd: Option<PathBuf>,
-    #[serde(default)]
-    pub env: HashMap<String, String>,
-    #[serde(default)]
-    pub env_file: Option<PathBuf>,
-    #[serde(default)]
-    pub depends_on: Vec<Dependency>,
-    #[serde(default)]
-    pub healthcheck: Option<HealthCheck>,
-    #[serde(default)]
-    pub restart: RestartPolicy,
-    #[serde(default)]
-    pub limits: Option<ResourceLimits>,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct Dependency {
-    pub service: String,
-    #[serde(default)]
-    pub condition: DependencyCondition,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DependencyCondition {
-    Started,
-    SocketReady,
-    TcpReady,
-    HttpReady,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "type")]
-pub enum HealthCheck {
-    #[serde(rename = "http")]
-    Http {
-        url: String,
-        interval: u64,
-        timeout: u64,
-        retries: u32,
-    },
-    #[serde(rename = "tcp")]
-    Tcp {
-        port: u16,
-        interval: u64,
-        timeout: u64,
-    },
-    #[serde(rename = "socket")]
-    Socket {
-        path: PathBuf,
-        interval: u64,
-    },
-}
-
-#[derive(Debug, Deserialize)]
-pub struct RestartPolicy {
-    pub policy: RestartPolicyType,
-    pub backoff: BackoffType,
-    pub initial_delay: u64,
-    pub max_delay: u64,
-    pub max_attempts: u32,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum RestartPolicyType {
-    Always,
-    OnFailure,
-    Never,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum BackoffType {
-    Fixed,
-    Exponential,
-}
-```
-
----
-
-### Service Task State Machine
-
-当前版本由以下模块实现生命周期所有权：
-
-| 模块 | 所有权与接口 |
-| --- | --- |
-| `core/service_manager.rs` | 校验全栈、并发创建服务任务、状态订阅、SIGINT/SIGTERM、失败回滚和反向拓扑关闭；`ServiceController` 传递手动重启请求并返回启动结果 |
-| `core/service_task.rs` | 私有服务任务，独占 `ManagedProcess`，等待依赖、观察退出与健康、固定延时重启、并发调用日志采集器排空 stdout/stderr |
-| `logging/collector.rs` | 独立流分行、有界行长、全栈环形历史和完整日志条目分发 |
-| `logging/output.rs` | 单个异步 writer 串行输出、稳定颜色、控制字符转义和 live 丢失诊断 |
-| `core/state_store.rs` | 独占状态锁和原子 JSON 替换；锁在未结束的状态写入与服务任务中保持有效 |
-| `core/health_check.rs` | 不可变探测配置和复用 HTTP client，串行周期探测与连续失败计数 |
-
-```text
-Pending -> Starting -> Running -> Healthy / Unhealthy
-进程退出或健康失败 -> 停止旧代 -> Restarting -> 再次等待依赖 -> Starting
-终止失败 -> Failed -> manager 清理其他服务
-关闭 -> 全栈 Quiescing -> 反向分层 Stopping -> Stopped
-```
-
-状态快照保存 PID、开始时间、累计重启次数、连续失败次数和退出/错误诊断。watch 状态只保留最新值，不是可靠的历史事件队列；管道读取侧先拼成完整 LogEntry，再写入有界历史和 broadcast，消费者处理 Lagged。没有健康配置的存活服务为 Running。MVP 仅实现 fixed 重启，v0.2 开发版增加 Unix Socket 探测、有上限且可取消的指数退避，以及可选的依赖进程恢复联动重启。当前使用边界见 [README](README.zh-CN.md#用之前知道这几件事)。
-
----
-
-## 并发模型
-
-```
-┌───────────────────────────────────────────────┐
-│          Tokio Runtime (Single Thread)        │
-│                                               │
-│  ┌─────────────────────────────────────────┐ │
-│  │         Main Event Loop                 │ │
-│  │  • Signal handling                      │ │
-│  │  • CLI command dispatch                 │ │
-│  └───────────┬─────────────────────────────┘ │
-│              │                                 │
-│  ┌───────────▼───────────────────────┐       │
-│  │  ServiceManager::run()            │       │
-│  │  • Spawn N service tasks          │       │
-│  │  • Await completion               │       │
-│  └───────────┬───────────────────────┘       │
-│              │                                 │
-│   ┌──────────┼──────────┐                    │
-│   ▼          ▼          ▼                    │
-│ ┌────────┐ ┌────────┐ ┌────────┐            │
-│ │Service │ │Service │ │Service │            │
-│ │Task 1  │ │Task 2  │ │Task N  │            │
-│ └───┬────┘ └───┬────┘ └───┬────┘            │
-│     │          │          │                  │
-│   ┌─┴──────────┴──────────┴─┐               │
-│   │  Concurrent Execution    │               │
-│   │  (tokio::spawn for each) │               │
-│   └──────────────────────────┘               │
-└───────────────────────────────────────────────┘
-```
-
-**说明**：
-- 服务任务支持单线程与多线程 Tokio 运行时；当前 CLI 使用 `#[tokio::main]` 多线程运行时
-- 每个服务是独立的异步任务（`tokio::spawn`）
-- 健康检查、日志收集、重启策略都是该任务内的 sub-task
-- 每个服务独占进程句柄；watch 传递最新状态和关闭阶段，broadcast 传递完整日志条目，不在共享锁内等待网络、管道或终端 I/O
-
----
-
-## 部署架构
-
-```
-┌──────────────────────────────────────┐
-│  Developer Machine                   │
-│                                      │
-│  ┌────────────────────────────────┐ │
-│  │  Terminal                      │ │
-│  │  $ devd start                  │ │
-│  └──────────┬─────────────────────┘ │
-│             │                        │
-│  ┌──────────▼─────────────────────┐ │
-│  │  devd Process                  │ │
-│  │  PID: 12345                    │ │
-│  │  Memory: ~30MB                 │ │
-│  └──────────┬─────────────────────┘ │
-│             │                        │
-│     ┌───────┼───────┐               │
-│     ▼       ▼       ▼               │
-│  ┌──────┐┌──────┐┌──────┐          │
-│  │postgres││backend││frontend│      │
-│  │PID 123││PID 456││PID 789│       │
-│  └──────┘└──────┘└──────┘          │
-│                                      │
-│  ┌────────────────────────────────┐ │
-│  │  ~/.devd/                      │ │
-│  │  ├── state/services.json       │ │
-│  │  └── logs/                     │ │
-│  └────────────────────────────────┘ │
-└──────────────────────────────────────┘
-```
-
-**说明**：
-- devd 是前台进程（不是 daemon），用户 Ctrl+C 即退出
-- 所有子服务是 devd 的子进程（`kill_on_drop` 保证清理）
-- 状态文件持久化用于诊断；不恢复或接管旧进程，不对遗留 PID 发信号
-
----
-
-## 扩展点设计
-
-### 1. 健康检查插件
-
-v0.4 通过 `healthcheck: {type: script, command: ...}` 加载外部命令，退出码 0 表示健康。使用进程退出状态作为扩展接口，不加载动态库或引入插件注册中心。`HealthChecker::for_service` 固定服务 cwd/env/env-file 上下文，并统一解析相对 socket 路径；直接 `new` 的脚本使用当前目录及继承环境。
-
-每次探测复用 `ManagedProcess` 的环境加载、无隐式 shell 的参数解析与独立进程组；stdin/stdout/stderr 均为 null。单次 timeout 覆盖环境读取、执行和正常组清理；超时或取消通过 Drop 向组发送 SIGKILL，Tokio 尽力回收主进程。正常完成等待组清理，保留非零退出、信号和执行错误作为失败原因。探测命令不应自行脱离进程组。串行探测、失败阈值、自动重启和日志排空等仍由既有 monitor/actor 管理；`script-ready` 要求前置服务配置 Script 探测，并复用依赖就绪及恢复语义。静态 check/graph 不执行命令；脚本按当前用户权限运行。
-
-### 2. 日志处理插件
-
-```rust
-// 用户可自定义日志处理（例如发送到 Loki、ElasticSearch）
-pub trait LogSink: Send + Sync {
-    async fn write(&self, entry: &LogEntry) -> Result<()>;
-}
-
-// 内置实现
-pub struct StdoutSink { ... }
-pub struct FileSink { ... }
-
-// 未来扩展
-// pub struct LokiSink { ... }
-```
-
----
-
-## 性能指标目标
-
-| 指标 | 目标值 | 测量方法 |
-|------|--------|----------|
-| devd 内存占用 | < 50 MB | `ps aux | grep devd` |
-| devd CPU 占用（空闲） | < 1% | `top -pid <devd_pid>` |
-| 启动 10 个服务耗时 | < 5s | `time devd start` |
-| 日志吞吐量 | > 10k lines/s | 压测工具 + 计时 |
-| 健康检查延迟 | < 100ms (HTTP) | 日志时间戳对比 |
-
----
-
-## 安全考量
-
-### 1. 环境变量注入
-- 配置文件中的 `${VAR}` 只替换已设置的环境变量
-- 未设置的变量报错（防止意外使用空值）
-- 不支持命令执行（`$(cmd)`），只替换变量
-
-### 2. 进程隔离
-- 子进程继承 devd 的用户权限（不提权）
-- 不支持以不同用户运行服务（避免权限问题）
-- 提供主进程 CPU／RSS 监控及可选阈值告警；不提供强制资源限制
-
-### 3. 日志脱敏（未来）
-- 配置敏感字段白名单（`DATABASE_URL`、`API_KEY`）
-- 日志输出时自动 mask
-
----
-
-## 参考架构
-
-**类似项目架构对比**：
-
-| 项目 | 语言 | 架构风格 | 并发模型 | 判断 |
-|------|------|----------|----------|------|
-| pm2 | Node.js | 单进程 + 事件循环 | 单线程异步 | 简洁但功能弱 |
-| foreman | Ruby | 单进程 + 多线程 | 线程池 | 简单但无健康检查 |
-| hivemind | Go | 单进程 + goroutines | CSP 并发 | 轻量但依赖图弱 |
-| systemd | C | 多进程 + D-Bus | 多进程 IPC | 强大但复杂 |
-| **devd** | Rust | 单进程 + async | Tokio | ✅ 平衡性能和功能 |
-
----
-
-## 总结
-
-**架构核心思想**：
-1. **简单**：单进程守护，避免复杂的 IPC
-2. **异步**：Tokio 并发模型，高效管理多服务
-3. **模块化**：清晰的分层架构，易于测试和扩展
-4. **跨平台**：Rust + 成熟库，一次编写处处运行
-
-**技术亮点**：
-- 依赖图驱动的启动顺序
-- 多层健康检查 + 自动重启
-- 统一日志流 + 彩色输出
-- 轻量、快速、易用
+发布流程见 [RELEASING.md](RELEASING.md)。归档必须绑定完整源码 SHA，
+核对版本、文件白名单与 SHA-256，并在三个原生平台运行归档二进制的恢复演练。
+TUI 控制台视觉效果不能由无界面 CI 证明。本文不承诺未经基准测试的 CPU、
+内存、启动速度或日志吞吐量指标。

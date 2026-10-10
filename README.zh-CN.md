@@ -16,11 +16,13 @@
 
 ## 它能做什么
 
-devd 是用 Rust 编写的本地开发服务管理器。**v0.6.0-alpha.1 已发布，支持 Linux、macOS 和 Windows。**
+devd 是用 Rust 编写的本地开发服务管理器。**当前源码为 v0.7.0-alpha.1 发布候选，支持 Linux、macOS 和 Windows。**
+
+v0.7 要解决的是多个开发现场别互相踩脚：看清每个 worktree 跑着哪个实例，等服务真正就绪，出问题时导出证据，再按需把控制权交给 Agent。端口和路径明确声明，事件经过能在终端里追，正常停止后先预览、再清理登记过的可丢弃目录。共享文件留下，另一个 worktree 照常跑。
 
 v0.6 开始能提前发现当初那场事故里的问题：启动前声明必需的文件、目录和软链接，运行中可以显式开启监测；改了配置，先看影响范围，再明确应用审阅过的计划。文件监测只报告变化，不会修文件，也不等于授权重启。重载失败会停止全栈，不自动回滚。发布要求同一源码提交通过 Linux、macOS 和 Windows 原生 CI 与归档核验。
 
-可以从 [GitHub Releases](https://github.com/Ceng-0324/Devd/releases/tag/v0.6.0-alpha.1) 下载 Linux x86_64、macOS Apple Silicon、Windows x86_64 制品及 SHA-256 校验文件。发布源码提交 `e9ca335` 已通过三平台原生 CI 和归档二进制故障恢复演练。
+已发布的二进制与 SHA-256 校验文件见 [GitHub Releases](https://github.com/Ceng-0324/Devd/releases)。v0.7 正式出现在该页面前，v0.6.0-alpha.1 归档仍是上一版；下文 v0.7 命令可通过构建当前源码使用。准备好候选不代表已经发布。
 
 v0.5 补上的诊断工具也贯穿这套流程：`events` 查经过，`explain` 根据记录解释故障，`doctor` 在启动前检查环境，`listen` 声明服务自己的 TCP 监听端口。
 
@@ -137,14 +139,14 @@ services:
 
 ## 常用命令
 
-### 实例身份与发现（v0.7 开发中）
+### 实例身份与发现（v0.7）
 
 ```bash
 devd instances --json                  # 当前仓库和全部 worktree
 devd identity --profile staging --json # 指定活实例的身份
 ```
 
-这两个命令已在开发分支实现，已发布的 v0.6 二进制尚不包含。`start` 会登记配置、profile、规范化状态目录、项目/worktree 根目录、supervisor PID、启动时间和事件 `run_id`。`instance_id` 由配置路径、规范化状态目录和 profile 生成，同一实例重启或切换分支时保持不变，路径移动后会变化。分支和提交是启动时的观测；detached HEAD 的分支为空，尚无提交的分支其提交字段为空。
+这两个命令已包含在 v0.7 候选中，已发布的 v0.6 二进制尚不包含。`start` 会登记配置、profile、规范化状态目录、项目/worktree 根目录、supervisor PID、启动时间和事件 `run_id`。`instance_id` 由配置路径、规范化状态目录和 profile 生成，同一实例重启或切换分支时保持不变，路径移动后会变化。分支和提交是启动时的观测；detached HEAD 的分支为空，尚无提交的分支其提交字段为空。
 
 `instances` 从当前 Git 仓库及其 worktree 的 `.devd/instances/*.json` 读取索引，包括子目录配置和启动时登记的自定义 `--state-dir`。普通目录以配置目录为项目根，请在该目录查询；未安装 Git 时只能发现当前目录。它不扫描全盘，也无法发现尚未登记的旧版 supervisor。即使状态目录在项目外，启动登记仍要求项目索引可写；索引建立失败时不会启动服务。
 
@@ -152,7 +154,7 @@ devd identity --profile staging --json # 指定活实例的身份
 
 `instances` 以当前目录确定范围，不接受非默认配置路径、profile 或状态目录选择器；`identity` 沿用 `status` 的选择器，YAML 删除后仍可查询。它们不隔离端口、应用文件或数据库。报告包含本地路径，分享前请留意。
 
-### 等待就绪（v0.7 开发中）
+### 等待就绪（v0.7）
 
 进程启动了，不代表下一步就能用。跑测试、执行脚本，或者把环境交给另一个工具之前，可以先等活实例报告就绪：
 
@@ -162,7 +164,7 @@ devd wait api worker --timeout 1m --json
 devd wait api --profile staging --state-dir ./runtime
 ```
 
-该命令已在开发分支实现。不写服务名时选择 supervisor 当前有效配置中的全部服务；指定名称时精确匹配、自动去重。有健康检查的服务必须达到 `healthy` 且持有 PID，其余必须为 `running` 且持有 PID。沿用启动时的 `--config`、`--profile` 和 `--state-dir`。YAML 改坏或删除后仍能等待：命令只读取活状态，不重读配置，也不额外执行探测。
+该命令已包含在 v0.7 候选中。不写服务名时选择 supervisor 当前有效配置中的全部服务；指定名称时精确匹配、自动去重。有健康检查的服务必须达到 `healthy` 且持有 PID，其余必须为 `running` 且持有 PID。沿用启动时的 `--config`、`--profile` 和 `--state-dir`。YAML 改坏或删除后仍能等待：命令只读取活状态，不重读配置，也不额外执行探测。
 
 默认期限 `30s` 包含连接建立，可用 `--timeout` 设置 `1ms` 到 `1h`。同一 supervisor 内手动重启或崩溃恢复可以继续等待新代次；手动重启请求一旦被接受，旧代次就不能满足等待。全栈停止、已接受的配置重载（包括等价配置）或控制连接断开会终止本次等待。预览和被拒绝的重载不影响等待，也不会自动重连新的 supervisor。Ctrl+C 只取消等待命令。
 
@@ -172,7 +174,7 @@ devd wait api --profile staging --state-dir ./runtime
 
 最终输出在就绪等待结束后另有 5 秒的写入和 flush 期限；管道阻塞时仍可用 Ctrl+C 取消。输出失败以非零状态退出，文本或 JSON 可能不完整，服务不会因此停止。
 
-### 导出诊断证据（v0.7 开发中）
+### 导出诊断证据（v0.7）
 
 需要分享故障现场时，从选中的活 supervisor 导出一份有界报告：
 
@@ -185,7 +187,7 @@ devd export --profile staging --state-dir ./runtime --output staging.json --incl
 
 `omitted_fields` 列出有意省略的自由文本字段，错误正文缺席不表示没有发生错误。默认不包含应用日志；`--include-logs` 才加入最近最多 200 条原始内存日志，分享前必须检查。状态错误正文、重载失败正文、配置命令和环境值不会进入默认报告。这是字段白名单，不是通用秘密脱敏：服务名称、配置/状态/worktree 路径、路径条件中的文件路径、Git 上下文，以及显式加入的日志仍可能泄露隐私。导出通过临时文件发布为新文件，绝不覆盖现有目标；YAML 被删除后，只要 supervisor 还在运行仍可导出。命令不查询离线历史，也不控制服务。
 
-### 显式配置实例端口与路径（v0.7 开发中）
+### 显式配置实例端口与路径（v0.7）
 
 两个 worktree 不该一边抢同一个 API 端口，一边往同一个临时目录里写东西。把应用需要的地址和路径集中声明：
 
@@ -217,7 +219,7 @@ profiles:
 
 `check` 拒绝地址声明冲突和实例独占路径重叠；`doctor` 对 `ports` 与 `listen` 地址实际尝试绑定后立即释放。**检查空闲不等于预约成功。** 启动前仍可能被其他进程抢占，应用绑定失败继续通过日志、退出和健康事件呈现；devd 不自动分配端口，也不凭退出状态猜测失败原因。
 
-### 清理可丢弃的实例数据（v0.7 开发中）
+### 清理可丢弃的实例数据（v0.7）
 
 项目就是从一次误删事故开始的，删除权限当然不能靠猜。单独声明 `scope: instance` 不允许删除。确实可以丢弃的缓存，给它一个专用目录，再显式开启：
 
@@ -247,7 +249,7 @@ devd clean --apply --plan sha256:... --json  # 使用预览返回的 plan_id
 
 清理期间也应停止外部写入者。链接／reparse point、硬链接、特殊文件、跨文件系统目录、嵌套 devd 归属或状态标记、非 UTF-8 文件名都会拒绝；最多登记 128 个根目录，每根最多 10,000 个条目、64 层嵌套目录。清单检查文件元数据，不读取应用文件内容，因此不构成内容哈希，也不抵御同用户恶意进程任意篡改文件系统。父目录和归属记录保留，供重试和后续启动核对。
 
-### 给 Agent 的实例接口（v0.7 开发中）
+### 给 Agent 的实例接口（v0.7）
 
 让 Agent 看状态，不代表顺手把停机按钮也递过去。先启动服务，再用相同的实例参数启动逐行 JSON 接口：
 
@@ -385,9 +387,9 @@ devd reload --apply --plan 'sha256:<64位十六进制摘要>' --candidate devd.n
 | `devd restart <service>` | 用当前有效配置重启一个服务，重新检查依赖 |
 | `devd reload --dry-run / --apply --plan ID [--candidate PATH] [--json]` | 预览或显式应用受影响服务的配置变化（v0.6） |
 | `devd status [--json]` | 查看实时状态、PID、CPU／RSS、重启次数和诊断信息 |
-| `devd identity [--json]` | 查看所选活 supervisor 的实例与运行身份（v0.7 开发分支） |
-| `devd instances [--json]` | 发现当前仓库及其 worktree 中已登记的实例（v0.7 开发分支） |
-| `devd export --output FILE [--include-logs]` | 导出有界的活实例诊断报告到新 JSON 文件（v0.7 开发分支） |
+| `devd identity [--json]` | 查看所选活 supervisor 的实例与运行身份（v0.7） |
+| `devd instances [--json]` | 发现当前仓库及其 worktree 中已登记的实例（v0.7） |
+| `devd export --output FILE [--include-logs]` | 导出有界的活实例诊断报告到新 JSON 文件（v0.7） |
 | `devd clean --dry-run [--json]` | 在成功停止后预览已登记、明确授权丢弃的目录 |
 | `devd clean --apply --plan ID [--json]` | 应用当前清理计划，保留共享和未登记数据 |
 | `devd agent --stdio [--allow restart,stop,reload,clean]` | 提供绑定本次运行、控制须显式授权的 JSON 接口 |
@@ -489,6 +491,8 @@ devd explain api --stored --json
 ```
 
 在线模式连接正在运行的 supervisor，不重新读取 YAML。`--stored` 在 writer 停止后读取保留的事件文件，即使 YAML 已删除也可用；报告会标记 `source: stored`，历史 PID 只作为证据。报告中的 `complete: false` 表示存在明确缺口或被省略的缺口，结论只对保留下来的历史负责。没有匹配事件时会明确说无法确定原因，并给出下一步只读检查。任何模式都不会自动修复。
+
+解释以当前服务代次为准；没有活服务时使用保留下来的最新代次，离线 `status` 仍为 null。CPU 与内存的恢复分别解除对应告警。正在重启时可以沿明确的 cause 引用旧代原因，但旧故障不会覆盖新代的运行或健康状态。导出和 Agent 报告沿用同一规则。
 
 **启动前先查环境。** `devd doctor` 检查服务工作目录、声明的 `requires` 路径、dotenv 文件、服务命令和脚本探测程序是否可找到，以及显式声明的 TCP 监听地址。它不会启动服务、执行命令或探测脚本，也不会改动文件和进程。`requires` 使用与启动相同的 evaluator 检查可读文件、可访问目录及目标存在的软链接。用 `listen` 声明服务自己的端口，例如 `listen: [127.0.0.1:3000]`；健康检查目标不会被当作服务自有端口。检查会短暂绑定后释放地址，只说明检查当时是否可用。没有声明时会标记为 `not-checked`。可用 `--profile` 检查合并后的配置，用 `--json` 获取带版本的机器可读报告。发现失败时返回非零退出码；通过检查不代表之后启动必然成功。
 

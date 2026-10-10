@@ -18,11 +18,13 @@ Broken file dependencies still need fixing. devd takes care of the services you 
 
 ## What it does
 
-devd is a local development service manager written in Rust. **v0.6.0-alpha.1 is available for Linux, macOS, and Windows.**
+devd is a local development service manager written in Rust. **This checkout is the v0.7.0-alpha.1 release candidate for Linux, macOS, and Windows.**
+
+v0.7 is about keeping parallel development sessions out of each other's way. Find the instance running in each worktree, wait until its services are ready, export evidence when something goes wrong, and give an Agent only the controls you choose. Declare ports and paths explicitly, inspect a live event timeline, then preview and clean only registered disposable data after a normal stop. Shared files stay shared; another worktree keeps running.
 
 v0.6 brings the original accident a little closer to something you can catch: declare required files, directories, and symlinks before a service starts, then opt in to observing them while it runs. When configuration changes, preview the affected services and explicitly apply the reviewed plan. File monitoring reports what changed; it does not repair files or authorize restarts. Reload failures stop the whole stack without automatic rollback. Publication requires native CI and archive verification on Linux, macOS, and Windows for the same source revision.
 
-Download Linux x86_64, macOS Apple Silicon, or Windows x86_64 binaries and their SHA-256 checksums from [GitHub Releases](https://github.com/Ceng-0324/Devd/releases/tag/v0.6.0-alpha.1). This release passed native CI and packaged-binary recovery tests on all three platforms at source revision `e9ca335`.
+Published binaries and SHA-256 checksums are on [GitHub Releases](https://github.com/Ceng-0324/Devd/releases). Until v0.7 is published there, the v0.6.0-alpha.1 archives remain the previous release; build this checkout to use the v0.7 commands below. Candidate preparation alone does not publish a release.
 
 The diagnostic tools introduced in v0.5 remain part of that workflow: `events` traces what happened, `explain` connects failures to recorded evidence, and `doctor` checks the environment before starting. The `listen` setting declares owned TCP ports.
 
@@ -139,14 +141,14 @@ Inspect them with `devd events api --type path-condition-changed --json` or `dev
 
 ## Commands
 
-### Instance discovery (v0.7 development)
+### Instance discovery (v0.7)
 
 ```bash
 devd instances --json                 # Current repository and its worktrees
 devd identity --profile staging --json # Selected live supervisor
 ```
 
-These commands are available in the development branch, not the published v0.6
+These commands are available in the v0.7 candidate, not the published v0.6
 binaries. `start` now registers the configuration, profile, canonical state
 directory, project/worktree root, supervisor PID, start time, and event `run_id`.
 `instance_id` hashes the configuration path, canonical state directory, and
@@ -179,7 +181,7 @@ profiles, and state directories. `identity` uses the same selectors as `status` 
 the YAML has been removed. Neither command isolates ports, files, or databases.
 Reports include local paths; consider that before sharing them.
 
-### Wait for readiness (v0.7 development)
+### Wait for readiness (v0.7)
 
 Starting a process does not mean the next step can use it. Before running tests
 or handing a stack to another tool, wait for the live supervisor's readiness:
@@ -190,7 +192,7 @@ devd wait api worker --timeout 1m --json
 devd wait api --profile staging --state-dir ./runtime
 ```
 
-This command is in the development branch. Omit names to select every service
+This command is included in the v0.7 candidate. Omit names to select every service
 in the supervisor's effective configuration; supplied names match exactly and
 duplicates are ignored. Services with a health check need `healthy` and a PID;
 others need `running` and a PID. Use the same `--config`, `--profile`, and
@@ -228,7 +230,7 @@ Final output has a separate five-second write/flush deadline after the readiness
 deadline. Ctrl+C can cancel a stalled output pipe too. An output failure exits
 nonzero and may leave partial text or JSON; it never stops services.
 
-### Export diagnostics (v0.7 development)
+### Export diagnostics (v0.7)
 
 When a failure needs to be shared, capture one bounded report from the selected
 live supervisor:
@@ -260,7 +262,7 @@ report is written as a new file using a temporary file and never overwrites an
 existing path. It works after the YAML is removed while the supervisor is
 running; it does not read stored history or control any service.
 
-### Explicit instance ports and paths (v0.7 development)
+### Explicit instance ports and paths (v0.7)
 
 Two worktrees should not silently fight over the same API port or write into the
 same scratch directory. Declare the addresses and paths your application reads:
@@ -317,7 +319,7 @@ releases them. **That does not reserve a port.** Another process can take it
 before startup; application bind errors still appear in its logs and exit/health
 evidence. devd does not automatically allocate ports or infer failure causes.
 
-### Clean disposable instance data (v0.7 development)
+### Clean disposable instance data (v0.7)
 
 The accident that started this project is a good reason to make deletion explicit.
 `scope: instance` alone grants no deletion permission. For scratch data you can
@@ -375,7 +377,7 @@ contents; they are not content hashes or protection against a malicious process
 running as the same user. Parent directories and ownership records remain so
 that retries and subsequent starts can check what happened.
 
-### A scoped interface for Agents (v0.7 development)
+### A scoped interface for Agents (v0.7)
 
 An Agent can inspect a stack without being handed its stop button. Start the
 stack first, then launch a JSON-lines session with the same instance selectors:
@@ -546,9 +548,9 @@ Choose exactly one of `--dry-run` or `--apply`. Preview validates YAML, quoting,
 | `devd restart <service>` | Restart one service using the current effective configuration, rechecking dependencies |
 | `devd reload --dry-run / --apply --plan ID [--candidate PATH] [--json]` | Preview or explicitly apply affected service changes (v0.6) |
 | `devd status [--json]` | Show live state, PIDs, CPU / RSS, restart counts, and diagnostics |
-| `devd identity [--json]` | Show the selected live supervisor's instance and run identity (v0.7 development) |
-| `devd instances [--json]` | Discover registered instances in the current repository and its worktrees (v0.7 development) |
-| `devd export --output FILE [--include-logs]` | Save bounded live diagnostics to a new JSON file (v0.7 development) |
+| `devd identity [--json]` | Show the selected live supervisor's instance and run identity (v0.7) |
+| `devd instances [--json]` | Discover registered instances in the current repository and its worktrees (v0.7) |
+| `devd export --output FILE [--include-logs]` | Save bounded live diagnostics to a new JSON file (v0.7) |
 | `devd clean --dry-run [--json]` | Preview registered, explicitly disposable directories after successful shutdown |
 | `devd clean --apply --plan ID [--json]` | Apply a current cleanup plan; preserve shared and unregistered data |
 | `devd agent --stdio [--allow restart,stop,reload,clean]` | Serve a run-bound JSON interface with explicit control grants |
@@ -650,6 +652,8 @@ devd explain api --stored --json
 ```
 
 Online mode connects to the running supervisor and does not reread YAML. `--stored` reads retained event files after the writer has stopped, works even when the YAML has been removed, and labels the report `source: stored`; historical PIDs are evidence only. A report with `complete: false` has explicit gaps or omitted gap diagnostics, so its conclusion is bounded by retained history. Without matching events, the report says it cannot determine the cause and points to the next read-only checks. No mode performs automatic remediation.
+
+Explanations follow the current service generation. Without a live service, they use the latest retained generation; stored `status` stays null. A recovered CPU or memory warning is cleared independently for that metric. Explicit causes can still explain an in-progress restart, but an old failure does not override a newer running or healthy generation. Export and Agent reports use the same rules.
 
 **Check the launch environment before starting.** `devd doctor` checks service working directories, declared `requires` paths, dotenv files, whether service and script-probe programs can be found, and explicitly declared TCP listen addresses. It does not start services, execute commands or probes, or change files and processes. `requires` checks readable files, accessible directories, and symlinks with existing file or directory targets using the same evaluator as startup. Declare ports with `listen` (for example `listen: [127.0.0.1:3000]`); healthcheck targets are not assumed to belong to the service. Listen checks briefly bind and release each address, so they report only whether it was available at that instant. Without declarations the report says `not-checked`. Use `--profile` to inspect the selected merged configuration and `--json` for a versioned machine-readable report. Failures return a nonzero exit code; a clean report cannot guarantee that a later launch will succeed.
 

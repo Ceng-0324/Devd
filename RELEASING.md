@@ -14,7 +14,7 @@ action after the source revision, checks, and artifacts have been reviewed.
    Verify that local-only documents are absent from `cargo package --list`.
 3. Push the release commit and require successful Linux/macOS/Windows CI on that
    exact SHA, including the three-service recovery smoke test and native Windows
-   job, probe, control, persistence, and supervisor-death tests. v0.6 also requires
+   job, probe, control, persistence, and supervisor-death tests. Filesystem/reload coverage also requires
    dangling/cyclic symlinks, replacement, permissions, monitor cancellation,
    invalid/stale reload plans, partial failures, competing controls, and stop
    preemption. Native Windows filesystem tests require symlink creation privileges
@@ -22,6 +22,12 @@ action after the source revision, checks, and artifacts have been reviewed.
    is useful during development but does not replace native execution. Check
    `top` in an interactive Windows console (quit, restart, cancel/confirm stop)
    before the first Windows release; headless CI cannot validate console rendering.
+   v0.7 additionally requires simultaneous worktree discovery, mapped environments
+   and TCP readiness, Agent restart/reload/export/stop/clean without affecting the
+   other instance, rejection of old-run controls, cleanup shared-path protection
+   from foreign working directories, recovery-aware explanations, and bounded
+   final readiness output under real pipe backpressure. Run the binding and
+   cooperative shutdown fixture regressions as part of the same native suite.
 4. Trigger **Release artifacts** from main with the full source commit SHA in
    its required `revision` input. The workflow verifies the checkout and tests
    the archived release binary on each target platform.
@@ -41,7 +47,7 @@ action after the source revision, checks, and artifacts have been reviewed.
 
    ```bash
    python3 scripts/verify-release.py <archive> [<archive> ...] \
-     --version 0.6.0-alpha.1 --revision <full-40-character-SHA>
+     --version 0.7.0-alpha.1 --revision <full-40-character-SHA>
    ```
 
    Keep each checksum beside its archive. Add `--smoke` for a single native
@@ -51,7 +57,8 @@ action after the source revision, checks, and artifacts have been reviewed.
    checksums, and verify its notes, tag target, assets, and prerelease flag
    before publishing it. Use ordinary forward commits for any follow-up fixes.
    Use the matching changelog section for notes, state the validated source SHA,
-   and keep the file-observation and reload failure boundaries explicit. Any
+   and keep the file-observation, reload failure, Agent grant and owned-directory
+   cleanup boundaries explicit. Candidate validation alone does not publish it. Any
    source change requires CI and artifacts for the new SHA before publication.
 
 The v0.1 MVP was an internal milestone, not a separately published release.
