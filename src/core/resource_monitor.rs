@@ -477,6 +477,7 @@ mod tests {
         assert!(alarms.evaluate(&mut state, &limits, None).is_empty());
         state.services.get_mut("worker").unwrap().resources = Some(ResourceUsage {
             cpu_percent: None,
+            sampled_at: state.services["worker"].started_at.unwrap() + chrono::Duration::seconds(1),
             ..usage()
         });
         assert!(alarms.evaluate(&mut state, &limits, None).is_empty());
@@ -484,7 +485,7 @@ mod tests {
         service.resources = Some(ResourceUsage {
             cpu_percent: Some(100.0),
             memory_bytes: 40_000,
-            sampled_at: Utc::now(),
+            sampled_at: service.started_at.unwrap() + chrono::Duration::seconds(2),
         });
         let recovered = alarms.evaluate(&mut state, &limits, None);
         assert_eq!(recovered.len(), 2);
