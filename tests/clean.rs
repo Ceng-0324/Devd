@@ -424,7 +424,8 @@ fn test_clean_windows_partial_failure_can_be_previewed_and_retried() {
     let cache = root.path().join(".devd/devd.yml/runtime/cache");
     let protected = cache.join("read-only");
     fs::write(&protected, "read-only failure fixture").unwrap();
-    let mut permissions = fs::metadata(&protected).unwrap().permissions();
+    let original_permissions = fs::metadata(&protected).unwrap().permissions();
+    let mut permissions = original_permissions.clone();
     permissions.set_readonly(true);
     fs::set_permissions(&protected, permissions).unwrap();
     let plan = success(invoke(root.path(), &["clean", "--dry-run", "--json"]));
@@ -441,9 +442,7 @@ fn test_clean_windows_partial_failure_can_be_previewed_and_retried() {
     assert!(!output.status.success());
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["outcome"], "partial");
-    let mut permissions = fs::metadata(&protected).unwrap().permissions();
-    permissions.set_readonly(false);
-    fs::set_permissions(&protected, permissions).unwrap();
+    fs::set_permissions(&protected, original_permissions).unwrap();
     let plan = success(invoke(root.path(), &["clean", "--dry-run", "--json"]));
     assert_eq!(
         success(invoke(
