@@ -46,12 +46,15 @@ pub(super) async fn execute(
             bail!("cleanup configuration exceeds 1 MiB");
         }
         let fingerprint = format!("sha256:{:x}", Sha256::digest(&bytes));
-        let configuration = ConfigLoader::from_str_profile(
+        let mut configuration = ConfigLoader::from_str_profile(
             std::str::from_utf8(&bytes)?,
             &config,
             profile.as_deref(),
         )?;
         configuration.validate()?;
+        // Shared mappings must have exactly the same meaning as during start,
+        // regardless of the CLI or Agent launcher's current directory.
+        super::resolve_working_directories(&mut configuration, &config);
         owned_paths::clean(
             &configuration,
             &config,

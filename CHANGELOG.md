@@ -2,6 +2,10 @@
 
 ## Unreleased — v0.7 development
 
+- Resolve cleanup shared paths against the selected configuration and service
+  working directory, including Agent cleanup launched from another directory.
+  Reject shared overlaps consistently before preview or deletion.
+
 - Add `agent --stdio`, a schema-1 JSON-lines interface bound to one live instance
   and run. Default to diagnostic reads; allow the launcher to grant restart,
   stop, reload and cleanup separately. Check scope at execution, retain reviewed

@@ -260,6 +260,99 @@ fn test_clean_cli_plans_are_current_explicit_and_idempotent() {
 }
 
 #[test]
+fn test_clean_shared_paths_use_config_cwd_from_every_invocation_directory() {
+    for (cwd_kind, profile) in [
+        ("default", false),
+        ("relative", false),
+        ("absolute", false),
+        ("alias", false),
+        ("relative", true),
+    ] {
+        let temporary = project();
+        let root = temporary.path().canonicalize().unwrap();
+        let nested = root.join("nested");
+        let foreign = root.join("foreign");
+        fs::create_dir_all(nested.join("work")).unwrap();
+        fs::create_dir(&foreign).unwrap();
+        let path = nested.join("devd.yml");
+        let mut yaml: Value =
+            serde_yaml::from_str(&fs::read_to_string(root.join("devd.yml")).unwrap()).unwrap();
+        match cwd_kind {
+            "relative" => yaml["services"]["worker"]["cwd"] = json!("work"),
+            "absolute" => yaml["services"]["worker"]["cwd"] = json!(nested.join("work")),
+            _ => {}
+        }
+        fs::write(&path, serde_yaml::to_string(&yaml).unwrap()).unwrap();
+        let state_arg = root.join("state");
+        let mut options = vec![
+            "--config",
+            path.to_str().unwrap(),
+            "--state-dir",
+            state_arg.to_str().unwrap(),
+        ];
+        if profile {
+            options.extend(["--profile", "dev"]);
+        }
+        let mut process = start(&root, &options);
+        stop(&root, &mut process, &options);
+        let preview = || [&options[..], &["clean", "--dry-run", "--json"]].concat();
+        let plan = success(invoke(&foreign, &preview()));
+        assert_eq!(plan, success(invoke(&nested, &preview())));
+        let state = Path::new(plan["state_dir"].as_str().unwrap());
+        let cache = state.join("runtime/cache");
+        fs::write(cache.join("sentinel"), "shared data").unwrap();
+        let journal = fs::read(state.join("owned-paths.json")).unwrap();
+        let shared = Path::new(if cwd_kind == "default" { ".." } else { "../.." })
+            .join(state.strip_prefix(&root).unwrap())
+            .join("runtime/cache");
+        let shared = if cwd_kind == "alias" {
+            let alias = nested.join("shared-alias");
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(&cache, &alias).unwrap();
+            #[cfg(windows)]
+            std::os::windows::fs::symlink_dir(&cache, &alias)
+                .expect("native Windows CI must support symlinks");
+            std::path::PathBuf::from("shared-alias")
+        } else {
+            shared
+        };
+        let bindings = if profile {
+            yaml["profiles"]["dev"]["services"]["worker"] =
+                json!({"paths": yaml["services"]["worker"]["paths"].clone()});
+            &mut yaml["profiles"]["dev"]["services"]["worker"]["paths"]
+        } else {
+            &mut yaml["services"]["worker"]["paths"]
+        };
+        bindings["SHARED"] = json!({"scope": "shared", "path": shared});
+        fs::write(&path, serde_yaml::to_string(&yaml).unwrap()).unwrap();
+        for directory in [&root, &nested, &foreign] {
+            rejected(invoke(directory, &preview()), "overlaps a shared mapping");
+            rejected(
+                invoke(
+                    directory,
+                    &[
+                        &options[..],
+                        &[
+                            "clean",
+                            "--apply",
+                            "--plan",
+                            plan["plan_id"].as_str().unwrap(),
+                        ],
+                    ]
+                    .concat(),
+                ),
+                "overlaps a shared mapping",
+            );
+        }
+        assert_eq!(
+            fs::read_to_string(cache.join("sentinel")).unwrap(),
+            "shared data"
+        );
+        assert_eq!(fs::read(state.join("owned-paths.json")).unwrap(), journal);
+    }
+}
+
+#[test]
 fn test_clean_profile_custom_state_and_links_preserve_external_data() {
     let root = project();
     let external = tempfile::tempdir().unwrap();

@@ -331,6 +331,59 @@ fn test_agent_explicit_controls_plans_and_stopped_cleanup_share_existing_rules()
 }
 
 #[test]
+fn test_agent_cleanup_protects_config_relative_shared_paths_from_foreign_cwd() {
+    let mut project = Project::new(true);
+    let foreign = temporary();
+    let foreign_cwd = foreign.path().join("nested");
+    fs::create_dir(&foreign_cwd).unwrap();
+    let config = project.root.path().join("devd.yml").canonicalize().unwrap();
+    let mut arguments = project.options.clone();
+    arguments.extend([
+        "--config".into(),
+        config.to_str().unwrap().into(),
+        "agent".into(),
+        "--stdio".into(),
+        "--allow".into(),
+        "clean".into(),
+    ]);
+    let mut agent = Process::spawn(&foreign_cwd, &arguments);
+    let identity = data(agent.request(json!({"method": "identity"})));
+    project.stop();
+    let plan = data(agent.request(json!({"method": "clean-preview"})));
+    let state = Path::new(identity["state_dir"].as_str().unwrap());
+    let cache = state.join("runtime/cache");
+    fs::write(cache.join("sentinel"), "shared data").unwrap();
+    let journal = fs::read(state.join("owned-paths.json")).unwrap();
+    let shared = Path::new("..").join(
+        cache
+            .strip_prefix(config.parent().unwrap().parent().unwrap())
+            .unwrap(),
+    );
+    let mut yaml: Value = serde_yaml::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
+    yaml["services"]["worker"]["paths"]["SHARED"] = json!({"scope": "shared", "path": shared});
+    fs::write(&config, serde_yaml::to_string(&yaml).unwrap()).unwrap();
+    for operation in [
+        json!({"method": "clean-preview"}),
+        json!({"method": "clean-apply", "plan_id": plan["plan_id"], "target": target(&identity)}),
+    ] {
+        let reply = agent.request(operation);
+        denied(reply.clone(), "operation-failed");
+        assert!(
+            reply["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("overlaps a shared mapping"),
+            "{reply}"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(cache.join("sentinel")).unwrap(),
+        "shared data"
+    );
+    assert_eq!(fs::read(state.join("owned-paths.json")).unwrap(), journal);
+}
+
+#[test]
 fn test_agent_session_cannot_follow_a_new_run_online_or_during_cleanup() {
     let mut project = Project::new(false);
     let mut agent = project.agent(Some("restart,stop,reload,clean"));
