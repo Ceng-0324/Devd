@@ -1,15 +1,19 @@
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, net::SocketAddr, path::Component};
 
 use thiserror::Error;
 
 use crate::core::dependency::{DependencyError, DependencyGraph};
 
-use super::{BackoffType, DependencyCondition, DevdConfig, HealthCheck, RestartPolicyType};
+use super::{
+    BackoffType, DependencyCondition, DevdConfig, HealthCheck, PathScope, RestartPolicyType,
+};
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum ConfigValidationError {
     #[error("{field}: {reason}")]
     InvalidField { field: String, reason: &'static str },
+    #[error("{field}: TCP address conflicts with {other}")]
+    ConflictingPort { field: String, other: String },
     #[error(transparent)]
     Dependency(#[from] DependencyError),
 }
@@ -36,6 +40,8 @@ impl DevdConfig {
         }
 
         let services: BTreeMap<_, _> = self.services.iter().collect();
+        let mut claimed_ports: Vec<(&str, SocketAddr)> = Vec::new();
+        let mut owned_paths = Vec::new();
         for (name, service) in &services {
             let prefix = format!("services.{name}");
             if name.is_empty()
@@ -60,6 +66,68 @@ impl DevdConfig {
                     format!("{prefix}.listen"),
                     "listening port must be between 1 and 65535",
                 ));
+            }
+            for (key, address) in &service.ports {
+                validate_binding_key(&prefix, key)?;
+                if address.port() == 0 {
+                    return Err(invalid(
+                        format!("{prefix}.ports.{key}"),
+                        "port must be between 1 and 65535",
+                    ));
+                }
+                let ip = address.ip().to_canonical();
+                if ip.is_unspecified()
+                    || ip.is_multicast()
+                    || matches!(ip, std::net::IpAddr::V4(ip) if ip.is_broadcast())
+                {
+                    return Err(invalid(
+                        format!("{prefix}.ports.{key}"),
+                        "mapped addresses must use a concrete unicast IP for dependent connections; use listen for wildcard bind declarations",
+                    ));
+                }
+            }
+            for (key, binding) in &service.paths {
+                validate_binding_key(&prefix, key)?;
+                if binding.path.as_os_str().is_empty()
+                    || binding.path.to_string_lossy().contains('\0')
+                {
+                    return Err(invalid(
+                        format!("{prefix}.paths.{key}.path"),
+                        "path must be non-empty and contain no NUL bytes",
+                    ));
+                }
+                if binding.scope == PathScope::Instance {
+                    if !binding
+                        .path
+                        .components()
+                        .all(|part| matches!(part, Component::Normal(name) if portable_path_component(name)))
+                    {
+                        return Err(invalid(
+                            format!("{prefix}.paths.{key}.path"),
+                            "instance path must be relative with portable lowercase components (no parent traversal, device names, spaces, or trailing dots)",
+                        ));
+                    }
+                    if owned_paths.iter().any(|other: &std::path::PathBuf| {
+                        binding.path.starts_with(other) || other.starts_with(&binding.path)
+                    }) {
+                        return Err(invalid(
+                            format!("{prefix}.paths.{key}.path"),
+                            "instance path overlaps another owned path",
+                        ));
+                    }
+                    owned_paths.push(binding.path.clone());
+                }
+            }
+            for address in service.listen.iter().chain(service.ports.values()) {
+                if let Some((owner, claimed)) = claimed_ports.iter().find(|(owner, claimed)| {
+                    *owner != name.as_str() && addresses_conflict(*claimed, *address)
+                }) {
+                    return Err(ConfigValidationError::ConflictingPort {
+                        field: format!("{prefix}.listen/ports ({address})"),
+                        other: format!("services.{owner}.listen/ports ({claimed})"),
+                    });
+                }
+                claimed_ports.push((name.as_str(), *address));
             }
             if service.monitor_requires && service.requires.is_empty() {
                 return Err(invalid(
@@ -173,9 +241,73 @@ impl DevdConfig {
                 ));
             }
         }
+        for (name, service) in &services {
+            let mut names = BTreeMap::new();
+            for provider in service
+                .depends_on
+                .iter()
+                .map(|dependency| dependency.service.as_str())
+                .chain(std::iter::once(name.as_str()))
+            {
+                let source = &self.services[provider];
+                for key in source.ports.keys().chain(source.paths.keys()) {
+                    if names.insert(key, provider).is_some()
+                        || service
+                            .env
+                            .keys()
+                            .any(|name| name.eq_ignore_ascii_case(key))
+                    {
+                        return Err(invalid(format!("services.{name}.env.{key}"), "binding environment name conflicts with this service or a direct dependency"));
+                    }
+                }
+            }
+        }
         graph.validate_acyclic()?;
         Ok(())
     }
+}
+
+fn validate_binding_key(prefix: &str, key: &str) -> Result<(), ConfigValidationError> {
+    if !key
+        .bytes()
+        .next()
+        .is_some_and(|byte| byte.is_ascii_uppercase() || byte == b'_')
+        || !key
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+    {
+        return Err(invalid(
+            format!("{prefix}.{key}"),
+            "binding names must be uppercase ASCII environment variable names",
+        ));
+    }
+    Ok(())
+}
+
+fn portable_path_component(name: &std::ffi::OsStr) -> bool {
+    let Some(name) = name.to_str() else {
+        return false;
+    };
+    let base = name.split('.').next().unwrap_or_default();
+    !name.ends_with('.')
+        && !matches!(base, "con" | "prn" | "aux" | "nul")
+        && !(base.len() == 4
+            && (base.starts_with("com") || base.starts_with("lpt"))
+            && matches!(base.as_bytes()[3], b'1'..=b'9'))
+        && name.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"_-.".contains(&byte)
+        })
+}
+
+fn addresses_conflict(a: SocketAddr, b: SocketAddr) -> bool {
+    let a_ip = a.ip().to_canonical();
+    let b_ip = b.ip().to_canonical();
+    a.port() == b.port()
+        && (a_ip == b_ip
+            || (a_ip.is_ipv4() == b_ip.is_ipv4()
+                && (a_ip.is_unspecified() || b_ip.is_unspecified()))
+            || a.ip().is_unspecified() && a.is_ipv6()
+            || b.ip().is_unspecified() && b.is_ipv6())
 }
 
 impl HealthCheck {

@@ -2,6 +2,12 @@
 
 ## Unreleased — v0.7 development
 
+- Add explicit service `ports` and scoped `paths` mappings, injecting the same
+  environment into owners, script probes, and direct dependents. Isolate instance
+  paths under the selected state directory, reject mapping conflicts, include
+  mapped ports in doctor, and preserve profile replacement and reload semantics.
+  No automatic port allocation, directory creation, or file deletion is included.
+
 - Add `export --output FILE [--include-logs]` to save a bounded live diagnostic
   report with instance/run identity, service generations, event gaps and
   explanations. Exclude application logs and free-text failures by default;

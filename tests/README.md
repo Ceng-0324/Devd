@@ -156,3 +156,13 @@ cargo run --locked -- stop --config "$devd_smoke_dir/devd.yml"
 ```
 
 Poll status until the PID changes and `restart_count` is 1; logs should contain `injected crash, exit 23`. After stop, wait for the first terminal to exit successfully and confirm `worker stopped` was printed. Its final `services.json` should have `status: stopped` and a null PID, while a new status command should report no reachable supervisor. The `.pid` files record each leader (in the filename) and descendant (in the contents); verify those PIDs no longer exist with `ps` before removing the temporary directory.
+
+## Instance bindings (v0.7)
+
+`config_bindings.rs` validates port conflicts, portable owned paths, environment
+name collisions, and profile replacement/clearing. Its ignored child fixture is
+launched by a native test to prove application bind failures retain logs and exit
+evidence while the conflicting listener remains held. CLI tests cover shared
+path preservation, dotenv precedence, owner/probe/dependent environments, profile
+and custom-state-directory isolation, doctor, and selective reload. Windows also
+executes a native owner/dependent environment fixture inside supervised Jobs.

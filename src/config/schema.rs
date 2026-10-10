@@ -1,4 +1,9 @@
-use std::{collections::HashMap, net::SocketAddr, path::PathBuf, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use serde::{de::Deserializer, Deserialize, Serialize};
 
@@ -17,6 +22,12 @@ pub struct ServiceConfig {
     /// TCP addresses this service intends to bind; used by `devd doctor`.
     #[serde(default)]
     pub listen: Vec<SocketAddr>,
+    /// Named TCP addresses passed to this service and its direct dependents.
+    #[serde(default)]
+    pub ports: BTreeMap<String, SocketAddr>,
+    /// Named paths passed to this service and its direct dependents.
+    #[serde(default)]
+    pub paths: BTreeMap<String, RuntimePath>,
     #[serde(default)]
     pub cwd: Option<PathBuf>,
     #[serde(default)]
@@ -43,6 +54,62 @@ pub struct ServiceConfig {
     pub restart: RestartPolicy,
     #[serde(default)]
     pub limits: Option<ResourceLimits>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RuntimePath {
+    pub path: PathBuf,
+    pub scope: PathScope,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PathScope {
+    Shared,
+    Instance,
+}
+
+impl DevdConfig {
+    /// Build the process/probe environment without changing the source YAML.
+    pub(crate) fn service_with_bindings(
+        &self,
+        name: &str,
+        state_dir: &Path,
+    ) -> std::io::Result<ServiceConfig> {
+        let mut service = self.services[name].clone();
+        let mut providers: Vec<&str> = service
+            .depends_on
+            .iter()
+            .map(|dependency| dependency.service.as_str())
+            .collect();
+        providers.push(name);
+        for provider in providers {
+            let source = &self.services[provider];
+            for (key, address) in &source.ports {
+                service.env.insert(key.clone(), address.to_string());
+            }
+            for (key, binding) in &source.paths {
+                let path = match binding.scope {
+                    PathScope::Shared => source
+                        .cwd
+                        .as_deref()
+                        .unwrap_or(Path::new("."))
+                        .join(&binding.path),
+                    PathScope::Instance => state_dir.join("runtime").join(&binding.path),
+                };
+                let path = std::path::absolute(path)?;
+                let value = path.into_os_string().into_string().map_err(|_| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "mapped path is not valid UTF-8",
+                    )
+                })?;
+                service.env.insert(key.clone(), value);
+            }
+        }
+        Ok(service)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

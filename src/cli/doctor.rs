@@ -63,7 +63,12 @@ struct DoctorReport {
     checks: Vec<DoctorCheck>,
 }
 
-pub(super) async fn run(args: Args, config_path: &Path, profile: Option<&str>) -> Result<()> {
+pub(super) async fn run(
+    args: Args,
+    config_path: &Path,
+    profile: Option<&str>,
+    state_dir: &Path,
+) -> Result<()> {
     let config = match super::load_config(config_path, profile).await {
         Ok(config) => config,
         Err(error) => {
@@ -90,8 +95,21 @@ pub(super) async fn run(args: Args, config_path: &Path, profile: Option<&str>) -
     let mut service_names: Vec<_> = config.services.keys().collect();
     service_names.sort();
     for name in service_names {
-        let service = &config.services[name];
-        check_working_directory(name, service, &mut checks);
+        let service = match config.service_with_bindings(name, state_dir) {
+            Ok(service) => service,
+            Err(error) => {
+                checks.push(check(
+                    Some(name),
+                    "path-mapping",
+                    CheckStatus::Failed,
+                    "Mapped paths could not be resolved as absolute UTF-8 paths.",
+                    vec![error.kind().to_string()],
+                    Some("Check the state directory and declared service paths."),
+                ));
+                continue;
+            }
+        };
+        check_working_directory(name, &service, &mut checks);
         for requirement in &service.requires {
             match evaluate(requirement, service.cwd.as_deref()) {
                 Ok(path) => checks.push(check(
@@ -106,9 +124,9 @@ pub(super) async fn run(args: Args, config_path: &Path, profile: Option<&str>) -
             }
         }
 
-        let environment = match load_environment_file(name, service).await {
+        let environment = match load_environment_file(name, &service).await {
             Ok(environment) => {
-                if let Some(path) = environment_file_path(service) {
+                if let Some(path) = environment_file_path(&service) {
                     checks.push(check(
                         Some(name),
                         "env-file",
@@ -129,7 +147,7 @@ pub(super) async fn run(args: Args, config_path: &Path, profile: Option<&str>) -
             name,
             "command",
             &service.command,
-            service,
+            &service,
             &environment,
             &mut checks,
         );
@@ -138,19 +156,23 @@ pub(super) async fn run(args: Args, config_path: &Path, profile: Option<&str>) -
                 name,
                 "script-probe",
                 command,
-                service,
+                &service,
                 &environment,
                 &mut checks,
             );
         }
-        for address in &service.listen {
+        let mut addresses = service.listen.clone();
+        addresses.extend(service.ports.values().copied());
+        addresses.sort();
+        addresses.dedup();
+        for address in &addresses {
             checks.push(check_listen_address(name, *address).await);
         }
     }
     if config
         .services
         .values()
-        .all(|service| service.listen.is_empty())
+        .all(|service| service.listen.is_empty() && service.ports.is_empty())
     {
         checks.push(check(
             None,

@@ -1,4 +1,11 @@
-use std::{collections::BTreeMap, future::Future, io, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    future::Future,
+    io,
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration,
+};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -126,6 +133,12 @@ pub enum ServiceManagerError {
     LogOptions(#[from] LogOptionsError),
     #[error(transparent)]
     InvalidConfig(#[from] ConfigValidationError),
+    #[error("service '{service}' binding path cannot be resolved: {source}")]
+    BindingPath {
+        service: String,
+        #[source]
+        source: io::Error,
+    },
     #[error("service '{service}' health-check setup failed: {source}")]
     Health {
         service: String,
@@ -159,6 +172,7 @@ pub struct ServiceManager {
     options: ManagerOptions,
     layers: Vec<Vec<String>>,
     checkers: BTreeMap<String, Option<HealthChecker>>,
+    environments: BTreeMap<String, HashMap<String, String>>,
     snapshots: watch::Sender<RuntimeSnapshot>,
     logs: LogCollector,
     events: EventRecorder,
@@ -228,7 +242,14 @@ impl ServiceManager {
         ] {
             validate_duration(field.into(), duration)?;
         }
-        let PreparedConfig { layers, checkers } = prepare_config(&config)?;
+        let PreparedConfig {
+            layers,
+            checkers,
+            environments,
+        } = prepare_config(
+            &config,
+            options.state_path.parent().unwrap_or(Path::new(".")),
+        )?;
         let resource_limits = config
             .services
             .iter()
@@ -261,6 +282,7 @@ impl ServiceManager {
             options,
             layers,
             checkers,
+            environments,
             snapshots,
             logs,
             events,
@@ -641,9 +663,11 @@ impl ServiceManager {
         tasks: &mut JoinSet<()>,
         cause: Option<u64>,
     ) -> Id {
+        let mut service = self.config.services[name].clone();
+        service.env = self.environments[name].clone();
         let actor = ServiceTask::new(
             name.into(),
-            self.config.services[name].clone(),
+            service,
             self.checkers[name].clone(),
             self.options.clone(),
             receiver,
@@ -678,18 +702,28 @@ impl Drop for RunEventGuard {
 pub(crate) struct PreparedConfig {
     pub(crate) layers: Vec<Vec<String>>,
     checkers: BTreeMap<String, Option<HealthChecker>>,
+    environments: BTreeMap<String, HashMap<String, String>>,
 }
 
 /// Shared launch validation without probes, env-file reads or runtime state.
-pub(crate) fn prepare_config(config: &DevdConfig) -> Result<PreparedConfig, ServiceManagerError> {
+pub(crate) fn prepare_config(
+    config: &DevdConfig,
+    state_dir: &Path,
+) -> Result<PreparedConfig, ServiceManagerError> {
     config.validate()?;
     let graph = DependencyGraph::from_config(config).map_err(ConfigValidationError::from)?;
     let layers = graph
         .startup_layers()
         .map_err(ConfigValidationError::from)?;
     let mut checkers = BTreeMap::new();
+    let mut environments = BTreeMap::new();
     for name in graph.service_names() {
-        let service = &config.services[name];
+        let service = config
+            .service_with_bindings(name, state_dir)
+            .map_err(|source| ServiceManagerError::BindingPath {
+                service: name.into(),
+                source,
+            })?;
         parse_command(name, &service.command)?;
         if service.restart.backoff == BackoffType::Exponential {
             validate_duration(
@@ -704,15 +738,20 @@ pub(crate) fn prepare_config(config: &DevdConfig) -> Result<PreparedConfig, Serv
         let checker = service
             .healthcheck
             .as_ref()
-            .map(|check| HealthChecker::for_service(check, service))
+            .map(|check| HealthChecker::for_service(check, &service))
             .transpose()
             .map_err(|source| ServiceManagerError::Health {
                 service: name.into(),
                 source,
             })?;
         checkers.insert(name.into(), checker);
+        environments.insert(name.into(), service.env);
     }
-    Ok(PreparedConfig { layers, checkers })
+    Ok(PreparedConfig {
+        layers,
+        checkers,
+        environments,
+    })
 }
 
 fn validate_duration(field: String, duration: Duration) -> Result<(), ServiceManagerError> {

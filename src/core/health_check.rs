@@ -129,6 +129,8 @@ impl HealthChecker {
                 config: Box::new(ServiceConfig {
                     command: command.clone(),
                     listen: Vec::new(),
+                    ports: Default::default(),
+                    paths: Default::default(),
                     cwd: None,
                     requires: Vec::new(),
                     monitor_requires: false,

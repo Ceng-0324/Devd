@@ -106,7 +106,7 @@ pub(super) async fn load_candidate(
     tokio::task::spawn_blocking(move || {
         let _permit = permit;
         let config = read_candidate(&candidate, profile.as_deref())?;
-        crate::core::service_manager::prepare_config(&config)?;
+        crate::core::service_manager::prepare_config(&config, Path::new("."))?;
         Ok(config)
     })
     .await

@@ -183,6 +183,38 @@ devd export --profile staging --state-dir ./runtime --output staging.json --incl
 
 `omitted_fields` 列出有意省略的自由文本字段，错误正文缺席不表示没有发生错误。默认不包含应用日志；`--include-logs` 才加入最近最多 200 条原始内存日志，分享前必须检查。状态错误正文、重载失败正文、配置命令和环境值不会进入默认报告。这是字段白名单，不是通用秘密脱敏：服务名称、配置/状态/worktree 路径、路径条件中的文件路径、Git 上下文，以及显式加入的日志仍可能泄露隐私。导出通过临时文件发布为新文件，绝不覆盖现有目标；YAML 被删除后，只要 supervisor 还在运行仍可导出。命令不查询离线历史，也不控制服务。
 
+### 显式配置实例端口与路径（v0.7 开发中）
+
+两个 worktree 不该一边抢同一个 API 端口，一边往同一个临时目录里写东西。把应用需要的地址和路径集中声明：
+
+```yaml
+version: "1"
+services:
+  api:
+    command: python api.py
+    ports:
+      API_ADDR: 127.0.0.1:3100
+    paths:
+      API_DATA: {scope: instance, path: api-data}
+      SHARED_DATA: {scope: shared, path: ./datasets}
+  web:
+    command: python web.py
+    depends-on: [api]
+profiles:
+  second:
+    services:
+      api:
+        ports: {API_ADDR: 127.0.0.1:3101}
+```
+
+`api`、它的脚本探测以及直接依赖它的 `web` 都会收到 `API_ADDR`、`API_DATA`、`SHARED_DATA` 环境变量。`API_ADDR` 是完整 TCP 地址（IPv6 为 `[地址]:端口`），不是 URL，也不是纯端口号。应用必须主动读取这些变量；devd 不替换命令、URL 或任意 YAML 字符串。映射必须使用具体单播地址；通配绑定地址仍可通过 `listen` 声明。脚本探测可读取同一环境，内置 TCP/HTTP 探测字段仍需显式配置。
+
+`instance` 路径按 `<所选状态目录>/runtime/` 解析，因此示例中的 `api-data` 随 profile/worktree 隔离。路径分量只允许小写 ASCII 字母、数字、`_`、`-`、`.`，拒绝父目录跳转、设备保留名、空格和尾点。`shared` 路径按声明服务的 `cwd` 解析，即使传给依赖者也保持同一个地址。声明不会创建或删除目录，由应用准备自己的运行目录，共享数据仍然共享。这是配置归属，不是文件系统沙箱，也不授权删除已有文件或在清理时跟随软链接。
+
+映射名称采用大写 ASCII 环境变量名；与服务显式 `env` 重名（不区分大小写），或与该服务能看到的另一映射重名，都会拒绝配置。映射覆盖继承环境和 dotenv 值，只传给直接依赖者。profile 对 `ports`、`paths` 分别整体替换，`{}` 清空对应映射。reload 预览会列出变更字段及下游影响，应用后受影响的新代次收到新环境。
+
+`check` 拒绝地址声明冲突和实例独占路径重叠；`doctor` 对 `ports` 与 `listen` 地址实际尝试绑定后立即释放。**检查空闲不等于预约成功。** 启动前仍可能被其他进程抢占，应用绑定失败继续通过日志、退出和健康事件呈现；devd 不自动分配端口，也不凭退出状态猜测失败原因。
+
 ### 多环境配置
 
 环境之间的差异可以留在同一份 YAML 里：
@@ -203,7 +235,7 @@ profiles:
 
 `devd check --profile staging` 检查合并后的配置，`devd start --profile staging` 启动它。这里的 `LOG_LEVEL` 会从基础配置继承。查看状态、读日志、重启、停止时，使用同一个 `--profile`；不指定时选择基础配置及其独立实例。
 
-服务按名称合并。`env` 和 `restart` 按字段覆盖，其余字段整体替换，包括依赖列表、路径前置条件和健康检查。`cwd`、`env-file`、`healthcheck` 等可选字段可以用 `null` 清除；空映射表示继承，`depends-on: []` 和 `requires: []` 分别清空对应列表。新增服务必须有命令；暂不支持删除服务或 profile 之间的继承。未选中的 profile 也会检查未知字段，依赖及就绪条件按所选结果校验。不带 profile 的 `check` 检查基础配置。
+服务按名称合并。`env` 和 `restart` 按字段覆盖，其余字段整体替换，包括依赖列表、路径前置条件、端口/路径映射和健康检查。`cwd`、`env-file`、`healthcheck` 等可选字段可以用 `null` 清除；空 `env`/`restart` 映射表示继承，`ports: {}`、`paths: {}`、`depends-on: []` 和 `requires: []` 分别清空对应字段。新增服务必须有命令；暂不支持删除服务或 profile 之间的继承。未选中的 profile 也会检查未知字段，依赖及就绪条件按所选结果校验。不带 profile 的 `check` 检查基础配置。
 
 路径仍沿用配置目录和服务 `cwd` 的相对路径规则。profile 名称以 ASCII 字母、数字或下划线开头，只允许 ASCII 字母、数字、`_`、`-`、`.`，区分大小写。默认运行目录为 `.devd/<配置文件名>/profiles/<名称>/`，大写字母转义为 `~hh`，避免大小写不敏感文件系统上的实例碰撞；显式 `--state-dir` 同样追加 `profiles/<名称>/`。隔离的是控制端点和状态文件，服务端口、应用文件仍需自行配置不同值。`init` 不接受 `--profile`。
 

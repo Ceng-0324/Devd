@@ -113,6 +113,106 @@ fn test_cli_doctor_reports_occupied_listen_address_and_keeps_json_on_failure() {
 }
 
 #[test]
+fn test_cli_port_and_path_bindings_reach_service_probe_and_direct_dependent() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    drop(listener);
+    let project = Project::new(&format!(
+        "services:\n  api:\n    command: sh -c 'printf \"%s|%s|%s\" \"$API_ADDR\" \"$API_DATA\" \"$SHARED_DATA\" > api.env; exec sleep 60'\n    cwd: api\n    ports: {{API_ADDR: '{address}'}}\n    paths:\n      API_DATA: {{scope: instance, path: api}}\n      SHARED_DATA: {{scope: shared, path: shared}}\n    healthcheck: {{type: script, command: 'sh check.sh', interval: 50ms, timeout: 1s}}\n    restart: {{policy: never}}\n  child:\n    command: sh -c 'printf \"%s|%s|%s\" \"$API_ADDR\" \"$API_DATA\" \"$SHARED_DATA\" > child.env; exec sleep 60'\n    depends-on: [{{service: api, condition: script-ready}}]\n    restart: {{policy: never}}\n"
+    ));
+    fs::create_dir(project.path().join("api")).unwrap();
+    let config_path = project.path().join("devd.yml");
+    let config = fs::read_to_string(&config_path)
+        .unwrap()
+        .replace("    cwd: api\n", "    cwd: api\n    env-file: .env\n");
+    fs::write(config_path, config).unwrap();
+    fs::write(
+        project.path().join("api/.env"),
+        "API_ADDR=wrong\nAPI_DATA=wrong\n",
+    )
+    .unwrap();
+    fs::create_dir(project.path().join("api/shared")).unwrap();
+    fs::write(project.path().join("api/shared/keep.txt"), "user data").unwrap();
+    fs::write(
+        project.path().join("api/check.sh"),
+        format!("test \"$API_ADDR\" = \"{address}\" && test -n \"$API_DATA\"\n"),
+    )
+    .unwrap();
+    let doctor: serde_json::Value =
+        serde_json::from_str(&success(project.invoke(&["doctor", "--json"]))).unwrap();
+    assert!(doctor["checks"].as_array().unwrap().iter().any(|check| {
+        check["check"] == "listen-address"
+            && check["status"] == "passed"
+            && check["evidence"][0]
+                .as_str()
+                .unwrap()
+                .starts_with(&address.to_string())
+    }));
+    let mut supervisor = project.start();
+    let root = fs::canonicalize(project.path()).unwrap();
+    let expected = format!(
+        "{address}|{}|{}",
+        root.join(".devd/devd.yml/runtime/api").display(),
+        root.join("api/shared").display()
+    );
+    let api = wait(|| fs::read_to_string(project.path().join("api/api.env")).ok());
+    assert_eq!(api, expected);
+    let child = wait(|| fs::read_to_string(project.path().join("child.env")).ok());
+    assert_eq!(child, expected);
+    success(project.invoke(&["stop"]));
+    supervisor.finish(true);
+    assert_eq!(
+        fs::read_to_string(project.path().join("api/shared/keep.txt")).unwrap(),
+        "user data"
+    );
+    assert!(!project.path().join(".devd/devd.yml/runtime").exists());
+
+    // The same mapping selects a different runtime root with a profile/custom state dir.
+    let config_path = project.path().join("devd.yml");
+    let config = fs::read_to_string(&config_path).unwrap();
+    fs::write(&config_path, format!("{config}\nprofiles:\n  second:\n    services:\n      api: {{paths: {{API_DATA: {{scope: instance, path: api}}, SHARED_DATA: {{scope: shared, path: shared}}}}}}\n")).unwrap();
+    let mut second = Supervisor(
+        project
+            .command(&["start", "--profile", "second", "--state-dir", "custom"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap(),
+    );
+    let expected = format!(
+        "{address}|{}|{}",
+        root.join("custom/profiles/second/runtime/api").display(),
+        root.join("api/shared").display()
+    );
+    wait(|| (fs::read_to_string(project.path().join("child.env")).ok()? == expected).then_some(()));
+    success(project.invoke(&["stop", "--profile", "second", "--state-dir", "custom"]));
+    second.finish(true);
+}
+
+#[test]
+fn test_cli_doctor_reports_occupied_mapped_port() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let project = Project::new(&format!(
+        "services:\n  api: {{command: 'true', ports: {{API_ADDR: '{address}'}}}}\n"
+    ));
+    let output = project.invoke(&["doctor", "--json"]);
+    assert!(!output.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        report["checks"].as_array().unwrap().iter().any(|check| {
+            check["check"] == "listen-address"
+                && check["status"] == "failed"
+                && check["evidence"][0]
+                    .as_str()
+                    .unwrap()
+                    .starts_with(&address.to_string())
+        }),
+        "{report}"
+    );
+}
+
+#[test]
 fn test_cli_doctor_uses_selected_profile_listen_addresses() {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();

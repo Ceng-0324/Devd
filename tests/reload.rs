@@ -319,6 +319,71 @@ fn running_stack(project: &Project) -> RuntimeSnapshot {
 }
 
 #[test]
+fn test_cli_reload_updates_binding_environment_in_owner_and_dependent() {
+    let yaml = "services:\n  worker:\n    command: sh -c 'printf %s \"$API_ADDR\" > worker.env; exec sleep 60'\n    ports: {API_ADDR: '127.0.0.1:31001'}\n    paths: {API_DATA: {scope: instance, path: old-data}}\n    restart: {policy: never}\n  child:\n    command: sh -c 'printf \"%s|%s\" \"$API_ADDR\" \"$API_DATA\" > child.env; exec sleep 60'\n    depends-on: [worker]\n    restart: {policy: never}\n  isolated: {command: sleep 60, restart: {policy: never}}\n";
+    let project = Project::new(yaml);
+    let mut supervisor = project.start();
+    let before = running_stack(&project);
+    let candidate = format!(
+        "version: '1'\n{}",
+        yaml.replace("31001", "31002")
+            .replace("old-data", "new-data")
+    );
+    fs::write(project.path().join("devd.yml"), candidate).unwrap();
+    let preview = plan(&project, &[]);
+    assert_eq!(
+        preview.services["worker"].changed_fields,
+        ["paths", "ports"]
+    );
+    assert_eq!(
+        preview.services["child"].change,
+        ChangeKind::DependencyAffected
+    );
+    assert_eq!(preview.services["isolated"].change, ChangeKind::Unchanged);
+    let report: ReloadReport = serde_json::from_str(&success(project.invoke(&[
+        "reload",
+        "--apply",
+        "--plan",
+        &preview.plan_id,
+        "--json",
+    ])))
+    .unwrap();
+    assert_eq!(report.outcome, ReloadOutcome::Applied);
+    let after = running_stack(&project);
+    assert_eq!(
+        after.services["isolated"].pid,
+        before.services["isolated"].pid
+    );
+    assert_ne!(
+        after.services["child"].event_generation,
+        before.services["child"].event_generation
+    );
+    support::wait(|| {
+        (fs::read_to_string(project.path().join("worker.env"))
+            .ok()?
+            .as_str()
+            == "127.0.0.1:31002")
+            .then_some(())
+    });
+    let expected = format!(
+        "127.0.0.1:31002|{}",
+        fs::canonicalize(project.path())
+            .unwrap()
+            .join(".devd/devd.yml/runtime/new-data")
+            .display()
+    );
+    support::wait(|| {
+        (fs::read_to_string(project.path().join("child.env")).ok()? == expected).then_some(())
+    });
+    assert_eq!(
+        plan(&project, &[]).base_config_id,
+        preview.candidate_config_id
+    );
+    success(project.invoke(&["stop"]));
+    supervisor.finish(true);
+}
+
+#[test]
 fn test_cli_reload_apply_selective_graph_changes_updates_baseline_and_order() {
     let project = Project::new("services:\n  worker: {command: sleep 60, env: {TOKEN: old-secret}, restart: {policy: never}}\n  child: {command: sleep 60, depends-on: [worker], restart: {policy: never}}\n  removed: {command: sleep 60, restart: {policy: never}}\n  isolated: {command: sleep 60, restart: {policy: never}}\n");
     let mut supervisor = project.start();

@@ -256,6 +256,62 @@ report is written as a new file using a temporary file and never overwrites an
 existing path. It works after the YAML is removed while the supervisor is
 running; it does not read stored history or control any service.
 
+### Explicit instance ports and paths (v0.7 development)
+
+Two worktrees should not silently fight over the same API port or write into the
+same scratch directory. Declare the addresses and paths your application reads:
+
+```yaml
+version: "1"
+services:
+  api:
+    command: python api.py
+    ports:
+      API_ADDR: 127.0.0.1:3100
+    paths:
+      API_DATA: {scope: instance, path: api-data}
+      SHARED_DATA: {scope: shared, path: ./datasets}
+  web:
+    command: python web.py
+    depends-on: [api]
+profiles:
+  second:
+    services:
+      api:
+        ports: {API_ADDR: 127.0.0.1:3101}
+```
+
+`api`, its script probes, and its direct dependent `web` receive `API_ADDR`,
+`API_DATA`, and `SHARED_DATA` in their environment. `API_ADDR` is the complete TCP
+address (IPv6 uses `[address]:port`), not a URL or a numeric port alone. Applications
+must read it themselves; devd does not rewrite commands, URLs, or arbitrary YAML.
+Use concrete unicast addresses for mappings; `listen` still supports wildcard
+bind declarations. A script probe can read the same environment; built-in TCP/HTTP
+probe fields remain explicit.
+
+An `instance` path resolves beneath `<selected-state-dir>/runtime/`; the example
+uses a different `api-data` path for each profile/worktree. Its components must
+use lowercase ASCII letters, digits, `_`, `-`, or `.`, without parent traversal,
+device names, spaces, or trailing dots. A `shared` path resolves against the
+declaring service's `cwd`, including when passed to a dependent. Directories are
+not created or deleted by these declarations. Your application prepares its own
+runtime directory; shared data stays shared. These are configuration scopes, not
+a filesystem sandbox or permission to delete existing files or follow symlinks
+during cleanup.
+
+Binding names use uppercase ASCII environment names. A binding conflicts with
+an explicit `env` entry (case-insensitively) or another binding visible to the
+same service; inherited and dotenv values are overridden. Only direct dependency
+bindings are injected. `ports` and `paths` are each replaced as a whole by a
+profile; `{}` clears that map. Reload previews show the changed fields and
+downstream impact, and apply uses the new environment for affected generations.
+
+`check` rejects conflicting address declarations and overlapping instance-owned
+paths. `doctor` attempts to bind declared `ports` and `listen` addresses, then
+releases them. **That does not reserve a port.** Another process can take it
+before startup; application bind errors still appear in its logs and exit/health
+evidence. devd does not automatically allocate ports or infer failure causes.
+
 ### Named environments
 
 Keep environment differences in the same YAML file:
@@ -276,7 +332,7 @@ profiles:
 
 `devd check --profile staging` validates the merged configuration; `devd start --profile staging` runs it. `LOG_LEVEL` is inherited. Use the same `--profile` for `status`, `logs`, `restart`, and `stop`. Omitting it selects the base configuration and a separate instance.
 
-Services merge by name. `env` and `restart` merge by key; other fields, including dependency lists, path requirements, and the entire health check, replace the base value. `null` clears optional fields such as `cwd`, `env-file`, and `healthcheck`; empty maps inherit, while `depends-on: []` and `requires: []` clear their lists. New services need a command. Service deletion and profile inheritance are not supported. All definitions reject unknown fields, including unselected profiles; dependency and readiness validation applies to the selected result. `check` without a profile checks the base result.
+Services merge by name. `env` and `restart` merge by key; other fields, including dependency lists, path requirements, binding maps, and the entire health check, replace the base value. `null` clears optional fields such as `cwd`, `env-file`, and `healthcheck`; empty `env`/`restart` maps inherit, while `ports: {}`, `paths: {}`, `depends-on: []`, and `requires: []` clear their fields. New services need a command. Service deletion and profile inheritance are not supported. All definitions reject unknown fields, including unselected profiles; dependency and readiness validation applies to the selected result. `check` without a profile checks the base result.
 
 Paths retain the usual configuration-directory and service-`cwd` rules. Profile names start with an ASCII letter, digit, or underscore and contain only ASCII letters, digits, `_`, `-`, or `.`. Names are case-sensitive. Runtime files use `.devd/<config-filename>/profiles/<name>/`; uppercase letters are escaped as `~hh` to stay distinct on case-insensitive filesystems. With an explicit `--state-dir`, the same `profiles/<name>/` suffix is appended. This isolates control and state files; service ports and application files still need distinct values when running environments together. `init` rejects `--profile`.
 

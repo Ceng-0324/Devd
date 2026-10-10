@@ -12,7 +12,7 @@ use super::{
     dependency::DependencyGraph,
     service_manager::{prepare_config, RuntimeSnapshot, ServiceState},
 };
-use crate::config::{DevdConfig, HealthCheck, PathRequirementType};
+use crate::config::{DevdConfig, HealthCheck, PathRequirementType, PathScope};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
@@ -103,8 +103,8 @@ pub fn preview(
     snapshot: &RuntimeSnapshot,
     profile: Option<&str>,
 ) -> Result<ReloadPlan> {
-    let old_layers = prepare_config(base)?.layers;
-    let new_layers = prepare_config(candidate)?.layers;
+    let old_layers = prepare_config(base, Path::new("."))?.layers;
+    let new_layers = prepare_config(candidate, Path::new("."))?.layers;
     let old_graph = DependencyGraph::from_config(base)?;
     let new_graph = DependencyGraph::from_config(candidate)?;
     let old = normalized(base)?;
@@ -238,6 +238,11 @@ fn normalized(config: &DevdConfig) -> Result<serde_json::Value> {
         service.listen.sort();
         service.listen.dedup();
         let cwd = service.cwd.as_deref().unwrap_or(Path::new("."));
+        for binding in service.paths.values_mut() {
+            if binding.scope == PathScope::Shared {
+                binding.path = clean_path(&cwd.join(&binding.path), false);
+            }
+        }
         for requirement in &mut service.requires {
             requirement.path = clean_path(
                 &cwd.join(&requirement.path),

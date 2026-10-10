@@ -217,6 +217,9 @@ impl Cli {
         if let Some(profile) = &self.profile {
             state_dir = state_dir.join("profiles").join(profile_directory(profile));
         }
+        if state_dir.is_relative() {
+            state_dir = std::env::current_dir()?.join(state_dir);
+        }
         let socket = state_dir.join("control.sock");
         let mut options = ManagerOptions::new(state_dir.join("services.json"));
         options.profile = self.profile.clone();
@@ -297,7 +300,7 @@ impl Cli {
             Command::Explain(args) => explain::run(args, &socket, &state_dir).await?,
             Command::Reload(args) => reload::run(args, &socket, &config_path).await?,
             Command::Doctor(args) => {
-                doctor::run(args, &config_path, self.profile.as_deref()).await?;
+                doctor::run(args, &config_path, self.profile.as_deref(), &state_dir).await?;
             }
             Command::Check => {
                 ServiceManager::new(

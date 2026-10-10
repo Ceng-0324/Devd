@@ -68,7 +68,15 @@ impl ReloadExecution {
                     "services are transitioning; wait for stable states and preview again".into(),
                 );
             }
-            let prepared = prepare_config(&request.candidate).map_err(|error| error.to_string())?;
+            let prepared = prepare_config(
+                &request.candidate,
+                manager
+                    .options
+                    .state_path
+                    .parent()
+                    .unwrap_or(std::path::Path::new(".")),
+            )
+            .map_err(|error| error.to_string())?;
             Ok((plan, prepared))
         };
         let (plan, prepared) = match validate() {
@@ -219,6 +227,7 @@ impl ReloadExecution {
                         manager.config = self.candidate.clone();
                         manager.layers = self.prepared.layers.clone();
                         manager.checkers = self.prepared.checkers.clone();
+                        manager.environments = self.prepared.environments.clone();
                         manager.resource_limits = manager
                             .config
                             .services

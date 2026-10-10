@@ -9,7 +9,7 @@ pub(crate) use schema::parse_duration;
 pub(crate) use schema::ResourceThresholds;
 pub use schema::{
     BackoffType, Dependency, DependencyCondition, DevdConfig, HealthCheck, PathRequirement,
-    PathRequirementType, ResourceLimitAction, ResourceLimits, RestartPolicy, RestartPolicyType,
-    ServiceConfig,
+    PathRequirementType, PathScope, ResourceLimitAction, ResourceLimits, RestartPolicy,
+    RestartPolicyType, RuntimePath, ServiceConfig,
 };
 pub use validation::ConfigValidationError;

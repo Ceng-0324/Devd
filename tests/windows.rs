@@ -851,6 +851,22 @@ fn test_windows_cli_control_persistence_and_supervisor_death_cleanup() {
 #[allow(clippy::zombie_processes)] // Deliberately orphan a descendant to test Job cleanup.
 fn test_windows_fixture() {
     let role = std::env::var("DEVD_TEST_ROLE").unwrap();
+    if role == "bindings" {
+        let root = std::env::var("DEVD_TEST_ROOT").unwrap();
+        let output = std::env::var("DEVD_TEST_OUTPUT").unwrap();
+        let values = serde_json::json!({
+            "address": std::env::var("API_ADDR").unwrap(),
+            "data": std::env::var("API_DATA").unwrap(),
+        });
+        fs::write(
+            Path::new(&root).join(output),
+            serde_json::to_vec(&values).unwrap(),
+        )
+        .unwrap();
+        loop {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
     if role == "flood" {
         // The collector uses a broadcast channel, independent of terminal
         // writes. Reaching this marker proves it drained beyond pipe capacity.
@@ -895,4 +911,67 @@ fn test_windows_fixture() {
     loop {
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+#[tokio::test]
+async fn test_windows_bindings_reach_owner_and_direct_dependent() {
+    let root = tempfile::tempdir().unwrap();
+    let mut worker = config(root.path(), "bindings");
+    worker
+        .env
+        .insert("DEVD_TEST_OUTPUT".into(), "worker-bindings.json".into());
+    let mut child = config(root.path(), "bindings");
+    child
+        .env
+        .insert("DEVD_TEST_OUTPUT".into(), "child-bindings.json".into());
+    fs::write(
+        root.path().join("devd.yml"),
+        serde_yaml::to_string(&serde_json::json!({
+            "version": "1",
+            "services": {
+                "worker": {"command": worker.command, "env": worker.env,
+                    "ports": {"API_ADDR": "127.0.0.1:31001"},
+                    "paths": {"API_DATA": {"scope": "instance", "path": "worker"}},
+                    "restart": {"policy": "never"}},
+                "child": {"command": child.command, "env": child.env,
+                    "depends-on": ["worker"], "restart": {"policy": "never"}}
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let mut supervisor = Supervisor(
+        Command::new(env!("CARGO_BIN_EXE_devd"))
+            .arg("start")
+            .current_dir(root.path())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap(),
+    );
+    for file in ["worker-bindings.json", "child-bindings.json"] {
+        wait_until(|| {
+            fs::read(root.path().join(file))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                .is_some()
+        })
+        .await;
+    }
+    let worker: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.path().join("worker-bindings.json")).unwrap())
+            .unwrap();
+    let child: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.path().join("child-bindings.json")).unwrap())
+            .unwrap();
+    assert_eq!(worker, child);
+    assert_eq!(worker["address"], "127.0.0.1:31001");
+    assert_eq!(
+        Path::new(worker["data"].as_str().unwrap()),
+        fs::canonicalize(root.path())
+            .unwrap()
+            .join(".devd/devd.yml/runtime/worker")
+    );
+    assert!(cli(root.path(), &["stop"]).status.success());
+    wait_until(|| supervisor.0.try_wait().unwrap().is_some()).await;
 }
