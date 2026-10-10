@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — v0.7 development
+
+- Add read-only `identity` and project/worktree-scoped `instances` commands with
+  stable instance identity, per-run identity, startup Git context, profile and
+  custom-state-directory registration, bounded endpoint verification, and
+  explicit stale/unreachable records and index warnings.
+- Make the resource alarm regression test use distinct sample timestamps so
+  fast execution cannot accidentally suppress its recovery assertion.
+
 ## v0.6.0-alpha.1 — 2026-10-08
 
 Prerelease for local development on Linux, macOS, and Windows. Native CI and

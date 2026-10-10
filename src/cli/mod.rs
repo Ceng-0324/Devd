@@ -2,6 +2,7 @@ mod doctor;
 mod events;
 mod explain;
 mod graph;
+mod instances;
 mod protocol;
 mod reload;
 mod server;
@@ -94,6 +95,16 @@ enum Command {
     },
     /// Inspect and control a running stack in an interactive terminal.
     Top,
+    /// List registered instances in this project and its Git worktrees (read-only).
+    Instances {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Query the identity of the selected live supervisor.
+    Identity {
+        #[arg(long)]
+        json: bool,
+    },
     /// Query lifecycle history and explicit gaps, or follow a running stack.
     Events(events::Args),
     /// Explain the latest deterministic cause for one service.
@@ -167,6 +178,15 @@ enum SnapshotAction {
 
 impl Cli {
     pub async fn run(self) -> Result<()> {
+        if let Command::Instances { json } = self.command {
+            if self.profile.is_some()
+                || self.state_dir.is_some()
+                || self.config != Path::new("devd.yml")
+            {
+                bail!("instances discovers the current project; --config, --profile and --state-dir are not supported");
+            }
+            return instances::list(&std::env::current_dir()?, json).await;
+        }
         if let Some(profile) = &self.profile {
             validate_profile_name(profile)?;
             match self.command {
@@ -252,9 +272,20 @@ impl Cli {
                     max_file_bytes: u64::from(event_max_size.unwrap_or(10)) * 1024 * 1024,
                     keep: event_keep.unwrap_or(3),
                 });
-                server::start(manager, options, socket, formatter, storage, event_storage).await?;
+                server::start(
+                    manager,
+                    options,
+                    socket,
+                    formatter,
+                    storage,
+                    event_storage,
+                    config_path,
+                )
+                .await?;
             }
             Command::Events(args) => events::run(args, &socket, &state_dir).await?,
+            Command::Identity { json } => instances::show(&socket, json).await?,
+            Command::Instances { .. } => unreachable!("handled before configuration resolution"),
             Command::Explain(args) => explain::run(args, &socket, &state_dir).await?,
             Command::Reload(args) => reload::run(args, &socket, &config_path).await?,
             Command::Doctor(args) => {

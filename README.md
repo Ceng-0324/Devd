@@ -139,6 +139,46 @@ Inspect them with `devd events api --type path-condition-changed --json` or `dev
 
 ## Commands
 
+### Instance discovery (v0.7 development)
+
+```bash
+devd instances --json                 # Current repository and its worktrees
+devd identity --profile staging --json # Selected live supervisor
+```
+
+These commands are available in the development branch, not the published v0.6
+binaries. `start` now registers the configuration, profile, canonical state
+directory, project/worktree root, supervisor PID, start time, and event `run_id`.
+`instance_id` hashes the configuration path, canonical state directory, and
+profile: it survives supervisor restarts and branch switches, but moving those
+paths changes identity. Git branch and commit are observations at startup;
+detached HEAD has no branch, and an unborn branch has no commit.
+
+`instances` reads `<worktree-root>/.devd/instances/*.json` for the current Git
+repository and its worktrees, including configurations in subdirectories and
+explicit `--state-dir` locations registered by `start`. Outside Git, the project
+root is the configuration directory; run discovery from that directory. Without
+Git installed, only this directory is discoverable. It does not scan the disk or
+find supervisors started by older versions without registration. Registration
+requires a writable project index, even with an external state directory; an
+index setup failure prevents services from starting.
+
+Records are hints. A bounded request must match the live supervisor's identity
+before a row is `live`; other rows show `unreachable`, `identity-mismatch`, or
+`unsupported`. Unreachable does not prove the process is dead. Stopped records
+remain for inspection and are replaced on the next start of the same instance.
+Discovery never changes records, adopts PIDs, stops processes, or deletes data.
+JSON has `schema_version: 1`, `entries`, `warnings`, and `complete`; `complete`
+only means all indexed records in the selected scope were inspected without
+index warnings, not that all services are live or all machine instances known.
+Limits are 64 worktrees, 256 records, 64 KiB per record, eight concurrent probes,
+and 750 ms per endpoint. Slow supervisors may appear unreachable; retry later.
+
+`instances` uses the current directory and rejects configuration/profile/state
+selectors. `identity` uses the same selectors as `status` and still works when
+the YAML has been removed. Neither command isolates ports, files, or databases.
+Reports include local paths; consider that before sharing them.
+
 ### Named environments
 
 Keep environment differences in the same YAML file:

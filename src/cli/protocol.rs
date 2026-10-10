@@ -21,6 +21,7 @@ pub(super) const IO_TIMEOUT: Duration = Duration::from_secs(5);
 #[serde(tag = "command", rename_all = "kebab-case", deny_unknown_fields)]
 pub(super) enum Request {
     Status,
+    Identity,
     PreviewReload {
         candidate: std::path::PathBuf,
     },
@@ -59,6 +60,7 @@ pub(super) enum Request {
 #[serde(tag = "result", content = "data", rename_all = "kebab-case")]
 pub(super) enum Response {
     Status(RuntimeSnapshot),
+    Identity(Box<super::instances::Identity>),
     ReloadPlan(ReloadPlan),
     Reloaded(ReloadReport),
     Stopping,
@@ -107,9 +109,14 @@ pub(super) async fn write<T: Serialize>(
 }
 
 pub(super) async fn request(socket: &Path, message: Request) -> Result<Response> {
+    let maximum = if matches!(message, Request::Identity) {
+        128 * 1024
+    } else {
+        MAX_RESPONSE
+    };
     let mut stream = connect(socket).await?;
     write(&mut stream, &message).await?;
-    let response = tokio::time::timeout(Duration::from_secs(60), read(&mut stream, MAX_RESPONSE))
+    let response = tokio::time::timeout(Duration::from_secs(60), read(&mut stream, maximum))
         .await
         .context("supervisor response timed out; inspect 'devd status' before retrying")??;
     match response {

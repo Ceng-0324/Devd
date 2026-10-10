@@ -24,6 +24,7 @@ pub(super) async fn start(
     formatter: LogFormatter,
     storage_options: Option<StorageOptions>,
     event_options: Option<StorageOptions>,
+    config_path: PathBuf,
 ) -> Result<()> {
     let mut signals = crate::platform::shutdown::Shutdown::new(false)?;
     // The state lock covers bind, the entire run, and socket cleanup.
@@ -81,6 +82,16 @@ pub(super) async fn start(
         None
     };
     let disk_events = event_storage.as_ref().map(|_| manager.subscribe_events());
+    let identity = super::instances::register(
+        config_path,
+        socket
+            .parent()
+            .context("control endpoint has no directory")?,
+        profile.clone(),
+        event_history.snapshot().context.run_id,
+    )
+    .await
+    .context("cannot register project instance")?;
     let (shutdown, mut stopping) = watch::channel(false);
     let mut run = Box::pin(manager.run_with_store(
         async move {
@@ -158,6 +169,7 @@ pub(super) async fn start(
                 let previews = previews.clone();
                 let configurations = configurations.clone();
                 let profile = profile.clone();
+                let identity = identity.clone();
                 clients.spawn(async move {
                     // Reload can remove a service while its bounded diagnostic
                     // history remains useful. Control still requires a live name.
@@ -167,6 +179,7 @@ pub(super) async fn start(
                     let response = match protocol::read_request(&mut stream).await {
                         Err(error) => Response::Error(error.to_string()),
                         Ok(Request::Status) => Response::Status(snapshots.borrow().clone()),
+                        Ok(Request::Identity) => Response::Identity(Box::new(identity)),
                         Ok(Request::PreviewReload { candidate }) => {
                             let Ok(permit) = previews.try_acquire_owned() else {
                                 return protocol::write(&mut stream, &Response::Error("too many configuration previews (maximum 2)".into())).await;

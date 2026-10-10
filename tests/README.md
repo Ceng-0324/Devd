@@ -33,6 +33,13 @@ cargo test --locked --test integration
 
 ## Coverage
 
+`instances.rs` runs natively on all three platforms: live identity, profiles,
+external state directories, restart identity/run separation, removed YAML,
+linked/detached worktrees, nested configurations, branch-at-start provenance,
+and read-only handling of corrupt/stale records. Unit tests bound registry files
+and silent/oversized endpoint responses; Unix adds symlink/FIFO/hard-link rejection.
+These tests require Git on PATH for real worktree scenarios.
+
 `path_requirements` unit tests and `doctor.rs` cover file/directory/symlink
 requirements, dangling and cyclic links, target replacement, read permissions,
 cwd resolution, and startup refusal. `events.rs` exercises runtime loss/recovery,

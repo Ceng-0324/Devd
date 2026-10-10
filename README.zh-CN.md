@@ -137,6 +137,21 @@ services:
 
 ## 常用命令
 
+### 实例身份与发现（v0.7 开发中）
+
+```bash
+devd instances --json                  # 当前仓库和全部 worktree
+devd identity --profile staging --json # 指定活实例的身份
+```
+
+这两个命令已在开发分支实现，已发布的 v0.6 二进制尚不包含。`start` 会登记配置、profile、规范化状态目录、项目/worktree 根目录、supervisor PID、启动时间和事件 `run_id`。`instance_id` 由配置路径、规范化状态目录和 profile 生成，同一实例重启或切换分支时保持不变，路径移动后会变化。分支和提交是启动时的观测；detached HEAD 的分支为空，尚无提交的分支其提交字段为空。
+
+`instances` 从当前 Git 仓库及其 worktree 的 `.devd/instances/*.json` 读取索引，包括子目录配置和启动时登记的自定义 `--state-dir`。普通目录以配置目录为项目根，请在该目录查询；未安装 Git 时只能发现当前目录。它不扫描全盘，也无法发现尚未登记的旧版 supervisor。即使状态目录在项目外，启动登记仍要求项目索引可写；索引建立失败时不会启动服务。
+
+索引仅是线索，必须连接控制端点并核对完整身份后才标为 `live`；其他结果为 `unreachable`、`identity-mismatch` 或 `unsupported`。不可达不代表进程已死，停止后的记录会保留，再次启动同一实例时替换。发现命令不改索引、不接管旧 PID、不停止进程、不删除数据。JSON 包含 `schema_version: 1`、`entries`、`warnings` 和 `complete`；`complete` 仅指所选范围的登记记录已检查且没有索引警告，不保证服务在线或已找到本机所有实例。最多检查 64 个 worktree、256 条记录，每条上限 64 KiB；端点并发上限 8，每个等待 750 ms。繁忙实例可能暂时不可达，可稍后重试。
+
+`instances` 以当前目录确定范围，不接受配置/profile/状态目录选择器；`identity` 沿用 `status` 的选择器，YAML 删除后仍可查询。它们不隔离端口、应用文件或数据库。报告包含本地路径，分享前请留意。
+
 ### 多环境配置
 
 环境之间的差异可以留在同一份 YAML 里：
