@@ -300,6 +300,85 @@ fn test_wait_selection_timeout_profile_and_deleted_configuration() {
 }
 
 #[test]
+fn test_wait_full_stdout_pipe_has_a_deadline_and_keeps_services_running() {
+    let mut project = Project::new(false, false);
+    let config = project.root.path().join("devd.yml");
+    let mut yaml: Value = serde_yaml::from_str(&fs::read_to_string(&config).unwrap()).unwrap();
+    // Pending actors create a report larger than native pipe buffers without
+    // spawning hundreds of processes. The API probe remains gated.
+    for index in 0..1500 {
+        yaml["services"][format!("pending-{index:04}")] = json!({
+            "command": "never-started", "restart": {"policy": "never"},
+            "depends-on": [{"service": "api", "condition": "script-ready"}]
+        });
+    }
+    fs::write(config, serde_yaml::to_string(&yaml).unwrap()).unwrap();
+    project.start();
+    let before = project.json(&["status", "--json"]);
+    for cancel in [false, true] {
+        if cancel && !cfg!(unix) {
+            continue;
+        }
+        let stdout = tempfile::NamedTempFile::new().unwrap();
+        let stderr = tempfile::NamedTempFile::new().unwrap();
+        let child = Command::new(env!("CARGO_BIN_EXE_devd"))
+            .current_dir(project.root.path())
+            .args(["wait", "--timeout", "500ms", "--json"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(stderr.reopen().unwrap())
+            .spawn()
+            .unwrap();
+        let mut client = CliChild {
+            child,
+            stdout,
+            stderr,
+        };
+        let mut pipe = client.child.stdout.take().unwrap();
+        let (sender, receiver) = std::sync::mpsc::sync_channel(1);
+        let reader = thread::spawn(move || {
+            use std::io::Read;
+            let mut first = [0];
+            let result = pipe.read_exact(&mut first);
+            let _ = sender.send((pipe, result));
+        });
+        let (_pipe, first) = receiver.recv_timeout(Duration::from_secs(10)).unwrap();
+        first.unwrap();
+        reader.join().unwrap();
+        let started = Instant::now();
+        #[cfg(unix)]
+        if cancel {
+            nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(client.child.id() as i32),
+                nix::sys::signal::Signal::SIGINT,
+            )
+            .unwrap();
+        }
+        let output = client.finish();
+        assert_eq!(output.status.code(), Some(1));
+        let error = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            error.contains(if cancel {
+                "readiness output cancelled"
+            } else {
+                "readiness output timed out"
+            }),
+            "{error}"
+        );
+        assert!(started.elapsed() < Duration::from_secs(if cancel { 3 } else { 10 }));
+        let after = project.json(&["status", "--json"]);
+        assert_eq!(
+            before["services"]["worker"]["pid"],
+            after["services"]["worker"]["pid"]
+        );
+        assert_eq!(
+            before["services"]["api"]["pid"],
+            after["services"]["api"]["pid"]
+        );
+    }
+    project.stop();
+}
+
+#[test]
 fn test_wait_follows_manual_and_automatic_generations() {
     for automatic in [false, true] {
         let mut project = Project::new(false, automatic);

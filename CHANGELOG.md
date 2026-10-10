@@ -2,6 +2,9 @@
 
 ## Unreleased — v0.7 development
 
+- Keep final readiness report output cancellable under pipe backpressure, with
+  a separate five-second write/flush deadline and explicit incomplete-output errors.
+
 - Base explanations on the current service generation and the latest observation
   of each resource metric. Preserve explicit restart causes and historical events
   without presenting an earlier failure or recovered warning as a current fault.

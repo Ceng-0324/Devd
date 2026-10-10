@@ -3,7 +3,11 @@ use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tokio::{io::AsyncReadExt, sync::watch, time::Instant};
+use tokio::{
+    io::{AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    sync::watch,
+    time::Instant,
+};
 
 use super::{
     instances::Identity,
@@ -97,11 +101,32 @@ pub(super) async fn run(args: Args, socket: &Path) -> Result<()> {
         }
     }
     report.elapsed_ms = started.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
-    super::output(&render(&report, args.json)?)?;
+    write_report(
+        &mut super::stdout::Stdout::new()?,
+        &render(&report, args.json)?,
+        signals.recv(),
+    )
+    .await?;
     if report.observation.outcome != Outcome::Ready {
         bail!("readiness wait ended: {:?}", report.observation.outcome);
     }
     Ok(())
+}
+
+async fn write_report(
+    writer: &mut (impl AsyncWrite + Unpin),
+    text: &str,
+    cancelled: impl std::future::Future<Output = ()>,
+) -> Result<()> {
+    tokio::select! {
+        biased;
+        _ = cancelled => bail!("readiness output cancelled; report may be incomplete; services were not changed"),
+        result = tokio::time::timeout(protocol::IO_TIMEOUT, async {
+            writer.write_all(text.as_bytes()).await?;
+            writer.flush().await
+        }) => result.context("readiness output timed out after 5s; report may be incomplete; services were not changed")?
+            .context("cannot write readiness report")
+    }
 }
 
 async fn receive(socket: &Path, message: Request, report: &mut Report) -> Result<()> {
@@ -571,5 +596,41 @@ mod tests {
                 ["outcome"],
             "failed"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_wait_final_output_is_bounded_and_cancellable() {
+        let (mut writer, _reader) = tokio::io::duplex(1);
+        let started = Instant::now();
+        let error = write_report(&mut writer, "blocked report", std::future::pending())
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("timed out after 5s"));
+        assert_eq!(started.elapsed(), protocol::IO_TIMEOUT);
+        // A buffered write can succeed while only the final flush is stalled.
+        let (buffered, _reader) = tokio::io::duplex(1);
+        let mut buffered = tokio::io::BufWriter::new(buffered);
+        assert!(
+            write_report(&mut buffered, "buffered report", std::future::pending())
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("timed out after 5s")
+        );
+        let started = Instant::now();
+        let error = write_report(
+            &mut writer,
+            "blocked report",
+            tokio::time::sleep(Duration::from_millis(20)),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("cancelled"));
+        assert_eq!(started.elapsed(), Duration::from_millis(20));
+        let mut output = Vec::new();
+        write_report(&mut output, "complete report\n", std::future::pending())
+            .await
+            .unwrap();
+        assert_eq!(output, b"complete report\n");
     }
 }

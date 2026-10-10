@@ -224,6 +224,10 @@ received evidence, which may be stale; identity and observation fields are null
 if no report arrived. `waiting` is internal stream progress, not a final CLI
 outcome. Argument errors may occur before a report can be produced.
 
+Final output has a separate five-second write/flush deadline after the readiness
+deadline. Ctrl+C can cancel a stalled output pipe too. An output failure exits
+nonzero and may leave partial text or JSON; it never stops services.
+
 ### Export diagnostics (v0.7 development)
 
 When a failure needs to be shared, capture one bounded report from the selected
