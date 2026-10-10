@@ -155,10 +155,11 @@ fn test_cli_port_and_path_bindings_reach_service_probe_and_direct_dependent() {
         root.join(".devd/devd.yml/runtime/api").display(),
         root.join("api/shared").display()
     );
-    let api = wait(|| fs::read_to_string(project.path().join("api/api.env")).ok());
-    assert_eq!(api, expected);
-    let child = wait(|| fs::read_to_string(project.path().join("child.env")).ok());
-    assert_eq!(child, expected);
+    // Redirection creates the file before printf writes it. Wait for the
+    // complete value, just as in the profile/custom-state phase below.
+    for path in ["api/api.env", "child.env"] {
+        wait(|| (fs::read_to_string(project.path().join(path)).ok()? == expected).then_some(()));
+    }
     success(project.invoke(&["stop"]));
     supervisor.finish(true);
     assert_eq!(
