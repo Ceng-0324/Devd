@@ -98,7 +98,7 @@ async fn read_regular_file(path: &Path, label: &'static str) -> Result<Vec<u8>> 
     .context("snapshot read task failed")?
 }
 
-async fn create_new(path: PathBuf, bytes: Vec<u8>) -> Result<()> {
+pub(super) async fn create_new(path: PathBuf, bytes: Vec<u8>) -> Result<()> {
     #[cfg(windows)]
     validate_windows_filename(&path)?;
     tokio::task::spawn_blocking(move || {

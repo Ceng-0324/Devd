@@ -170,6 +170,19 @@ devd wait api --profile staging --state-dir ./runtime
 
 `--json` 在 stdout 输出一份最终报告，失败也有报告：`schema_version: 1`、`outcome`、`instance_id`、`run_id`、`observed_at`、`elapsed_ms`、`services`、`blocking` 和 `message`。每个服务包含健康要求、观测状态、PID、代次、是否就绪、是否有手动重启待完成，以及最近错误。结果为 `ready`、`failed`、`timed-out`、`cancelled`、`stopping`、`reloaded`、`disconnected`、`unavailable`、`invalid-service` 或 `busy`。超时、取消或断连时保留最后收到的证据，可能已经过时；未收到报告时身份和观测字段为 null。`waiting` 仅用于内部流式进度，不是 CLI 最终结果。参数错误可能在生成报告前退出。
 
+### 导出诊断证据（v0.7 开发中）
+
+需要分享故障现场时，从选中的活 supervisor 导出一份有界报告：
+
+```bash
+devd export --output diagnostic.json
+devd export --profile staging --state-dir ./runtime --output staging.json --include-logs
+```
+
+新 JSON 文件包含实例与运行身份、服务状态和 PID/代次、最近最多 1000 条生命周期事件，以及当前或近期出现的服务解释（最多 256 个服务）。事件游标、`gaps` 和 `omitted_gaps` 表示历史缺口。`captured_from`、`captured_to`、`event_watermark_after` 与 `stable_during_capture` 描述采样区间；稳定只表示采集期间未观测到状态或事件水位变化，不代表跨来源原子快照，也不保证之后仍是这个状态。不稳定的报告仍可排查，但状态与事件可能对应不同时间。
+
+`omitted_fields` 列出有意省略的自由文本字段，错误正文缺席不表示没有发生错误。默认不包含应用日志；`--include-logs` 才加入最近最多 200 条原始内存日志，分享前必须检查。状态错误正文、重载失败正文、配置命令和环境值不会进入默认报告。这是字段白名单，不是通用秘密脱敏：服务名称、配置/状态/worktree 路径、路径条件中的文件路径、Git 上下文，以及显式加入的日志仍可能泄露隐私。导出通过临时文件发布为新文件，绝不覆盖现有目标；YAML 被删除后，只要 supervisor 还在运行仍可导出。命令不查询离线历史，也不控制服务。
+
 ### 多环境配置
 
 环境之间的差异可以留在同一份 YAML 里：
@@ -262,6 +275,7 @@ devd reload --apply --plan 'sha256:<64位十六进制摘要>' --candidate devd.n
 | `devd status [--json]` | 查看实时状态、PID、CPU／RSS、重启次数和诊断信息 |
 | `devd identity [--json]` | 查看所选活 supervisor 的实例与运行身份（v0.7 开发分支） |
 | `devd instances [--json]` | 发现当前仓库及其 worktree 中已登记的实例（v0.7 开发分支） |
+| `devd export --output FILE [--include-logs]` | 导出有界的活实例诊断报告到新 JSON 文件（v0.7 开发分支） |
 | `devd top` | 在交互式终端查看运行中的服务和实时日志 |
 | `devd events [service] [--type TYPE] [--since DURATION] [--tail N] [--cursor RUN_UUID:NEXT_SEQUENCE] [--json] [--follow \| --stored]` | 查询生命周期经过、游标与历史缺口 |
 | `devd explain <service> [--json] [--stored]` | 基于确定性事件证据解释一个服务最近的故障或状态 |

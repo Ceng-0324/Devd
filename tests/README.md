@@ -33,6 +33,13 @@ cargo test --locked --test integration
 
 ## Coverage
 
+`export.rs` runs on all three platforms with a real supervisor: it checks live
+identity and generation correlation, missing YAML, default exclusion of raw
+log/environment text, explicit log inclusion, no-clobber output, and refusal
+after shutdown. Its ignored worker fixture emits a secret sentinel. Core unit
+coverage checks free-text failure removal, retained-history gaps and explanation
+completeness.
+
 `wait.rs` runs real CLI/supervisor processes on all three platforms: whole-stack
 and named readiness, health gates, deduplication, timeout evidence, invalid
 names/deadlines, profiles/custom state, deleted YAML, same-run manual/automatic

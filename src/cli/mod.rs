@@ -1,6 +1,7 @@
 mod doctor;
 mod events;
 mod explain;
+mod export;
 mod graph;
 mod instances;
 mod protocol;
@@ -110,6 +111,8 @@ enum Command {
     },
     /// Query lifecycle history and explicit gaps, or follow a running stack.
     Events(events::Args),
+    /// Save bounded live diagnostic evidence to a new JSON file.
+    Export(export::Args),
     /// Explain the latest deterministic cause for one service.
     Explain(explain::Args),
     /// Inspect local service prerequisites without starting or executing them.
@@ -287,6 +290,7 @@ impl Cli {
                 .await?;
             }
             Command::Events(args) => events::run(args, &socket, &state_dir).await?,
+            Command::Export(args) => export::run(args, &socket).await?,
             Command::Wait(args) => wait::run(args, &socket).await?,
             Command::Identity { json } => instances::show(&socket, json).await?,
             Command::Instances { .. } => unreachable!("handled before configuration resolution"),

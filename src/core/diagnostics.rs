@@ -67,7 +67,7 @@ pub struct ExplainReport {
 pub fn explain(
     service: &str,
     snapshot: Option<&RuntimeSnapshot>,
-    batch: EventBatch,
+    batch: &EventBatch,
 ) -> ExplainReport {
     let state = snapshot.and_then(|snapshot| snapshot.services.get(service));
     let status = state.map(|state| state.status);
@@ -361,7 +361,7 @@ pub fn explain(
         schema_version: DIAGNOSTIC_SCHEMA_VERSION,
         source: batch.source,
         persistence: batch.persistence,
-        context: batch.context,
+        context: batch.context.clone(),
         service: service.into(),
         status,
         generation,
@@ -370,7 +370,7 @@ pub fn explain(
         details,
         evidence,
         complete,
-        gaps: batch.gaps,
+        gaps: batch.gaps.clone(),
         omitted_gaps: batch.omitted_gaps,
         next_steps,
     }
@@ -611,7 +611,7 @@ mod tests {
         batch.gaps.push(EventGap::IncompleteRun {
             run_id: recorder.run_id().into(),
         });
-        let report = explain("api", None, batch);
+        let report = explain("api", None, &batch);
         assert_eq!(report.conclusion, ExplainConclusion::Unknown);
         assert_eq!(report.evidence.len(), 2);
         assert_eq!(report.evidence[0].sequence, 1);
@@ -644,7 +644,7 @@ mod tests {
             None,
             EventData::Started { pid: Some(123) },
         );
-        let report = explain("api", None, batch(&recorder));
+        let report = explain("api", None, &batch(&recorder));
         assert!(!report
             .evidence
             .iter()
@@ -664,7 +664,7 @@ mod tests {
             )]
             .into(),
         };
-        let report = explain("api", Some(&snapshot), batch(&recorder));
+        let report = explain("api", Some(&snapshot), &batch(&recorder));
         assert!(!report
             .evidence
             .iter()
@@ -691,7 +691,7 @@ mod tests {
             event_run_id: Some(recorder.run_id().into()),
             services: [("web".into(), ServiceSnapshot::default())].into(),
         };
-        let report = explain("web", Some(&snapshot), batch(&recorder));
+        let report = explain("web", Some(&snapshot), &batch(&recorder));
         assert_eq!(report.conclusion, ExplainConclusion::DependencyBlocked);
         assert_eq!(report.evidence[0].sequence, 0);
         assert!(report.complete);
@@ -720,7 +720,7 @@ mod tests {
                 delay: None,
             },
         );
-        let report = explain("api", None, batch(&recorder));
+        let report = explain("api", None, &batch(&recorder));
         assert_eq!(report.conclusion, ExplainConclusion::RestartBudgetExhausted);
         assert_eq!(report.evidence.len(), 2);
         assert!(report.complete);
@@ -743,7 +743,7 @@ mod tests {
                 manual_restart: true,
             },
         );
-        let report = explain("api", None, batch(&recorder));
+        let report = explain("api", None, &batch(&recorder));
         assert_eq!(report.conclusion, ExplainConclusion::Restarting);
         assert_eq!(
             report.evidence[0].event_type,
@@ -759,7 +759,7 @@ mod tests {
         batch.gaps.push(EventGap::IncompleteRun {
             run_id: recorder.run_id().into(),
         });
-        let report = explain("api", None, batch);
+        let report = explain("api", None, &batch);
         assert!(!report.complete);
         assert_eq!(report.gaps.len(), 1);
         assert!(report
@@ -788,7 +788,7 @@ mod tests {
                 },
             },
         );
-        let report = explain("api", None, batch(&recorder));
+        let report = explain("api", None, &batch(&recorder));
         assert_eq!(report.conclusion, ExplainConclusion::ResourceLimit);
         assert!(report.summary.contains("超过了配置的资源阈值"));
         assert!(!report.summary.contains("触发了重启"));

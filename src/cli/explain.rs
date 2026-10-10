@@ -31,7 +31,7 @@ pub(super) async fn run(args: Args, socket: &Path, state_dir: &Path) -> Result<(
             .context(
                 "cannot read stored events; enable persistence at startup and query after shutdown",
             )?;
-        crate::core::diagnostics::explain(&args.service, None, batch)
+        crate::core::diagnostics::explain(&args.service, None, &batch)
     } else {
         let Response::Explain(report) = protocol::request(
             socket,
@@ -126,7 +126,7 @@ mod tests {
         }
         .select(recorder.history().snapshot())
         .unwrap();
-        let report = crate::core::diagnostics::explain("api", Some(&snapshot), batch);
+        let report = crate::core::diagnostics::explain("api", Some(&snapshot), &batch);
         assert_eq!(report.conclusion, ExplainConclusion::Running);
         assert!(render(&report, false).unwrap().contains("api"));
         assert!(render(&report, true)

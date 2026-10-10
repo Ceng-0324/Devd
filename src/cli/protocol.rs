@@ -43,6 +43,9 @@ pub(super) enum Request {
     Explain {
         service: String,
     },
+    Export {
+        include_logs: bool,
+    },
     Restart {
         service: String,
     },
@@ -71,6 +74,7 @@ pub(super) enum Response {
     Stopping,
     Events(EventBatch),
     Explain(ExplainReport),
+    Export(Box<super::export::Report>),
     Restarted(ServiceSnapshot),
     Logs(Vec<LogEntry>),
     Log(LogEntry),

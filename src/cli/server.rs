@@ -248,11 +248,23 @@ pub(super) async fn start(
                                         Response::Explain(diagnostics::explain(
                                             &service,
                                             Some(&snapshots.borrow()),
-                                            batch,
+                                            &batch,
                                         ))
                                     }
                                     Err(error) => Response::Error(error),
                                 }
+                            }
+                        }
+                        Ok(Request::Export { include_logs }) => {
+                            match super::export::capture(
+                                identity,
+                                &snapshots,
+                                &event_history,
+                                *event_persistence.borrow(),
+                                include_logs.then_some(&history),
+                            ) {
+                                Ok(report) => Response::Export(Box::new(report)),
+                                Err(error) => Response::Error(error),
                             }
                         }
                         Ok(request @ (Request::Events { .. } | Request::FollowEvents { .. })) => {

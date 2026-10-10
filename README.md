@@ -224,6 +224,38 @@ received evidence, which may be stale; identity and observation fields are null
 if no report arrived. `waiting` is internal stream progress, not a final CLI
 outcome. Argument errors may occur before a report can be produced.
 
+### Export diagnostics (v0.7 development)
+
+When a failure needs to be shared, capture one bounded report from the selected
+live supervisor:
+
+```bash
+devd export --output diagnostic.json
+devd export --profile staging --state-dir ./runtime --output staging.json --include-logs
+```
+
+The new JSON file includes instance and run identity, service state with PID and
+generation, up to 1,000 recent lifecycle events, and an explanation for each
+current or recently observed service (up to 256). Event cursor, `gaps`, and
+`omitted_gaps` expose lost or tail-limited history. `captured_from`,
+`captured_to`, `event_watermark_after`, and `stable_during_capture` describe the
+sampling interval. A stable bracket means no state or event-watermark change
+was observed while collecting; it does not make independent sources atomic or
+promise that the processes remain in that state afterward. An unstable report
+is still evidence, but its state and events may refer to different moments.
+
+`omitted_fields` lists deliberately excluded free-text fields, so an absent
+error string does not mean no error occurred. Application logs are absent by
+default. `--include-logs` adds up to 200 raw
+in-memory entries; review them before sharing. State error text and reload
+failure text are omitted, as are configuration commands and environment values.
+This is a field allowlist, not general-purpose secret redaction: service names,
+local configuration/state/worktree paths, path-condition paths, Git context,
+and any explicitly included logs can still reveal private information. The
+report is written as a new file using a temporary file and never overwrites an
+existing path. It works after the YAML is removed while the supervisor is
+running; it does not read stored history or control any service.
+
 ### Named environments
 
 Keep environment differences in the same YAML file:
@@ -316,6 +348,7 @@ Choose exactly one of `--dry-run` or `--apply`. Preview validates YAML, quoting,
 | `devd status [--json]` | Show live state, PIDs, CPU / RSS, restart counts, and diagnostics |
 | `devd identity [--json]` | Show the selected live supervisor's instance and run identity (v0.7 development) |
 | `devd instances [--json]` | Discover registered instances in the current repository and its worktrees (v0.7 development) |
+| `devd export --output FILE [--include-logs]` | Save bounded live diagnostics to a new JSON file (v0.7 development) |
 | `devd top` | Inspect a running stack and its live logs in an interactive terminal |
 | `devd events [service] [--type TYPE] [--since DURATION] [--tail N] [--cursor RUN_UUID:NEXT_SEQUENCE] [--json] [--follow \| --stored]` | Query lifecycle facts, cursors and history gaps |
 | `devd explain <service> [--json] [--stored]` | Explain the latest deterministic failure evidence for one service |

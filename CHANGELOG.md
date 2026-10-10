@@ -2,6 +2,10 @@
 
 ## Unreleased — v0.7 development
 
+- Add `export --output FILE [--include-logs]` to save a bounded live diagnostic
+  report with instance/run identity, service generations, event gaps and
+  explanations. Exclude application logs and free-text failures by default;
+  report sampling stability and never overwrite an existing file.
 - Add read-only `wait [service…] --timeout 30s [--json]` with live health/PID
   readiness, per-run and generation evidence, bounded concurrent waits, and
   explicit timeout, cancellation, stop, reload, and disconnect outcomes.
