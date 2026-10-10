@@ -2,6 +2,8 @@
 
 ## 当前控制链路
 
+v0.7 M7 的 `cli::agent` 提供 schema 1 JSON-lines stdio adapter。启动时读取活 Identity，并核对所选 config/profile/规范化 state 与实例摘要，固定整个会话的 instance/run。授权仅从启动参数 `--allow` 获取，默认空；四类控制在任何 I/O 前验证 grant 与请求 target。在线操作包装成 `Request::Scoped`，supervisor 在分派前验证 instance/run，拒绝嵌套 scope；原有 CLI 请求保留兼容。adapter 不另建控制器，继续调用现有 restart/stop/reload/wait/诊断用例。离线 clean 复用 CLI 的 typed execute，core 在状态锁内、完成回执前再次比较 expected_run。status/restart 复用导出状态白名单，wait 复用严格就绪解码器，export 直接返回结构不写文件。stdin 使用独立线程与有界 channel，避免不可取消的标准输入占据 Tokio blocking pool；串行分派、16 KiB 行／4096 字节内部请求／8 MiB 回复／5 秒输出超时。EOF 排空输入，信号只取消 adapter；已受理控制不回滚。机器回复的 ok 表示报告可用，具体成功由 outcome 决定，id 不保证控制去重。describe 身份标注为会话建立时观测，不冒充持续在线状态。该授权约束 adapter，不构成同用户进程沙箱、多用户 RBAC 或 MCP 服务。
+
 v0.7 M6 的 `core::owned_paths` 管理显式 `cleanup: true` 的 instance 目录。manager 持有 StateStore 锁后创建全新目录、写随机 marker 并原子登记到 `owned-paths.json`，不接管已有未登记目录；运行开始前置非静止，只有 manager 成功完成才登记正常结束。阻塞任务持有锁 lease，取消不会让未完成的写入越过锁生命周期。`cli::clean` 在阻塞任务中只读解析当前 YAML，取得已有状态锁，核对配置/state/profile、文件身份、当前授权与正常结束记录。以 cap-std 目录句柄做有界目录清单，拒绝链接、硬链接、特殊文件、嵌套状态标记和跨文件系统条目；计划摘要包含原始配置字节摘要、run、journal revision、锁身份与目录清单。所有根预检后再逐根写 deleting 检查点、删除、退休记录，最后保存完成回执。Windows 通过从开始就带 DELETE 权限且不共享删除的目录句柄与 FileDispositionInfo 删除；Unix 使用目录句柄相对删除。部分失败需重新预览，已完成计划重复应用不触碰后来出现的数据。共享别名重叠拒绝，日志／事件／快照和未授权路径保留；历史 PID 不参与判断。树清单是元数据观测，不是内容快照或外部并发写入事务。cleanup 声明变化在 reload 预览与 apply 同时拒绝，须完整 stop/start。
 
 v0.7 M5 的 `cli::top` 先读取活实例身份，再核对状态的运行标识；独立读取任务以 cursor 每秒增量查询内存事件，保留最多 1000 行事件／缺口，并与日志页分开呈现。时间线严格检查运行和序号，展示事件代次与已记录 cause 引用，引用被淘汰时标为 unavailable，不根据时序生成因果结论。历史缺口计数、最新缺口、本地淘汰及持久化状态持续展示。状态、事件和日志分别采集，不构成原子快照。日志订阅和重启／停止请求携带可选 expected_run_id，服务端在订阅或副作用前检查；旧协议客户端可省略，TUI 必须携带，防止端点换代后误操作新运行。这是实例运行核对，不是用户权限模型。所有读取在独立任务中完成帧解码，退出通过 RAII 恢复终端并取消客户端任务，已接受的控制保持正常生命周期。

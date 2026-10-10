@@ -1,3 +1,4 @@
+mod agent;
 mod clean;
 mod doctor;
 mod events;
@@ -64,6 +65,8 @@ enum Color {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Serve a versioned JSON-lines Agent interface; read-only unless allowed.
+    Agent(agent::Args),
     /// Start all services in the foreground; Ctrl+C stops the stack.
     Start {
         /// Persist JSONL logs in the instance's state directory.
@@ -235,6 +238,16 @@ impl Cli {
             },
         };
         match self.command {
+            Command::Agent(args) => {
+                agent::run(
+                    args,
+                    &socket,
+                    &config_path,
+                    &state_dir,
+                    self.profile.as_deref(),
+                )
+                .await?;
+            }
             Command::Init { service, command } => {
                 let yaml = serde_yaml::to_string(&serde_json::json!({
                     "version": "1",

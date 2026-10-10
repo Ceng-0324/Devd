@@ -585,6 +585,10 @@ pub(crate) enum Output {
     Applied(Report),
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("cleanup ownership belongs to a different supervisor run")]
+pub(crate) struct StaleRun;
+
 /// Hold the existing state lock for this entire blocking operation.
 pub(crate) fn clean(
     config: &DevdConfig,
@@ -593,6 +597,7 @@ pub(crate) fn clean(
     state_path: &Path,
     profile: Option<&str>,
     requested: Option<&str>,
+    expected_run: Option<&str>,
 ) -> Result<Output> {
     let canonical = std::fs::canonicalize(state_path)?;
     protect_shared(config, &canonical)?;
@@ -605,6 +610,9 @@ pub(crate) fn clean(
     let mut manifest: Manifest = read_json(&state, JOURNAL)
         .context("no valid ownership record; existing directories cannot be adopted")?;
     manifest.verify(config_path, &canonical, profile, &state)?;
+    if expected_run.is_some_and(|run| run != manifest.run_id) {
+        return Err(StaleRun.into());
+    }
     if !manifest.quiescent {
         bail!("last owned run did not finish safely; unreachable is not proof of shutdown (no PID will be signalled)");
     }
@@ -781,6 +789,7 @@ mod tests {
                 self.state(),
                 self.options.profile.as_deref(),
                 plan,
+                None,
             )
         }
         fn preview(&self) -> Plan {
@@ -1003,6 +1012,7 @@ mod tests {
             fixture.options.config_path.as_ref().unwrap(),
             "config-v1",
             &moved,
+            None,
             None,
             None
         )

@@ -193,3 +193,16 @@ The ignored worker is a child-process fixture, not omitted test coverage.
 `core::owned_paths` unit tests exercise ownership replacement/revocation, shared
 aliases, hard links, moved state, nested ownership markers, preflight ordering,
 already-absent roots and interrupted deletion recovery.
+
+## Agent interface (v0.7)
+
+`agent.rs` launches the real JSON-lines process and supervisor on native platforms.
+It verifies read-only diagnostics, independent grants, exact instance/run guards,
+profile/custom-state attachment, restart/reload/stop, offline cleanup and stale
+plans, malformed/oversized requests, and EOF without service shutdown. Endpoint
+replacement is exercised with both a new run and a different configuration at
+the same state path. Unix additionally sends SIGTERM while stdin is idle.
+Unit tests reject unknown fields, duplicate IDs and privilege injection, verify
+per-operation grants before any I/O, and bound stalled output. The ignored worker
+is a subprocess fixture. Existing readiness, reload and cleanup suites remain
+the source of their lifecycle/partial-progress semantics.

@@ -51,7 +51,7 @@ pub(super) struct Report {
 }
 
 impl Report {
-    fn empty(outcome: Outcome) -> Self {
+    pub(super) fn empty(outcome: Outcome) -> Self {
         Self {
             schema_version: 1,
             instance_id: None,
@@ -67,7 +67,7 @@ impl Report {
         }
     }
 
-    fn finish(&mut self, outcome: Outcome, message: impl Into<String>) {
+    pub(super) fn finish(&mut self, outcome: Outcome, message: impl Into<String>) {
         self.observation.outcome = outcome;
         self.message = Some(message.into());
     }
@@ -110,7 +110,7 @@ async fn receive(socket: &Path, message: Request, report: &mut Report) -> Result
     receive_reports(&mut stream, report).await
 }
 
-async fn receive_reports(stream: &mut Stream, report: &mut Report) -> Result<()> {
+pub(super) async fn receive_reports(stream: &mut Stream, report: &mut Report) -> Result<()> {
     loop {
         let next = protocol::next_response(stream)
             .await?
@@ -134,6 +134,9 @@ async fn receive_reports(stream: &mut Stream, report: &mut Report) -> Result<()>
                 }
             }
             Response::Error(error) => bail!("{error}"),
+            Response::ScopeError { code, message } => {
+                return Err(protocol::ScopeFailure { code, message }.into())
+            }
             _ => bail!("unexpected readiness response; the supervisor may not support wait"),
         }
     }

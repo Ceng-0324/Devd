@@ -17,9 +17,22 @@ pub(super) const MAX_REQUEST: usize = 4096;
 const MAX_RESPONSE: usize = 128 * 1024 * 1024;
 pub(super) const IO_TIMEOUT: Duration = Duration::from_secs(5);
 
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+pub(super) struct ScopeFailure {
+    pub code: String,
+    pub message: String,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "kebab-case", deny_unknown_fields)]
 pub(super) enum Request {
+    /// Bind one request to the live instance and run before any work occurs.
+    Scoped {
+        instance_id: String,
+        run_id: String,
+        request: Box<Request>,
+    },
     Status,
     Identity,
     Wait {
@@ -90,6 +103,7 @@ impl Request {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "result", content = "data", rename_all = "kebab-case")]
 pub(super) enum Response {
+    ScopeError { code: String, message: String },
     Status(RuntimeSnapshot),
     Identity(Box<super::instances::Identity>),
     Wait(Box<super::wait::Report>),

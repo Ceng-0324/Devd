@@ -181,7 +181,24 @@ pub(super) async fn start(
                     let known_service = |name: &str| snapshots.borrow().services.contains_key(name)
                         || !history.recent(Some(name), 1).is_empty()
                         || event_history.snapshot().entries.iter().any(|event| event.service.as_deref() == Some(name));
-                    let response = match protocol::read_request(&mut stream).await {
+                    let request = match protocol::read_request(&mut stream).await {
+                        Ok(Request::Scoped { instance_id, run_id, request }) => {
+                            let failure = if instance_id != identity.instance_id {
+                                Some(("wrong-instance", "supervisor instance changed"))
+                            } else if run_id != identity.run_id {
+                                Some(("stale-run", "supervisor run changed; start a new Agent session"))
+                            } else if matches!(*request, Request::Scoped { .. }) {
+                                Some(("invalid-request", "nested scope envelopes are not supported"))
+                            } else { None };
+                            if let Some((code, message)) = failure {
+                                return protocol::write(&mut stream, &Response::ScopeError { code: code.into(), message: message.into() }).await;
+                            }
+                            Ok(*request)
+                        },
+                        other => other,
+                    };
+                    let response = match request {
+                        Ok(Request::Scoped { .. }) => unreachable!("scoped envelope already checked"),
                         Err(error) => Response::Error(error.to_string()),
                         Ok(request) if request.expected_run_id().is_some_and(|run| run != identity.run_id) => {
                             Response::Error("supervisor run changed; reopen top before controlling this instance".into())

@@ -2,6 +2,13 @@
 
 ## Unreleased — v0.7 development
 
+- Add `agent --stdio`, a schema-1 JSON-lines interface bound to one live instance
+  and run. Default to diagnostic reads; allow the launcher to grant restart,
+  stop, reload and cleanup separately. Check scope at execution, retain reviewed
+  plans and ownership checks, reject unknown request fields, bound I/O, and reuse
+  readiness and lifecycle operations. This adapter does not change ordinary CLI
+  permissions or introduce MCP, remote access or multi-user authorization.
+
 - Add opt-in instance directory ownership with `paths.<NAME>.cleanup: true`.
   Create and register new disposable directories; never adopt existing data.
   Preview with `clean --dry-run` and apply a current plan after a successful

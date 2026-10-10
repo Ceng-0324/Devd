@@ -26,16 +26,18 @@ pub(super) struct Args {
     json: bool,
 }
 
-pub(super) async fn run(
-    args: Args,
+/// Shared typed use case for the CLI and the run-scoped Agent adapter.
+pub(super) async fn execute(
     config: &Path,
     state: &Path,
     profile: Option<&str>,
-) -> Result<()> {
+    plan: Option<String>,
+    expected_run: Option<String>,
+) -> Result<Output> {
     let config = config.to_path_buf();
     let state = state.to_path_buf();
     let profile = profile.map(str::to_owned);
-    let result = tokio::task::spawn_blocking(move || {
+    tokio::task::spawn_blocking(move || {
         let mut bytes = Vec::new();
         crate::platform::files::open_regular(&config, false, true)?
             .take(1024 * 1024 + 1)
@@ -56,11 +58,21 @@ pub(super) async fn run(
             &fingerprint,
             &state,
             profile.as_deref(),
-            args.plan.as_deref(),
+            plan.as_deref(),
+            expected_run.as_deref(),
         )
     })
     .await
-    .context("cleanup task failed")??;
+    .context("cleanup task failed")?
+}
+
+pub(super) async fn run(
+    args: Args,
+    config: &Path,
+    state: &Path,
+    profile: Option<&str>,
+) -> Result<()> {
+    let result = execute(config, state, profile, args.plan, None).await?;
     let (text, failed) = match result {
         Output::Preview(plan) => {
             let text = if args.json {

@@ -122,7 +122,7 @@ async fn project(directory: &Path) -> Result<(PathBuf, Option<GitContext>)> {
     ))
 }
 
-fn instance_id(config: &Path, state: &Path, profile: Option<&str>) -> Result<String> {
+pub(super) fn instance_id(config: &Path, state: &Path, profile: Option<&str>) -> Result<String> {
     Ok(format!(
         "{:x}",
         Sha256::digest(serde_json::to_vec(&(config, state, profile))?)

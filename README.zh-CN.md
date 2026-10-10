@@ -245,6 +245,54 @@ devd clean --apply --plan sha256:... --json  # 使用预览返回的 plan_id
 
 清理期间也应停止外部写入者。链接／reparse point、硬链接、特殊文件、跨文件系统目录、嵌套 devd 归属或状态标记、非 UTF-8 文件名都会拒绝；最多登记 128 个根目录，每根最多 10,000 个条目、64 层嵌套目录。清单检查文件元数据，不读取应用文件内容，因此不构成内容哈希，也不抵御同用户恶意进程任意篡改文件系统。父目录和归属记录保留，供重试和后续启动核对。
 
+### 给 Agent 的实例接口（v0.7 开发中）
+
+让 Agent 看状态，不代表顺手把停机按钮也递过去。先启动服务，再用相同的实例参数启动逐行 JSON 接口：
+
+```bash
+devd agent --stdio                                   # 默认只读
+devd agent --stdio --allow restart,stop               # 只开放指定控制
+devd agent --stdio --allow restart,stop,reload,clean   # 开放四种控制
+```
+
+权限由启动者一次确定，请求不能自行增加权限或改变 config/profile/state。每个会话绑定一个**活实例及其本次运行**，supervisor 换代后会拒绝，不能悄悄跟过去。停止全栈后保持这个会话打开，即可预览／执行清理；新会话需要活 supervisor，独立离线清理仍用 `devd clean`。普通 CLI 保持原有权限。这是接口能力限制，不是同用户进程沙箱；不新增远程守护进程、多用户 RBAC、自动启动或 MCP adapter。
+
+stdin 每行一个 UTF-8 JSON 对象，stdout 只输出 JSON 回复；启动或 I/O 失败写 stderr 并非零退出：
+
+```json
+{"schema_version":1,"id":"inspect-1","operation":{"method":"status"}}
+```
+
+每条回复包含 `schema_version`、`id`、`instance_id`、`run_id`、`ok`。成功返回 `data`，拒绝返回 `error: {code, message}`；非法请求外壳的 `id` 为 null。ID 为 1–128 字节、不含控制字符，**只关联请求，不负责去重**。未知请求字段和方法会拒绝；客户端应接受回复新增字段，并检查 schema 1。`ok: true` 只表示拿到了报告，wait/reload/clean 仍要检查 `data.outcome`；等待超时、部分清理都不能当成功。
+
+| method | operation 内的其他字段 | 权限 |
+| --- | --- | --- |
+| `describe` | 无；返回能力及会话建立时观测的身份 | 读取 |
+| `identity` | 无；查询绑定的活 supervisor | 读取 |
+| `status` | 无；返回 `observed_at` 与白名单 `services` 状态 | 读取 |
+| `events` | `query: {filter: {}, tail: 100, cursor: null}`，沿用 service/kinds/since 过滤及 run/sequence 游标 | 读取 |
+| `explain` | `service` | 读取 |
+| `wait` | `timeout_ms`（1–3600000）、可选 `services`（默认全栈）；只返回最终就绪报告 | 读取 |
+| `export` | 可选 `include_logs`（默认 false）；直接返回报告，不写文件 | 读取 |
+| `reload-preview` | 可选 `candidate`，默认原配置路径 | 读取 |
+| `clean-preview` | 无；要求同一运行已成功停止 | 读取 |
+| `restart` | `target`、`service`；沿用重启及依赖联动语义 | `restart` |
+| `stop` | `target`；回复只表示正在停止，不表示收尾完成 | `stop` |
+| `reload-apply` | `target`、`plan_id`、可选 `candidate`，须与预览一致 | `reload` |
+| `clean-apply` | `target`、`plan_id`，保留 M6 全部归属检查 | `clean` |
+
+从 `describe` 或 `identity` 取得身份，每个控制请求都带两个标识。接口在 I/O 前检查授权，supervisor 在实际操作前再次核对作用域；离线清理在状态锁内核对运行。
+
+```json
+{"schema_version":1,"id":"restart-1","operation":{"method":"restart","service":"api","target":{"instance_id":"<instance_id>","run_id":"<run_id>"}}}
+```
+
+相对 candidate 按 Agent 进程工作目录解析，普通诊断不重读 YAML。status 和重启回复复用导出的状态白名单，省略自由文本错误；export 沿用已有隐私边界。事件、解释、等待和错误消息保留原有诊断细节，可能包含本地路径或命令文本，不承诺通用脱敏。应用日志仅在显式 export 请求中附带。
+
+请求串行执行：每行含换行最多 16 KiB，包装后的 supervisor 请求最多 4096 字节，回复最多 8 MiB，stdout 写入阻塞超过 5 秒会退出。超大输入回复错误后关闭，其他非法请求可继续发送。EOF 处理完已接收输入再退出；Ctrl+C 退出接口并取消正在等待的只读请求，二者都不隐式停止服务。已经受理的控制（含阻塞中的清理）可能在断连后继续，重试前查 status/events；长时间 wait 不该阻塞其他操作时，使用另一个会话。
+
+稳定错误码为 `invalid-request`、`unsupported-version`、`permission-denied`、`wrong-instance`、`stale-run`、`operation-failed`、`invalid-response`、`request-too-large`、`response-too-large`、`input-failed`。message 用于说明，不作为解析契约；操作报告继续保留历史缺口、旧计划拒绝和部分进度语义。
+
 ### 多环境配置
 
 环境之间的差异可以留在同一份 YAML 里：
@@ -340,6 +388,7 @@ devd reload --apply --plan 'sha256:<64位十六进制摘要>' --candidate devd.n
 | `devd export --output FILE [--include-logs]` | 导出有界的活实例诊断报告到新 JSON 文件（v0.7 开发分支） |
 | `devd clean --dry-run [--json]` | 在成功停止后预览已登记、明确授权丢弃的目录 |
 | `devd clean --apply --plan ID [--json]` | 应用当前清理计划，保留共享和未登记数据 |
+| `devd agent --stdio [--allow restart,stop,reload,clean]` | 提供绑定本次运行、控制须显式授权的 JSON 接口 |
 | `devd top` | 在交互式终端查看运行中的服务和实时日志 |
 | `devd events [service] [--type TYPE] [--since DURATION] [--tail N] [--cursor RUN_UUID:NEXT_SEQUENCE] [--json] [--follow \| --stored]` | 查询生命周期经过、游标与历史缺口 |
 | `devd explain <service> [--json] [--stored]` | 基于确定性事件证据解释一个服务最近的故障或状态 |

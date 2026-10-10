@@ -371,6 +371,87 @@ contents; they are not content hashes or protection against a malicious process
 running as the same user. Parent directories and ownership records remain so
 that retries and subsequent starts can check what happened.
 
+### A scoped interface for Agents (v0.7 development)
+
+An Agent can inspect a stack without being handed its stop button. Start the
+stack first, then launch a JSON-lines session with the same instance selectors:
+
+```bash
+devd agent --stdio                                   # read-only
+devd agent --stdio --allow restart,stop               # selected controls
+devd agent --stdio --allow restart,stop,reload,clean   # all four controls
+```
+
+The launcher grants permissions once. Requests cannot add permissions or change
+config/profile/state selectors. Each session attaches to one **live instance and
+run**; it never silently follows a replacement supervisor. Keep that session open
+after stopping the stack to preview/apply cleanup. A new session needs a live
+supervisor; standalone offline cleanup remains available through `devd clean`.
+Ordinary CLI commands keep their existing permissions. These grants constrain
+this adapter, not other programs running as the same OS user. No network daemon,
+multi-user RBAC, automatic start, or MCP adapter is added.
+
+Send one UTF-8 JSON object per line on stdin. stdout contains only JSON replies;
+startup/I/O failures go to stderr and exit nonzero. A request looks like:
+
+```json
+{"schema_version":1,"id":"inspect-1","operation":{"method":"status"}}
+```
+
+Replies always carry `schema_version`, `id`, `instance_id`, `run_id`, and `ok`.
+Successful dispatch has `data`; rejection has `error: {code, message}`. Invalid
+envelopes use `id: null`. IDs are 1–128 bytes without control characters and are
+for correlation, **not deduplication**. Unknown request fields and methods are
+rejected. Clients should accept additive response fields and check schema 1.
+`ok: true` means a report was returned: inspect `data.outcome` for wait, reload,
+and cleanup. A timed-out wait or partial cleanup is not successful work.
+
+| Method | Additional fields inside `operation` | Grant |
+| --- | --- | --- |
+| `describe` | None; returns capabilities and the identity observed at attachment | Read |
+| `identity` | None; queries the bound live supervisor | Read |
+| `status` | None; returns `observed_at` and a safe `services` state map | Read |
+| `events` | `query: {filter: {}, tail: 100, cursor: null}`; existing service/kinds/since filters and run/sequence cursor apply | Read |
+| `explain` | `service` | Read |
+| `wait` | `timeout_ms` (1–3600000), optional `services` (default all); one final readiness report | Read |
+| `export` | Optional `include_logs` (default false); returns the report without writing a file | Read |
+| `reload-preview` | Optional `candidate` (default original configuration) | Read |
+| `clean-preview` | None; requires the same run to have stopped successfully | Read |
+| `restart` | `target`, `service`; uses normal restart/dependency behavior | `restart` |
+| `stop` | `target`; acknowledgement means stopping, not completed shutdown | `stop` |
+| `reload-apply` | `target`, `plan_id`, optional `candidate`; same candidate as preview | `reload` |
+| `clean-apply` | `target`, `plan_id`; retains all M6 ownership checks | `clean` |
+
+Get the identity from `describe` or `identity`, and put both identifiers in every
+control request. Permission is checked before I/O; the supervisor checks scope
+again before execution. Offline cleanup checks the run under its state lock.
+
+```json
+{"schema_version":1,"id":"restart-1","operation":{"method":"restart","service":"api","target":{"instance_id":"<instance_id>","run_id":"<run_id>"}}}
+```
+
+Relative candidate paths use the Agent process's working directory. Ordinary
+diagnostics do not reread YAML. `status` and restart replies use the export state
+allowlist, omitting free-text failures; `export` follows its existing privacy
+rules. Events, explanations, readiness and error messages retain their existing
+diagnostic detail, which can include local paths or command text. This interface
+is not a universal redactor. Logs are included only on explicit export request.
+
+The protocol processes requests serially. A line is limited to 16 KiB including
+its newline; the wrapped supervisor request must fit 4096 bytes, replies are
+limited to 8 MiB, and a stalled stdout write times out after 5 seconds. Oversized
+input closes the session after an error; other malformed requests leave it open.
+EOF drains accepted input; Ctrl+C exits the adapter and cancels a pending wait.
+Neither implicitly stops services. Accepted controls, including a blocking
+cleanup, may continue after disconnection; check status/events before retrying.
+Use a separate session when a long wait must not delay another request.
+
+Stable rejection codes are `invalid-request`, `unsupported-version`,
+`permission-denied`, `wrong-instance`, `stale-run`, `operation-failed`,
+`invalid-response`, `request-too-large`, `response-too-large`, and `input-failed`.
+Messages provide detail but are not a parsing contract. Operation reports retain
+their existing history gaps, stale-plan checks and partial-progress semantics.
+
 ### Named environments
 
 Keep environment differences in the same YAML file:
@@ -466,6 +547,7 @@ Choose exactly one of `--dry-run` or `--apply`. Preview validates YAML, quoting,
 | `devd export --output FILE [--include-logs]` | Save bounded live diagnostics to a new JSON file (v0.7 development) |
 | `devd clean --dry-run [--json]` | Preview registered, explicitly disposable directories after successful shutdown |
 | `devd clean --apply --plan ID [--json]` | Apply a current cleanup plan; preserve shared and unregistered data |
+| `devd agent --stdio [--allow restart,stop,reload,clean]` | Serve a run-bound JSON interface with explicit control grants |
 | `devd top` | Inspect a running stack and its live logs in an interactive terminal |
 | `devd events [service] [--type TYPE] [--since DURATION] [--tail N] [--cursor RUN_UUID:NEXT_SEQUENCE] [--json] [--follow \| --stored]` | Query lifecycle facts, cursors and history gaps |
 | `devd explain <service> [--json] [--stored]` | Explain the latest deterministic failure evidence for one service |
