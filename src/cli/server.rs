@@ -183,6 +183,9 @@ pub(super) async fn start(
                         || event_history.snapshot().entries.iter().any(|event| event.service.as_deref() == Some(name));
                     let response = match protocol::read_request(&mut stream).await {
                         Err(error) => Response::Error(error.to_string()),
+                        Ok(request) if request.expected_run_id().is_some_and(|run| run != identity.run_id) => {
+                            Response::Error("supervisor run changed; reopen top before controlling this instance".into())
+                        },
                         Ok(Request::Status) => Response::Status(snapshots.borrow().clone()),
                         Ok(Request::Identity) => Response::Identity(Box::new(identity)),
                         Ok(Request::Wait { services, timeout_ms }) => {
@@ -292,7 +295,7 @@ pub(super) async fn start(
                                 Err(error) => Response::Error(error),
                             }
                         }
-                        Ok(Request::Stop) => {
+                        Ok(Request::Stop { .. }) => {
                             let result = protocol::write(&mut stream, &Response::Stopping).await;
                             shutdown.send_replace(true);
                             return result;
@@ -306,7 +309,7 @@ pub(super) async fn start(
                                 Response::Logs(history.recent_filtered(service.as_deref(), &filter, tail).iter().map(|entry| (**entry).clone()).collect())
                             }
                         }
-                        Ok(Request::FollowLogs { service, tail, filter }) => {
+                        Ok(Request::FollowLogs { service, tail, filter, .. }) => {
                             if service.as_ref().is_some_and(|name| !known_service(name)) {
                                 return protocol::write(&mut stream, &Response::Error(format!("unknown service '{}'", service.unwrap()))).await;
                             }
@@ -339,7 +342,7 @@ pub(super) async fn start(
                                 }
                             }
                         }
-                        Ok(Request::Restart { service }) => {
+                        Ok(Request::Restart { service, .. }) => {
                             match tokio::time::timeout(Duration::from_secs(55), controller.restart(service)).await {
                                 Ok(Ok(state)) => Response::Restarted(state),
                                 Ok(Err(error)) => Response::Error(error),

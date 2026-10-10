@@ -97,7 +97,7 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Inspect and control a running stack in an interactive terminal.
+    /// Inspect service state, logs and lifecycle events in an interactive terminal.
     Top,
     /// List registered instances in this project and its Git worktrees (read-only).
     Instances {
@@ -366,7 +366,14 @@ impl Cli {
                 top::run(&socket, color).await?;
             }
             Command::Stop => {
-                let Response::Stopping = protocol::request(&socket, Request::Stop).await? else {
+                let Response::Stopping = protocol::request(
+                    &socket,
+                    Request::Stop {
+                        expected_run_id: None,
+                    },
+                )
+                .await?
+                else {
                     bail!("unexpected stop response");
                 };
                 output("Shutdown requested; the foreground supervisor exits after cleanup.\n")?;
@@ -376,6 +383,7 @@ impl Cli {
                     &socket,
                     Request::Restart {
                         service: service.clone(),
+                        expected_run_id: None,
                     },
                 )
                 .await?
@@ -432,6 +440,7 @@ impl Cli {
                         service,
                         tail: tail.into(),
                         filter,
+                        expected_run_id: None,
                     },
                 )
                 .await?;

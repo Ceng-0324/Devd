@@ -33,6 +33,20 @@ cargo test --locked --test integration
 
 ## Coverage
 
+`top.rs` uses Unix PTYs to exercise the actual terminal: log/event switching,
+instance/run identity, generation and cause fields, restart evidence, paging,
+cancelled/confirmed stop, quit, Ctrl+C, SIGTERM, disconnect and alternate-screen
+restoration. Shared TUI tests cover small terminals, no-color rendering, bounded
+history, retention/tail gaps, unavailable causal references, malformed/mixed-run
+batches, independent scrolling and confirmation controls. A native supervisor
+test runs the TUI's query/subscription/control functions over Unix sockets and
+Windows named pipes, including a replacement supervisor at the same endpoint:
+old-run stop/restart/log subscription requests must fail without changing its
+PID or restart count; correct-run controls and cancelled subscriptions still work.
+Its ignored worker fixture is launched by the parent test. Headless Windows CI
+tests the model, renderer and native transport, not interactive console appearance;
+the manual console check remains in `RELEASING.md`.
+
 `export.rs` runs on all three platforms with a real supervisor: it checks live
 identity and generation correlation, missing YAML, default exclusion of raw
 log/environment text, explicit log inclusion, no-clobber output, and refusal

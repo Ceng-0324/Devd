@@ -2,6 +2,12 @@
 
 ## Unreleased — v0.7 development
 
+- Add a bounded lifecycle event timeline to `top`, with Tab switching between
+  logs and events, instance/run identity, event generations, recorded cause
+  references, explicit history gaps, and disk recording status. Pin controls
+  and log subscriptions to the original run; retain quit and confirmed-stop
+  semantics. Page by the visible height and scroll long records horizontally.
+
 - Add explicit service `ports` and scoped `paths` mappings, injecting the same
   environment into owners, script probes, and direct dependents. Isolate instance
   paths under the selected state directory, reject mapping conflicts, include

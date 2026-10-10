@@ -33,7 +33,10 @@ pub(super) enum Request {
         candidate: std::path::PathBuf,
         plan_id: String,
     },
-    Stop,
+    Stop {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_run_id: Option<String>,
+    },
     Events {
         query: EventQuery,
     },
@@ -48,6 +51,8 @@ pub(super) enum Request {
     },
     Restart {
         service: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_run_id: Option<String>,
     },
     Logs {
         service: Option<String>,
@@ -60,7 +65,26 @@ pub(super) enum Request {
         tail: usize,
         #[serde(default)]
         filter: LogFilter,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        expected_run_id: Option<String>,
     },
+}
+
+impl Request {
+    // Optional on the wire for existing CLI clients; long-lived views pin
+    // subscriptions and controls to the run they originally connected to.
+    pub(super) fn expected_run_id(&self) -> Option<&str> {
+        match self {
+            Self::Stop { expected_run_id }
+            | Self::Restart {
+                expected_run_id, ..
+            }
+            | Self::FollowLogs {
+                expected_run_id, ..
+            } => expected_run_id.as_deref(),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize)]
@@ -167,6 +191,24 @@ pub(super) async fn next_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_cli_protocol_run_guards_preserve_unscoped_client_requests() {
+        for wire in [
+            r#"{"command":"stop"}"#,
+            r#"{"command":"restart","service":"api"}"#,
+            r#"{"command":"follow-logs","service":null,"tail":100}"#,
+        ] {
+            let request: Request = serde_json::from_str(wire).unwrap();
+            assert_eq!(request.expected_run_id(), None);
+            let mut guarded: serde_json::Value = serde_json::from_str(wire).unwrap();
+            guarded["expected_run_id"] = "this-run".into();
+            let request: Request = serde_json::from_value(guarded.clone()).unwrap();
+            assert_eq!(request.expected_run_id(), Some("this-run"));
+            let serialized = serde_json::to_value(request).unwrap();
+            assert_eq!(serialized["expected_run_id"], guarded["expected_run_id"]);
+        }
+    }
 
     #[test]
     fn test_cli_protocol_log_filter_defaults_and_rejects_unknown_fields() {

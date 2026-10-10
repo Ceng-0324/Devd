@@ -186,6 +186,8 @@ fn test_top_restart_cancel_quit_and_confirm_stop() {
 
     let mut top = Top::start(&project);
     wait(|| top.seen("worker").then_some(()));
+    top.write(b"\t");
+    wait(|| top.seen("Events [Tab: Logs]").then_some(()));
     top.write(b"s");
     wait(|| top.seen("Esc/n").then_some(()));
     top.write(b"\r");
@@ -241,10 +243,65 @@ fn test_top_ctrl_c_only_closes_view() {
     project.running();
     let mut top = Top::start(&project);
     wait(|| top.seen("worker").then_some(()));
+    top.write(b"\t");
+    wait(|| top.seen("Events [Tab: Logs]").then_some(()));
     top.write(b"\x03");
     top.finish();
     assert!(top.screen.contains("\x1b[?1049l"));
     success(project.invoke(&["status"]));
+    success(project.invoke(&["stop"]));
+    supervisor.finish(true);
+}
+
+#[test]
+fn test_top_event_tab_shows_identity_generation_and_recorded_evidence() {
+    let project = Project::new(RUNNING);
+    let mut supervisor = project.start();
+    let initial = project.running();
+    let identity: serde_json::Value =
+        serde_json::from_str(&success(project.invoke(&["identity", "--json"]))).unwrap();
+    let mut top = Top::start(&project);
+    wait(|| top.seen("Logs [Tab: Events]").then_some(()));
+    assert!(top.seen(identity["instance_id"].as_str().unwrap()));
+    assert!(top.seen(initial.event_run_id.as_deref().unwrap()));
+    top.write(b"\t");
+    wait(|| top.seen("Events [Tab: Logs]").then_some(()));
+    assert!(top.seen("Gaps: 0"));
+    assert!(top.seen("g="));
+    assert!(top.seen("cause="));
+    assert!(
+        !top.seen("[Info] ready"),
+        "application logs must stay on the log tab"
+    );
+    top.write(b"r");
+    wait(|| top.seen("Restarted worker").then_some(()));
+    let generation = project.running().services["worker"]
+        .event_generation
+        .unwrap();
+    wait(|| top.seen(&format!("g={generation} ")).then_some(()));
+    // Paging must reach the recorded restart request even on a short viewport.
+    let deadline = Instant::now() + Duration::from_secs(6);
+    loop {
+        if top.seen("manual-restart-requested") {
+            break;
+        }
+        top.write(b"\x1b[5~"); // Page Up
+        thread::sleep(Duration::from_millis(130));
+        assert!(
+            Instant::now() < deadline,
+            "restart evidence not visible: {}",
+            top.terminal.screen().contents()
+        );
+    }
+    top.write(b"s");
+    wait(|| top.seen("Esc/n").then_some(()));
+    top.write(b"n\t");
+    wait(|| top.seen("Logs [Tab: Events]").then_some(()));
+    assert!(top.seen("ready"));
+    top.write(b"\tq");
+    top.finish();
+    assert!(top.screen.contains("\x1b[?1049l"));
+    assert_eq!(project.running().services["worker"].restart_count, 1);
     success(project.invoke(&["stop"]));
     supervisor.finish(true);
 }
