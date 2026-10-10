@@ -182,3 +182,88 @@ fn test_export_worker() {
     println!("SECRET-LOG-VALUE");
     thread::sleep(Duration::from_secs(120));
 }
+
+#[test]
+fn test_export_and_explain_follow_recovered_generation() {
+    let root = temporary();
+    let executable = root.path().join(if cfg!(windows) {
+        "worker.exe"
+    } else {
+        "worker"
+    });
+    let fixture = format!(
+        "{} --ignored --exact test_export_worker --nocapture",
+        shell_words::quote(executable.to_str().unwrap())
+    );
+    fs::write(root.path().join("devd.yml"), serde_yaml::to_string(&serde_json::json!({
+        "version": "1", "services": {"worker": { "command": fixture,
+            "restart": {"policy": "on-failure", "initial-delay": "100ms", "max-delay": "100ms", "max-attempts": 100}
+        }}
+    })).unwrap()).unwrap();
+    let mut supervisor = Supervisor(
+        Command::new(env!("CARGO_BIN_EXE_devd"))
+            .current_dir(root.path())
+            .args(["start", "--persist-events"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let output = invoke(root.path(), &["events", "--json"]);
+        if output.status.success()
+            && String::from_utf8_lossy(&output.stdout).contains("spawn-failed")
+        {
+            break;
+        }
+        assert!(
+            supervisor.0.try_wait().unwrap().is_none(),
+            "supervisor exited"
+        );
+        assert!(Instant::now() < deadline, "missing spawn failure");
+        thread::sleep(Duration::from_millis(20));
+    }
+    // Publish a usable executable atomically after a real failed spawn.
+    let staged = root.path().join("staged-worker");
+    fs::copy(std::env::current_exe().unwrap(), &staged).unwrap();
+    fs::rename(staged, &executable).unwrap();
+    let ready = invoke(root.path(), &["wait", "--timeout", "15s", "--json"]);
+    assert!(
+        ready.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ready.stderr)
+    );
+    let exported = invoke(root.path(), &["export", "--output", "recovered.json"]);
+    assert!(
+        exported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&exported.stderr)
+    );
+    let report: Value =
+        serde_json::from_slice(&fs::read(root.path().join("recovered.json")).unwrap()).unwrap();
+    let explanation = &report["explanations"]["worker"];
+    assert_eq!(explanation["conclusion"], "running");
+    assert_eq!(
+        explanation["generation"],
+        report["state"]["worker"]["event_generation"]
+    );
+    assert!(report["events"].to_string().contains("spawn-failed")); // History is retained.
+    let live: Value =
+        serde_json::from_slice(&invoke(root.path(), &["explain", "worker", "--json"]).stdout)
+            .unwrap();
+    assert_eq!(live["conclusion"], "running");
+    assert_eq!(live["generation"], explanation["generation"]);
+    assert!(invoke(root.path(), &["stop"]).status.success());
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while supervisor.0.try_wait().unwrap().is_none() {
+        assert!(Instant::now() < deadline, "stop timed out");
+        thread::sleep(Duration::from_millis(20));
+    }
+    let stored: Value = serde_json::from_slice(
+        &invoke(root.path(), &["explain", "worker", "--stored", "--json"]).stdout,
+    )
+    .unwrap();
+    assert_eq!(stored["conclusion"], "manually-stopped");
+    assert_eq!(stored["generation"], explanation["generation"]);
+}

@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use super::{
     events::{
         query::{EventBatch, EventGap, EventKind, EventSource, PersistenceState},
-        EventContext, EventData, LifecycleEvent, ProbeEvidence, ProcessEvidence, RestartCause,
-        RestartOutcome,
+        EventContext, EventData, LifecycleEvent, ProbeEvidence, ProcessEvidence, ResourceValue,
+        RestartCause, RestartOutcome,
     },
     service_manager::{RuntimeSnapshot, ServiceState},
 };
@@ -70,8 +70,6 @@ pub fn explain(
     batch: &EventBatch,
 ) -> ExplainReport {
     let state = snapshot.and_then(|snapshot| snapshot.services.get(service));
-    let status = state.map(|state| state.status);
-    let generation = state.and_then(|state| state.event_generation);
     let run = snapshot
         .and_then(|snapshot| snapshot.event_run_id.as_deref())
         .or_else(|| {
@@ -88,6 +86,24 @@ pub fn explain(
         })
         .collect();
     events.sort_by_key(|event| event.sequence);
+    // A live snapshot defines the generation even when it has not been
+    // assigned yet (for example while a removed service is being re-added).
+    // Stored queries can only describe the latest retained generation.
+    let generation = match state {
+        Some(state) => state.event_generation,
+        None => events.iter().filter_map(|event| event.generation).max(),
+    };
+    events.retain(|event| event.generation == generation);
+    let status = state.map(|state| state.status).or_else(|| {
+        events.iter().rev().find_map(|event| match event.data {
+            EventData::StateChanged { to, .. } => Some(to),
+            EventData::HealthChanged { state, .. } => Some(state),
+            EventData::Started { .. } => Some(ServiceState::Running),
+            EventData::Starting => Some(ServiceState::Starting),
+            EventData::GenerationPending => Some(ServiceState::Pending),
+            _ => None,
+        })
+    });
     let mut evidence = Vec::new();
     let mut seen = BTreeSet::new();
 
@@ -96,19 +112,53 @@ pub fn explain(
     let mut details = Vec::new();
     let mut has_diagnostic_evidence = false;
 
-    let latest_budget = events.iter().rev().find(|event| {
-        matches!(
-            event.data,
-            EventData::RestartDecision {
-                outcome: RestartOutcome::BudgetExhausted,
-                ..
-            }
-        )
-    });
+    let latest_budget = events
+        .iter()
+        .rev()
+        .find(|event| {
+            matches!(
+                event.data,
+                EventData::RestartDecision {
+                    outcome: RestartOutcome::BudgetExhausted,
+                    ..
+                }
+            )
+        })
+        .filter(|_| {
+            !matches!(
+                status,
+                Some(
+                    ServiceState::Running
+                        | ServiceState::Healthy
+                        | ServiceState::Stopped
+                        | ServiceState::Stopping
+                )
+            )
+        });
     let latest_trigger = events
         .iter()
         .rev()
-        .find(|event| matches!(event.data, EventData::RestartTriggered { .. }));
+        .find(|event| matches!(event.data, EventData::RestartTriggered { .. }))
+        .copied()
+        .or_else(|| {
+            // New attempts explicitly link GenerationPending to the previous
+            // restart decision. Follow that link, never a chronological guess.
+            let mut event = *events.first()?;
+            while let Some(cause) = event.cause {
+                event = batch.entries.iter().find(|parent| {
+                    parent.run_id == event.run_id
+                        && parent.sequence == cause
+                        && parent.sequence < event.sequence
+                })?;
+                if matches!(
+                    event.data,
+                    EventData::RestartTriggered { .. } | EventData::ManualRestartRequested
+                ) {
+                    return Some(event);
+                }
+            }
+            None
+        });
     let latest_manual_restart = events.iter().rev().find(|event| {
         matches!(
             event.data,
@@ -143,23 +193,50 @@ pub fn explain(
     let latest_start_failure = latest_spawn
         .into_iter()
         .chain(latest_dependency_failure)
-        .max_by_key(|event| event.sequence);
-    let latest_health_failure = events.iter().rev().find(|event| {
-        matches!(
-            event.data,
-            EventData::HealthChanged {
-                state: ServiceState::Unhealthy,
-                ..
+        .max_by_key(|event| event.sequence)
+        .filter(|failure| {
+            !matches!(
+                status,
+                Some(
+                    ServiceState::Running
+                        | ServiceState::Healthy
+                        | ServiceState::Stopped
+                        | ServiceState::Stopping
+                )
+            ) && latest_started.is_none_or(|started| started.sequence < failure.sequence)
+        });
+    let latest_health_failure = events
+        .iter()
+        .rev()
+        .find(|event| matches!(event.data, EventData::HealthChanged { .. }))
+        .filter(|event| {
+            matches!(
+                event.data,
+                EventData::HealthChanged {
+                    state: ServiceState::Unhealthy,
+                    ..
+                }
+            )
+        });
+    let mut metrics = BTreeSet::new();
+    let latest_resource = events
+        .iter()
+        .rev()
+        .find(|event| match &event.data {
+            EventData::ResourceChanged { exceeded, evidence } => {
+                let metric = matches!(evidence.value, ResourceValue::Memory { .. });
+                metrics.insert(metric) && *exceeded
             }
-        )
-    });
-    let latest_resource = events.iter().rev().find(|event| {
-        matches!(
-            event.data,
-            EventData::ResourceRestartRequested { .. }
-                | EventData::ResourceChanged { exceeded: true, .. }
-        )
-    });
+            EventData::ResourceRestartRequested { evidence } => {
+                !metrics.contains(&matches!(evidence.value, ResourceValue::Memory { .. }))
+                    && matches!(
+                        status,
+                        Some(ServiceState::Restarting | ServiceState::Failed)
+                    )
+            }
+            _ => false,
+        })
+        .filter(|_| !matches!(status, Some(ServiceState::Stopped | ServiceState::Stopping)));
     let latest_manual_stop = events.iter().rev().find(|event| {
         matches!(
             event.data,
@@ -245,7 +322,7 @@ pub fn explain(
     } else if let Some(event) = latest_trigger.filter(|_| {
         matches!(
             status,
-            Some(ServiceState::Restarting | ServiceState::Starting)
+            Some(ServiceState::Pending | ServiceState::Restarting | ServiceState::Starting)
         )
     }) {
         has_diagnostic_evidence = true;
@@ -254,9 +331,11 @@ pub fn explain(
         details.push(event_detail(event));
         add_evidence(&mut evidence, &mut seen, event);
         add_cause(&mut evidence, &mut seen, event, &batch.entries);
-    } else if let Some(event) = latest_manual_restart
-        .filter(|request| latest_started.is_none_or(|started| started.sequence < request.sequence))
-    {
+    } else if let Some(event) = latest_manual_restart.filter(|request| {
+        latest_started.is_none_or(|started| started.sequence < request.sequence)
+            && latest_manual_stop.is_none_or(|stop| stop.sequence < request.sequence)
+            && !matches!(status, Some(ServiceState::Stopped | ServiceState::Stopping))
+    }) {
         has_diagnostic_evidence = true;
         conclusion = ExplainConclusion::Restarting;
         summary = format!("{service} 收到手动重启请求，等待新进程代次");
@@ -299,14 +378,9 @@ pub fn explain(
     // Path observations are evidence alongside lifecycle conclusions. They do
     // not prove application failure or authorize a restart. Restrict to the
     // latest generation so a replacement cannot inherit an old warning.
-    let path_generation = generation.or_else(|| events.last().and_then(|event| event.generation));
     let mut path_events = BTreeMap::new();
     let mut has_path_evidence = false;
-    for event in events
-        .iter()
-        .rev()
-        .filter(|event| event.generation == path_generation)
-    {
+    for event in events.iter().rev() {
         if let EventData::PathConditionChanged { evidence: path } = &event.data {
             path_events
                 .entry(path.requirement_index)
@@ -363,7 +437,8 @@ pub fn explain(
         persistence: batch.persistence,
         context: batch.context.clone(),
         service: service.into(),
-        status,
+        // Stored observations guide the conclusion but are not live status.
+        status: state.map(|state| state.status),
         generation,
         conclusion,
         summary,
@@ -400,14 +475,15 @@ fn add_cause(
     entries: &[LifecycleEvent],
 ) {
     let mut cause = event.cause;
+    let mut before = event.sequence;
     while let Some(sequence) = cause {
-        let Some(parent) = entries
-            .iter()
-            .find(|item| item.sequence == sequence && item.run_id == event.run_id)
-        else {
+        let Some(parent) = entries.iter().find(|item| {
+            item.sequence == sequence && item.run_id == event.run_id && item.sequence < before
+        }) else {
             break;
         };
         add_evidence(evidence, seen, parent);
+        before = parent.sequence;
         cause = parent.cause;
     }
 }
@@ -689,7 +765,14 @@ mod tests {
         let snapshot = RuntimeSnapshot {
             supervisor_pid: 1,
             event_run_id: Some(recorder.run_id().into()),
-            services: [("web".into(), ServiceSnapshot::default())].into(),
+            services: [(
+                "web".into(),
+                ServiceSnapshot {
+                    event_generation: Some(1),
+                    ..Default::default()
+                },
+            )]
+            .into(),
         };
         let report = explain("web", Some(&snapshot), &batch(&recorder));
         assert_eq!(report.conclusion, ExplainConclusion::DependencyBlocked);
@@ -749,6 +832,18 @@ mod tests {
             report.evidence[0].event_type,
             EventKind::ServiceStopRequested
         );
+        recorder.record(
+            Some("api"),
+            Some(1),
+            None,
+            EventData::ServiceStopRequested {
+                manual_restart: false,
+            },
+        );
+        assert_eq!(
+            explain("api", None, &batch(&recorder)).conclusion,
+            ExplainConclusion::ManuallyStopped
+        );
     }
 
     #[test]
@@ -792,5 +887,170 @@ mod tests {
         assert_eq!(report.conclusion, ExplainConclusion::ResourceLimit);
         assert!(report.summary.contains("超过了配置的资源阈值"));
         assert!(!report.summary.contains("触发了重启"));
+    }
+
+    fn runtime(
+        recorder: &EventRecorder,
+        generation: Option<u64>,
+        status: ServiceState,
+    ) -> RuntimeSnapshot {
+        RuntimeSnapshot {
+            supervisor_pid: 1,
+            event_run_id: Some(recorder.run_id().into()),
+            services: [(
+                "api".into(),
+                ServiceSnapshot {
+                    status,
+                    event_generation: generation,
+                    ..Default::default()
+                },
+            )]
+            .into(),
+        }
+    }
+
+    fn resource(memory: bool, exceeded: bool) -> EventData {
+        EventData::ResourceChanged {
+            exceeded,
+            evidence: super::super::events::ResourceEvidence {
+                value: if memory {
+                    ResourceValue::Memory {
+                        bytes: 20,
+                        limit_bytes: 10,
+                    }
+                } else {
+                    ResourceValue::Cpu {
+                        percent: 20.0,
+                        limit_percent: 10,
+                    }
+                },
+                sampled_at: chrono::Utc::now(),
+                consecutive_samples: 1,
+                restart_authorized: false,
+            },
+        }
+    }
+
+    #[test]
+    fn test_explain_new_attempt_does_not_inherit_previous_failure_or_manual_control() {
+        for old in [
+            EventData::SpawnFailed {
+                failure: ProcessEvidence::Spawn { os_code: Some(2) },
+            },
+            EventData::DependencyTimedOut {
+                timeout: std::time::Duration::from_secs(1),
+            },
+            EventData::RestartDecision {
+                outcome: RestartOutcome::BudgetExhausted,
+                policy: (&crate::config::RestartPolicy::default()).into(),
+                restart_count: 3,
+                delay: None,
+            },
+            EventData::ManualRestartRequested,
+            EventData::ServiceStopRequested {
+                manual_restart: false,
+            },
+            resource(true, true),
+        ] {
+            let recorder = EventRecorder::new("state".into(), None);
+            recorder.record(Some("api"), Some(1), None, old);
+            recorder.record(
+                Some("api"),
+                Some(2),
+                None,
+                EventData::Started { pid: Some(123) },
+            );
+            let batch = batch(&recorder);
+            let snapshot = runtime(&recorder, Some(2), ServiceState::Running);
+            for snapshot in [Some(&snapshot), None] {
+                let report = explain("api", snapshot, &batch);
+                assert_eq!(report.conclusion, ExplainConclusion::Running);
+                assert_eq!(report.generation, Some(2));
+                assert!(report.evidence.iter().all(|e| e.generation == Some(2)));
+            }
+            // A re-added service has not acquired its new generation yet.
+            let snapshot = runtime(&recorder, None, ServiceState::Pending);
+            let report = explain("api", Some(&snapshot), &batch);
+            assert_eq!(report.conclusion, ExplainConclusion::Unknown);
+            assert!(report.evidence.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_explain_resource_recovery_is_per_metric_and_respects_stopped_state() {
+        let recorder = EventRecorder::new("state".into(), None);
+        recorder.record(
+            Some("api"),
+            Some(1),
+            None,
+            EventData::Started { pid: Some(123) },
+        );
+        for event in [
+            resource(true, true),
+            resource(false, true),
+            resource(false, false),
+        ] {
+            recorder.record(Some("api"), Some(1), None, event);
+        }
+        let snapshot = runtime(&recorder, Some(1), ServiceState::Running);
+        let report = explain("api", Some(&snapshot), &batch(&recorder));
+        assert_eq!(report.conclusion, ExplainConclusion::ResourceLimit);
+        assert_eq!(report.evidence[0].sequence, 1); // Memory is still exceeded.
+        let stopped = runtime(&recorder, Some(1), ServiceState::Stopped);
+        assert_eq!(
+            explain("api", Some(&stopped), &batch(&recorder)).conclusion,
+            ExplainConclusion::Stopped
+        );
+        recorder.record(Some("api"), Some(1), None, resource(true, false));
+        let mut batch = batch(&recorder);
+        batch.gaps.push(EventGap::IncompleteRun {
+            run_id: recorder.run_id().into(),
+        });
+        for snapshot in [Some(&snapshot), None] {
+            let report = explain("api", snapshot, &batch);
+            assert_eq!(report.conclusion, ExplainConclusion::Running);
+            assert!(!report.complete);
+        }
+    }
+
+    #[test]
+    fn test_explain_restart_keeps_explicit_previous_generation_cause_until_running() {
+        let recorder = EventRecorder::new("state".into(), None);
+        let trigger = recorder.record(
+            Some("api"),
+            Some(0),
+            None,
+            EventData::RestartTriggered {
+                reason: RestartCause::SpawnFailure,
+                policy: (&crate::config::RestartPolicy::default()).into(),
+            },
+        );
+        let generation = recorder.record(
+            Some("api"),
+            Some(1),
+            Some(trigger),
+            EventData::GenerationPending,
+        );
+        recorder.record(
+            Some("api"),
+            Some(generation),
+            Some(generation),
+            EventData::Starting,
+        );
+        let snapshot = runtime(&recorder, Some(generation), ServiceState::Starting);
+        let report = explain("api", Some(&snapshot), &batch(&recorder));
+        assert_eq!(report.conclusion, ExplainConclusion::Restarting);
+        assert_eq!(report.evidence[0].sequence, trigger);
+        recorder.record(
+            Some("api"),
+            Some(generation),
+            Some(generation),
+            EventData::Started { pid: Some(123) },
+        );
+        let snapshot = runtime(&recorder, Some(generation), ServiceState::Running);
+        assert_eq!(
+            explain("api", Some(&snapshot), &batch(&recorder)).conclusion,
+            ExplainConclusion::Running
+        );
     }
 }

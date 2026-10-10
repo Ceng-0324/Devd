@@ -2,6 +2,10 @@
 
 ## Unreleased — v0.7 development
 
+- Base explanations on the current service generation and the latest observation
+  of each resource metric. Preserve explicit restart causes and historical events
+  without presenting an earlier failure or recovered warning as a current fault.
+
 - Resolve cleanup shared paths against the selected configuration and service
   working directory, including Agent cleanup launched from another directory.
   Reject shared overlaps consistently before preview or deletion.
