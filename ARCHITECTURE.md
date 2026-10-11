@@ -40,7 +40,9 @@
 
 `incidents::evidence` 在 begin 保存完整实例/run、触发事件代次和观察时间；状态与有效配置由消费事件时的 watch 读取，始终标注非原子、与触发瞬间等价性不保证。配置摘要最多 256 服务／每服务 64 依赖／128 KiB，保留类型化恢复策略与资源授权，不保存命令或环境正文。begin 同步落盘后才检查触发服务最多 8 个声明，复用 M1 路径链与 M2 选择器，并分别保留期望类型、声明 scope/cleanup 和检查时间。历史条件事件与新检查互不替代，不生成时序因果结论。
 
-`incidents::storage` 持有 supervisor lease、独立 `.lock` 和 cap-std 目录能力，通过 no-follow 新建 UUID JSONL 制品，不覆盖已有文件。schema 1 为 begin/resources/end；缺少结束、尾部截断、提前结束、检查省略与未知取消计数各自可见。单制品 2 MiB、最多 20 个（包括部分制品），已受理活跃文件不参与淘汰；目录枚举最多 256 项，拒绝链接、重解析点、多硬链接和特殊文件。启动失败阻止服务启动，运行失败由 server 限时写 stderr 并停用本次记录器，服务继续运行。事故读取与导出属于后续模块；现有存储日志/事件 reader 及 export 协议保持原有边界。
+`incidents::storage` 持有 supervisor lease、独立 `.lock` 和 cap-std 目录能力，通过 no-follow 新建 UUID JSONL 制品，不覆盖已有文件。schema 1 为 begin/resources/end；缺少结束、尾部截断、提前结束、检查省略与未知取消计数各自可见。单制品 2 MiB、最多 20 个（包括部分制品），已受理活跃文件不参与淘汰；目录枚举最多 256 项，拒绝链接、重解析点、多硬链接和特殊文件。启动失败阻止服务启动，运行失败由 server 限时写 stderr 并停用本次记录器，服务继续运行。`incidents::query` 共用该目录能力、安全打开和持有的 writer/state lease；在线最多两个 blocking 读取任务，与写入通过独立 mutex 串行，取消后名额与 lease 保留至阻塞任务返回。离线按状态锁→事故锁顺序取得已有文件的共享 lease，不创建源文件。每次文件读取核对前后 handle/path 身份、大小及修改时间；单文件 2 MiB、目录 256 项、列表 20 制品，超限/损坏/版本未知给出有界诊断。
+
+`incidents list/show` 默认经 scoped 协议固定当前 instance/run，`--stored` 列出同实例保留运行。类型化解析保留有效 JSONL 前缀，核对 ID/run/代次和顺序，再施加隐私白名单；事故状态/配置/路径始终属于留存证据，不调用当前探测、YAML 或状态文件补全。schema 1 未记录的完整声明影响图标为未知。`export --incident` 输出 schema 3，复用既有 event/explanation 模型与取消/不覆盖发布机制；解释固定触发代次。在线显式日志附件是当前 run 的最新尾部，离线日志归属未知，均不参与事故解释。普通 live export/Agent schema 1 和历史 run export schema 2 不变，Agent 暂不新增事故入口。
 
 ### 就绪等待
 
@@ -86,7 +88,7 @@ flowchart LR
 
 配置快照按完整 YAML 文件保存于基础状态目录的 `snapshots/<name>.yml`，不进入 profile 子目录。保存和恢复复制原始字节，支持未完成编辑的配置；校验仍由 `check` 负责。临时文件先写入同一目录并同步，再通过不覆盖的原子发布创建目标；快照名限制为安全的小写 ASCII，恢复目标只能是原配置目录的新文件名，以维持相对路径语义。配置快照不接触 `services.json`、控制 socket 或进程；恢复不会修改运行中实例，也不会接管遗留 PID。
 
-当前可用命令为 start、stop、restart、reload、wait、identity、instances、export、agent、clean、status、top、logs、events、explain、doctor、impact、check、graph、init、snapshot；logs/events 支持 --follow 和 --stored，支持 TCP/HTTP/Unix Socket/Script 健康检查和 fixed/exponential 重启延时。status 提供服务主进程 CPU／RSS 采样。top 仅连接活实例，退出界面不停止服务，停止全栈必须在界面内确认；终端恢复由 RAII 处理。配置监听、自动重载和文件自动修复尚未实现。
+当前可用命令为 start、stop、restart、reload、wait、identity、instances、incidents、export、agent、clean、status、top、logs、events、explain、doctor、impact、check、graph、init、snapshot；logs/events 支持 --follow 和 --stored，支持 TCP/HTTP/Unix Socket/Script 健康检查和 fixed/exponential 重启延时。status 提供服务主进程 CPU／RSS 采样。top 仅连接活实例，退出界面不停止服务，停止全栈必须在界面内确认；终端恢复由 RAII 处理。配置监听、自动重载和文件自动修复尚未实现。
 
 ### 选择性配置重载
 

@@ -1,5 +1,6 @@
 //! Opt-in evidence collection. Never sends service controls or drains application output.
-mod evidence;
+pub(super) mod evidence;
+pub(super) mod query;
 mod storage;
 
 use super::{export::SafeServiceState, instances::Identity};
@@ -32,7 +33,7 @@ const EVENT_BYTES: usize = 256 * 1024;
 
 pub(super) use storage::Storage;
 
-#[derive(Default, Debug, Clone, serde::Serialize)]
+#[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(super) struct Statistics {
     admitted: u64,
     merged: u64,
@@ -50,9 +51,9 @@ impl Statistics {
     }
 }
 
-#[derive(Clone, Copy, Debug, serde::Serialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
-enum EndReason {
+pub(super) enum EndReason {
     Deadline,
     GenerationReplaced,
     Reload,

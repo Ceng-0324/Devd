@@ -7,14 +7,14 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub const MAX_NODES: usize = 128;
 pub const MAX_LINKS: usize = 40;
 pub const MAX_PATH_BYTES: usize = 4096;
 pub const MAX_CHAIN_BYTES: usize = 64 * 1024;
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum Failure {
     Missing,
@@ -28,7 +28,7 @@ pub enum Failure {
     Limit,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum NodeKind {
     File,
@@ -38,14 +38,14 @@ pub enum NodeKind {
     Unknown,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Node {
     pub path: String,
     pub kind: NodeKind,
     pub target: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Inspection {
     pub nodes: Vec<Node>,
     pub resolved: Option<String>,

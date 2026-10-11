@@ -2,6 +2,13 @@
 
 ## Unreleased — v0.8.0-alpha.1
 
+- Add `incidents list/show` and `export --incident UUID` for recorded evidence,
+  with explicit `--stored` access after shutdown. Pin online queries to the
+  current instance/run; preserve historical generations, partial files, schema
+  diagnostics and unknown impact coverage without inspecting today's resources.
+  Reuse safe locked reads, bounded cancellation and no-clobber publication;
+  optional logs remain separate attachments with explicit attribution.
+
 - Add independent opt-in incident capture with `start --record-incidents`.
   Correlate service/generation triggers in bounded five-second windows, preserve
   allowlisted context and fresh path observations separately, and record early

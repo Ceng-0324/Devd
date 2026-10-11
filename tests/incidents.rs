@@ -226,7 +226,94 @@ fn test_incidents_capture_deleted_target_chain_and_deadline_without_recovery() {
         after["services"]["worker"]["pid"]
     );
     assert_eq!(after["services"]["worker"]["restart_count"], 0);
+    let id = artifact.file_stem().unwrap().to_str().unwrap();
+    let listed = success(invoke(root.path(), &["incidents", "list", "--json"]));
+    assert_eq!(listed["entries"][0]["id"], id);
+    assert_eq!(listed["entries"][0]["trigger"], "path-condition-changed");
+    let shown = success(invoke(root.path(), &["incidents", "show", id, "--json"]));
+    assert_eq!(
+        shown["incident"]["resources"]["observations"][0]["inspection"]["failure"],
+        "dangling-symlink"
+    );
+    assert!(shown["incident"]["declared_impact"]
+        .as_str()
+        .unwrap()
+        .contains("unknown"));
+    assert!(!invoke(root.path(), &["incidents", "list", "--stored"])
+        .status
+        .success());
+    success(invoke(
+        root.path(),
+        &["export", "--incident", id, "--output", "live.json"],
+    ));
+    success(invoke(
+        root.path(),
+        &[
+            "export",
+            "--incident",
+            id,
+            "--include-logs",
+            "--output",
+            "logs.json",
+        ],
+    ));
+    assert!(!fs::read_to_string(root.path().join("live.json"))
+        .unwrap()
+        .contains("SECRET"));
+    let with_logs: Value =
+        serde_json::from_slice(&fs::read(root.path().join("logs.json")).unwrap()).unwrap();
+    assert_eq!(with_logs["schema_version"], 3);
+    assert_eq!(
+        with_logs["incident"]["log_attribution"],
+        "selected-current-run-not-incident-window"
+    );
+    assert!(with_logs["incident"]["current_run_logs"]
+        .to_string()
+        .contains("SECRET-APPLICATION-LOG"));
+    assert!(with_logs["state"].as_object().unwrap().is_empty());
+    assert_eq!(with_logs["source"], "stored");
     stop(root.path(), &mut child);
+    fs::remove_file(root.path().join("devd.yml")).unwrap();
+    // A now-repaired target cannot rewrite the captured dangling-link evidence.
+    fs::write(&target, "REPAIRED-SECRET").unwrap();
+    let offline = success(invoke(
+        root.path(),
+        &["incidents", "show", id, "--stored", "--json"],
+    ));
+    assert_eq!(offline["incident"], shown["incident"]);
+    success(invoke(
+        root.path(),
+        &[
+            "export",
+            "--stored",
+            "--incident",
+            id,
+            "--output",
+            "offline.json",
+        ],
+    ));
+    let report: Value =
+        serde_json::from_slice(&fs::read(root.path().join("offline.json")).unwrap()).unwrap();
+    assert_eq!(
+        report["incident"]["recorded"]["incident"],
+        shown["incident"]
+    );
+    assert!(report["explanations"]["worker"]["complete"] == false);
+    let before = fs::read(root.path().join("offline.json")).unwrap();
+    assert!(!invoke(
+        root.path(),
+        &[
+            "export",
+            "--stored",
+            "--incident",
+            id,
+            "--output",
+            "offline.json"
+        ]
+    )
+    .status
+    .success());
+    assert_eq!(fs::read(root.path().join("offline.json")).unwrap(), before);
     assert_eq!(artifacts(root.path()).len(), 1);
 }
 
@@ -362,4 +449,162 @@ fn test_incidents_unsafe_storage_prevents_service_start() {
     assert!(String::from_utf8_lossy(&output.stderr).contains("cannot open incident storage"));
     assert_eq!(fs::read_dir(&target).unwrap().count(), 0);
     assert!(!state.join("services.json").exists());
+}
+
+#[test]
+fn test_incident_queries_isolate_runs_and_report_partial_unsafe_and_unsupported_files() {
+    let root = temporary();
+    write_config(
+        root.path(),
+        json!({"missing":{"command":"devd-incident-no-such-executable", "restart":{"policy":"on-failure","initial-delay":"10s","max-delay":"10s","max-attempts":100}}}),
+    );
+    let mut first = start(root.path(), true);
+    let artifact = first_capture(root.path());
+    let id = artifact.file_stem().unwrap().to_str().unwrap();
+    let run1 = success(invoke(root.path(), &["identity", "--json"]))["run_id"].clone();
+    stop(root.path(), &mut first);
+    let original = fs::read(&artifact).unwrap();
+    let mut second = start(root.path(), true);
+    let run2 = success(invoke(root.path(), &["identity", "--json"]))["run_id"].clone();
+    assert_ne!(run1, run2);
+    let list = success(invoke(root.path(), &["incidents", "list", "--json"]));
+    assert!(list["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|e| e["identity"]["run_id"] == run2));
+    assert!(!invoke(root.path(), &["incidents", "show", id, "--json"])
+        .status
+        .success());
+    stop(root.path(), &mut second);
+    let list = success(invoke(
+        root.path(),
+        &["incidents", "list", "--stored", "--json"],
+    ));
+    assert!(list["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["identity"]["run_id"] == run1));
+    let inspect = || {
+        success(invoke(
+            root.path(),
+            &["incidents", "show", id, "--stored", "--json"],
+        ))
+    };
+    let mut records = read_records(&artifact);
+    records[0]["data"]["capture"]["schema_version"] = json!(999);
+    fs::write(&artifact, format!("{}\n", records[0])).unwrap();
+    assert_eq!(
+        inspect()["incident"]["collection_status"],
+        "unsupported-schema"
+    );
+    let begin = original.split_inclusive(|b| *b == b'\n').next().unwrap();
+    fs::write(&artifact, [begin, b"{incomplete"].concat()).unwrap();
+    let partial = inspect();
+    assert_eq!(partial["incident"]["collection_status"], "incomplete");
+    assert!(!partial["incident"]["beginning"].is_null());
+    assert!(partial["incident"]["diagnostics"]
+        .to_string()
+        .contains("unfinished-jsonl-tail"));
+    fs::write(&artifact, b"{broken}\n").unwrap();
+    assert!(inspect()["incident"]["diagnostics"]
+        .to_string()
+        .contains("malformed"));
+    fs::write(&artifact, &original).unwrap();
+    fs::hard_link(&artifact, root.path().join("linked-artifact")).unwrap();
+    assert!(inspect()["incident"]["diagnostics"]
+        .to_string()
+        .contains("unsafe-or-unreadable"));
+    fs::remove_file(root.path().join("linked-artifact")).unwrap();
+    fs::write(&artifact, vec![b'x'; 2 * 1024 * 1024 + 1]).unwrap();
+    assert!(inspect()["incident"]["diagnostics"]
+        .to_string()
+        .contains("exceeds-2-MiB"));
+    fs::remove_file(&artifact).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(root.path().join("stderr"), &artifact).unwrap();
+    #[cfg(windows)]
+    std::os::windows::fs::symlink_file(root.path().join("stderr"), &artifact)
+        .expect("symlink privileges required");
+    assert!(inspect()["incident"]["diagnostics"]
+        .to_string()
+        .contains("unsafe-or-unreadable"));
+    assert!(!invoke(
+        root.path(),
+        &["incidents", "show", "../../stderr", "--stored"]
+    )
+    .status
+    .success());
+    assert!(!invoke(
+        root.path(),
+        &[
+            "export",
+            "--stored",
+            "--incident",
+            id,
+            "--run",
+            "latest",
+            "--output",
+            "invalid.json"
+        ]
+    )
+    .status
+    .success());
+    assert!(!root.path().join("invalid.json").exists());
+}
+
+#[test]
+fn test_incident_stored_selection_respects_profile_custom_state_and_missing_yaml() {
+    let root = temporary();
+    let yaml = json!({"version":"1","services":{"broken":{"command":"devd-incident-no-such-executable","restart":{"policy":"never"}}},
+        "profiles":{"test":{"services":{}}}});
+    fs::write(
+        root.path().join("devd.yml"),
+        serde_yaml::to_string(&yaml).unwrap(),
+    )
+    .unwrap();
+    for profile in [false, true] {
+        let mut args = vec!["--state-dir", "custom"];
+        if profile {
+            args.extend(["--profile", "test"]);
+        }
+        let mut start = args.clone();
+        start.extend(["start", "--record-incidents"]);
+        assert!(!invoke(root.path(), &start).status.success());
+        let mut list = args.clone();
+        list.extend(["incidents", "list", "--stored", "--json"]);
+        let report = success(invoke(root.path(), &list));
+        assert_eq!(report["entries"].as_array().unwrap().len(), 1, "{report}");
+        assert_eq!(
+            report["entries"][0]["identity"]["profile"],
+            if profile { json!("test") } else { Value::Null }
+        );
+        let id = report["entries"][0]["id"].as_str().unwrap();
+        if profile {
+            fs::remove_file(root.path().join("devd.yml")).unwrap();
+            let mut export = args.clone();
+            export.extend([
+                "export",
+                "--stored",
+                "--incident",
+                id,
+                "--include-logs",
+                "--output",
+                "profile.json",
+            ]);
+            success(invoke(root.path(), &export));
+            let saved: Value =
+                serde_json::from_slice(&fs::read(root.path().join("profile.json")).unwrap())
+                    .unwrap();
+            assert_eq!(
+                saved["incident"]["unassigned_stored_logs"]["availability"],
+                "missing"
+            );
+            assert_eq!(
+                saved["incident"]["log_attribution"],
+                "unknown-no-run-id-in-stored-logs"
+            );
+        }
+    }
 }

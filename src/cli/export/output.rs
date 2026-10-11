@@ -1,5 +1,4 @@
 //! Shared live/offline export cancellation, bounded encoding and no-clobber publication.
-use super::Report;
 use anyhow::{Context, Result};
 use std::{
     io::{self, Write},
@@ -10,32 +9,32 @@ use std::{
     },
     time::{Duration, Instant},
 };
-pub(super) const MAX_REPORT_BYTES: usize = 16 * 1024 * 1024;
-pub(super) const DEADLINE: Duration = Duration::from_secs(30);
+pub(in crate::cli) const MAX_REPORT_BYTES: usize = 16 * 1024 * 1024;
+pub(in crate::cli) const DEADLINE: Duration = Duration::from_secs(30);
 
 // 0 = collecting/preparing; 1 = cancelled; 2 = publication accepted. The CAS
 // serializes cancellation with publication; cancelled workers cannot publish late.
 #[derive(Clone)]
-pub(super) struct Control {
+pub(in crate::cli) struct Control {
     phase: Arc<AtomicU8>,
     deadline: Instant,
 }
 impl Control {
     #[cfg(test)]
-    pub(super) fn expired() -> Self {
+    pub(in crate::cli) fn expired() -> Self {
         Self {
             phase: Arc::new(AtomicU8::new(0)),
             deadline: Instant::now(),
         }
     }
 
-    pub(super) fn new() -> Self {
+    pub(in crate::cli) fn new() -> Self {
         Self {
             phase: Arc::new(AtomicU8::new(0)),
             deadline: Instant::now() + DEADLINE,
         }
     }
-    pub(super) fn check(&self) -> io::Result<()> {
+    pub(in crate::cli) fn check(&self) -> io::Result<()> {
         if self.phase.load(Ordering::Acquire) == 1 {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
@@ -50,12 +49,12 @@ impl Control {
         }
         Ok(())
     }
-    pub(super) fn cancel(&self) -> bool {
+    pub(in crate::cli) fn cancel(&self) -> bool {
         self.phase
             .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
     }
-    pub(super) fn publish(&self) -> io::Result<()> {
+    pub(in crate::cli) fn publish(&self) -> io::Result<()> {
         self.check()?;
         self.phase
             .compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire)
@@ -68,7 +67,7 @@ impl Control {
         Ok(())
     }
 }
-pub(super) struct CancelOnDrop(pub(super) Control);
+pub(in crate::cli) struct CancelOnDrop(pub(in crate::cli) Control);
 impl Drop for CancelOnDrop {
     fn drop(&mut self) {
         self.0.cancel();
@@ -89,7 +88,11 @@ impl Write for BoundedBytes {
     }
 }
 
-pub(super) fn publish_report(path: &Path, report: &Report, control: &Control) -> Result<()> {
+pub(in crate::cli) fn publish_report(
+    path: &Path,
+    report: &impl serde::Serialize,
+    control: &Control,
+) -> Result<()> {
     control.check()?;
     #[cfg(windows)]
     super::super::snapshot::validate_windows_filename(path)?;

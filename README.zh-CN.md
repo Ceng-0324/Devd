@@ -230,7 +230,53 @@ devd start --record-incidents
 
 单个有界订阅者与单个阻塞工作线程负责采集，磁盘 I/O 不进入 supervisor 控制循环或应用输出排空链。路径检查在 OS 调用之间响应截止时间和提前结束；正常关闭排空已受理写入后才释放状态锁，单次卡住的文件系统调用不能强行打断。启动存储失败时不启动服务；**运行中记录器失败则停用本次事故记录、在 stderr 报告，服务继续运行。** 缺少 `end` 或尾部 JSONL 未写完都是不完整证据，取消后无法确定的计数用 null 表示。强杀 supervisor 不承诺补齐尾部。
 
-默认制品不含应用日志、完整 YAML、命令、环境/dotenv 正文和自由错误文本；路径、链接目标与标识仍可能敏感。证据不是文件系统快照，也不是可恢复的会话备份。本模块先完成采集，事故列表、查看和导出命令由下一模块提供；现有 `export --stored` 仍读取独立持久化的事件历史，不读取事故目录。
+默认制品不含应用日志、完整 YAML、命令、环境/dotenv 正文和自由错误文本；路径、链接目标与标识仍可能敏感。证据不是文件系统快照，也不是可恢复的会话备份。`export --stored --run` 读取独立持久化的事件历史；事故查询和 `export --incident` 读取事故目录。
+
+
+### 找到事故，并把证据带走
+
+```bash
+devd incidents list --json
+devd incidents show INCIDENT_UUID
+devd export --incident INCIDENT_UUID --output incident.json
+
+# 停止后，即使 YAML 已经删掉，也可以读取：
+devd incidents list --stored --json
+devd incidents show INCIDENT_UUID --stored --json
+devd export --stored --incident INCIDENT_UUID --output saved-incident.json
+```
+
+在线查询绑定所选 supervisor 的 instance 和当前 run，要求本次运行开启事故记录。离线选择相同 config/profile/state，列出该实例所有保留运行的事故；查看、导出使用完整 UUID，`--incident` 与 `--run` 互斥。列表按记录的观察时间倒序、UUID 排序。两种方式都不会重新检查今天的目标、加载当前 YAML，或拿新代次状态填补旧现场。
+
+查询 JSON 为 schema 1；事故导出为 schema 3，复用已有事件/解释白名单，增加 `incident` 证据区。普通在线导出与 Agent 保持 schema 1，历史运行导出保持 schema 2。即使在线获取，事故报告的 `source` 仍为 `stored`，顶层实时 identity/state 留空；历史身份、观察到的状态和代次、配置摘要、路径链、控制结果及省略量各自保留来源。解释只使用触发服务所属代次的已存事件。schema 1 事故未保存完整 M2 影响图，因此明确标为 `unknown-not-recorded-by-schema-1`，不从当前配置重建成历史事实。
+
+完整窗口、提前结束、缺少 end、尾部截断/损坏及不支持的版本分别显示。有效前缀可以继续查看，不支持的版本只提供有界诊断。`complete` 只说明有界记录窗口的覆盖情况，不代表完整运行历史、根因证明或完整资源影响图。淘汰计数仅覆盖写入它的那次记录器；UUID 不存在可能是留存淘汰，不能据此断定事故没发生过。
+
+`--include-logs` 单独授权附带最多 200 条应用日志：在线日志属于所选当前 run，但不代表事故窗口；离线磁盘日志归属未知。两者都不参与事故解释。默认省略日志、命令、环境正文和自由错误文本，路径与标识仍可能敏感。报告是诊断证据，不是可恢复的会话或数据库备份。
+
+读取保留状态/writer lease，拒绝链接、重解析点、多硬链接及特殊文件。在线最多两个阻塞读取任务，与 writer 串行访问制品；停止/断连在 OS 调用之间取消。离线须先停止 supervisor。目录扫描最多 256 项，列表最多读取 20 个文件、每个 2 MiB，输出最多 16 MiB；异常多于 20 个时按文件名选择并标注省略。检测到读取期间文件替换则报告变化，不返回混合证据。查询/准备限时 30 秒，终端输出限时 5 秒；Ctrl+C 可取消，导出沿用既有取消与不覆盖发布规则，单次阻塞 OS 调用无法强行打断。
+
+下面在 Linux/macOS 上用 Python 3 复现一次临时目标丢失。终端 A：
+
+```bash
+incident_demo=$(mktemp -d)
+cd "$incident_demo"
+printf 'keep me\n' > target.txt
+ln -s target.txt resource
+cat > devd.yml <<'YAML'
+version: '1'
+services:
+  worker:
+    command: python3 -u -c 'import time; print("ready"); time.sleep(600)'
+    restart: {policy: never}
+    requires: [{type: file, path: resource}]
+    monitor-requires: true
+YAML
+pwd  # 终端 B 使用这里打印的目录。
+devd start --record-incidents
+```
+
+终端 B 进入该目录，先执行 `devd wait --timeout 30s`，再执行 `rm ./target.txt`。监测事件产生后，`devd incidents list` 给出 UUID，`devd incidents show UUID` 展示当时保存的悬空链接链。窗口在 5 秒后结束，停止/重载/换代也可能提前结束。执行 `devd stop` 后即可使用上面的 `--stored` 命令；后来补回 `target.txt`，也不会改写已有事故证据。
 
 ### 显式配置实例端口与路径（v0.7）
 
@@ -434,6 +480,8 @@ devd reload --apply --plan 'sha256:<64位十六进制摘要>' --candidate devd.n
 | `devd status [--json]` | 查看实时状态、PID、CPU／RSS、重启次数和诊断信息 |
 | `devd identity [--json]` | 查看所选活 supervisor 的实例与运行身份（v0.7） |
 | `devd instances [--json]` | 发现当前仓库及其 worktree 中已登记的实例（v0.7） |
+| `devd incidents list/show [UUID] [--stored] [--json]` | 查询当前运行或离线保留的事故证据 |
+| `devd export --incident UUID [--stored] --output FILE [--include-logs]` | 导出单事故报告（v0.8） |
 | `devd export --output FILE [--include-logs]` | 导出有界的活实例诊断报告到新 JSON 文件 |
 | `devd export --stored --run UUID/latest --output FILE [--include-logs]` | 停止后导出指定历史运行（v0.8） |
 | `devd clean --dry-run [--json]` | 在成功停止后预览已登记、明确授权丢弃的目录 |

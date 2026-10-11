@@ -59,6 +59,9 @@ pub(super) enum Request {
     Explain {
         service: String,
     },
+    Incidents {
+        id: Option<String>,
+    },
     Export {
         include_logs: bool,
     },
@@ -113,6 +116,7 @@ pub(super) enum Response {
     Events(EventBatch),
     Explain(ExplainReport),
     Export(Box<super::export::Report>),
+    Incidents(Box<super::incidents::query::Report>),
     Restarted(ServiceSnapshot),
     Logs(Vec<LogEntry>),
     Log(LogEntry),

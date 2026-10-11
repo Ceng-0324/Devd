@@ -84,9 +84,15 @@ abrupt supervisor death and runtime writer failure without stopping services.
 The ignored worker is launched as a real subprocess. Unit tests cover correlation,
 four-slot admission and eight-message ownership, subscriber lag, byte/count limits,
 privacy, cancellation before publication, active-capture retention, writer locks,
-no-clobber creation, writer-side file replacement and unsafe directories/files. Windows symlink privileges are
-required; Unix additionally rejects FIFO locks. Tests deliberately inspect files
-only for recorder verification, without promising an incident-query CLI yet.
+no-clobber creation, writer-side file replacement and unsafe directories/files.
+Windows symlink privileges are required; Unix additionally rejects FIFO locks.
+Query/export coverage also exercises current-run scoping, all retained runs after
+shutdown, deleted YAML, repaired targets without rewriting history, profile/custom
+state isolation, separate log attachments, no-clobber output, malformed/partial
+files, unsupported schemas, hard links, symlinks and oversized records. Reader
+unit tests cover schema/identity/order checks, privacy filtering, scan limits,
+replacement during reads, state/writer lease retention, cancellation and output
+backpressure. The end-to-end deletion walkthrough is in both READMEs.
 
 `instances.rs` runs natively on all three platforms: live identity, profiles,
 external state directories, restart identity/run separation, removed YAML,

@@ -53,7 +53,7 @@ struct HistoricalState {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct LogAttachment {
+pub(in crate::cli) struct LogAttachment {
     source: PathBuf,
     availability: String,
     run_attribution: String,
@@ -169,6 +169,7 @@ pub(super) fn capture(
         explanations,
         logs: None,
         log_tail_limit: None,
+        incident: None,
         stored: Some(Evidence {
             selection,
             begin_retained: run.begin_retained,
@@ -240,7 +241,7 @@ fn read_state(path: &Path, run: &str, control: &Control) -> Result<HistoricalSta
     Ok(evidence)
 }
 
-fn read_logs(path: &Path, control: &Control) -> Result<LogAttachment> {
+pub(super) fn read_logs(path: &Path, control: &Control) -> Result<LogAttachment> {
     let records = match std::fs::symlink_metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => None,
         Err(error) => return Err(error.into()),

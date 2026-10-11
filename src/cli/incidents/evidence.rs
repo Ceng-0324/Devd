@@ -10,7 +10,7 @@ use crate::{
     },
 };
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     path::Path,
@@ -18,8 +18,8 @@ use std::{
     time::Instant,
 };
 
-#[derive(Serialize)]
-pub(super) struct Begin {
+#[derive(Debug, Serialize, Deserialize)]
+pub(in crate::cli) struct Begin {
     pub schema_version: u16,
     pub id: String,
     pub identity: Identity,
@@ -32,8 +32,8 @@ pub(super) struct Begin {
     pub statistics: Statistics,
 }
 
-#[derive(Serialize)]
-pub(super) struct End {
+#[derive(Debug, Serialize, Deserialize)]
+pub(in crate::cli) struct End {
     pub id: String,
     pub reason: EndReason,
     pub observed_at: DateTime<Utc>,
@@ -44,41 +44,41 @@ pub(super) struct End {
     pub statistics: Option<Statistics>,
 }
 
-#[derive(Serialize)]
-pub(super) struct Configuration {
-    source: &'static str,
-    atomic: bool,
-    trigger_time_equivalence: &'static str,
-    services: Vec<Service>,
-    omitted_services: usize,
+#[derive(Debug, Serialize, Deserialize)]
+pub(in crate::cli) struct Configuration {
+    pub(in crate::cli) source: String,
+    pub(in crate::cli) atomic: bool,
+    pub(in crate::cli) trigger_time_equivalence: String,
+    pub(in crate::cli) services: Vec<Service>,
+    pub(in crate::cli) omitted_services: usize,
 }
 
-#[derive(Serialize)]
-struct Service {
-    name: String,
-    dependencies: Vec<crate::config::Dependency>,
-    omitted_dependencies: usize,
-    healthcheck_configured: bool,
-    monitor_requires: bool,
-    restart: RestartSettings,
-    restart_on_dep_recovery: bool,
-    limits: Option<Limits>,
-    requires_count: usize,
-    paths_count: usize,
+#[derive(Debug, Serialize, Deserialize)]
+pub(in crate::cli) struct Service {
+    pub(in crate::cli) name: String,
+    pub(in crate::cli) dependencies: Vec<crate::config::Dependency>,
+    pub(in crate::cli) omitted_dependencies: usize,
+    pub(in crate::cli) healthcheck_configured: bool,
+    pub(in crate::cli) monitor_requires: bool,
+    pub(in crate::cli) restart: RestartSettings,
+    pub(in crate::cli) restart_on_dep_recovery: bool,
+    pub(in crate::cli) limits: Option<Limits>,
+    pub(in crate::cli) requires_count: usize,
+    pub(in crate::cli) paths_count: usize,
 }
 
-#[derive(Serialize)]
-struct Limits {
-    cpu_percent: Option<u32>,
-    memory_bytes: Option<u64>,
-    on_exceed: crate::config::ResourceLimitAction,
+#[derive(Debug, Serialize, Deserialize)]
+pub(in crate::cli) struct Limits {
+    pub(in crate::cli) cpu_percent: Option<u32>,
+    pub(in crate::cli) memory_bytes: Option<u64>,
+    pub(in crate::cli) on_exceed: crate::config::ResourceLimitAction,
 }
 
-pub(super) fn configuration(config: &DevdConfig) -> Configuration {
+pub(in crate::cli) fn configuration(config: &DevdConfig) -> Configuration {
     let mut summary = Configuration {
-        source: "effective-runtime-config-observed-after-trigger",
+        source: "effective-runtime-config-observed-after-trigger".into(),
         atomic: false,
-        trigger_time_equivalence: "not-guaranteed",
+        trigger_time_equivalence: "not-guaranteed".into(),
         services: vec![],
         omitted_services: config.services.len(),
     };
@@ -135,29 +135,29 @@ pub(super) fn configuration(config: &DevdConfig) -> Configuration {
     summary
 }
 
-#[derive(Serialize)]
-pub(super) struct Resources {
+#[derive(Debug, Serialize, Deserialize)]
+pub(in crate::cli) struct Resources {
     pub id: String,
-    source: &'static str,
-    observed_from: DateTime<Utc>,
-    observed_to: DateTime<Utc>,
-    atomic: bool,
-    trigger_time_equivalence: &'static str,
+    pub(in crate::cli) source: String,
+    pub(in crate::cli) observed_from: DateTime<Utc>,
+    pub(in crate::cli) observed_to: DateTime<Utc>,
+    pub(in crate::cli) atomic: bool,
+    pub(in crate::cli) trigger_time_equivalence: String,
     pub observations: Vec<Resource>,
     pub omitted: usize,
     pub interrupted: bool,
     pub unavailable: usize,
 }
 
-#[derive(Serialize)]
-pub(super) struct Resource {
+#[derive(Debug, Serialize, Deserialize)]
+pub(in crate::cli) struct Resource {
     #[serde(flatten)]
-    target: Target,
-    requirement_type: Option<crate::config::PathRequirementType>,
-    declared_cleanup: Option<bool>,
+    pub(in crate::cli) target: Target,
+    pub(in crate::cli) requirement_type: Option<crate::config::PathRequirementType>,
+    pub(in crate::cli) declared_cleanup: Option<bool>,
 }
 
-pub(super) fn resources(
+pub(in crate::cli) fn resources(
     capture: &Begin,
     config: &DevdConfig,
     state: &Path,
@@ -167,11 +167,11 @@ pub(super) fn resources(
 ) -> Resources {
     let mut report = Resources {
         id: capture.id.clone(),
-        source: "fresh-post-trigger-metadata-and-link-inspection",
+        source: "fresh-post-trigger-metadata-and-link-inspection".into(),
         observed_from: Utc::now(),
         observed_to: Utc::now(),
         atomic: false,
-        trigger_time_equivalence: "not-guaranteed",
+        trigger_time_equivalence: "not-guaranteed".into(),
         observations: vec![],
         omitted: 0,
         interrupted: false,
@@ -249,7 +249,7 @@ pub(super) fn resources(
 
 #[derive(Serialize)]
 #[serde(tag = "record", content = "data", rename_all = "kebab-case")]
-pub(super) enum Record<'a> {
+pub(in crate::cli) enum Record<'a> {
     Begin {
         capture: &'a Begin,
         configuration: Configuration,
@@ -260,7 +260,7 @@ pub(super) enum Record<'a> {
     End(&'a End),
 }
 
-pub(super) const LIMITATIONS: [&str; 5] = [
+pub(in crate::cli) const LIMITATIONS: [&str; 5] = [
     "No application logs, full YAML, command/environment/dotenv contents or unreviewed error text.",
     "Paths and identifiers may be sensitive. No general-purpose redaction is promised.",
     "Prior/following events are historical context; temporal adjacency does not establish causation.",

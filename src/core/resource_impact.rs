@@ -5,7 +5,7 @@ use std::{
 };
 
 use anyhow::{bail, Context, Result};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     config::{DevdConfig, PathScope},
@@ -17,21 +17,21 @@ pub const MAX_EDGES: usize = 1024;
 pub const MAX_DECLARATIONS: usize = 256;
 pub const MAX_MATCHES: usize = 64;
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(tag = "field", rename_all = "kebab-case")]
 pub enum Field {
     Requires { index: usize },
     Paths { name: String },
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Selector {
     pub service: String,
     #[serde(flatten)]
     pub field: Field,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Target {
     pub selector: Selector,
     pub declared_path: PathBuf,
@@ -39,7 +39,7 @@ pub struct Target {
     /// A requires declaration has no ownership scope, even if its path aliases a binding.
     pub declared_scope: Option<PathScope>,
     pub inspection: resource_inspection::Inspection,
-    pub risk_hints: Vec<&'static str>,
+    pub risk_hints: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -148,7 +148,7 @@ pub fn select(config: &DevdConfig, state_dir: &Path, selector: Selector) -> Resu
         declared_scope,
         inspection,
         risk_hints: if risky {
-            vec!["temporary-location-is-not-deletion-authorization"]
+            vec!["temporary-location-is-not-deletion-authorization".into()]
         } else {
             vec![]
         },

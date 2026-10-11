@@ -106,6 +106,8 @@ pub(super) async fn start(
     .await
     .context("cannot register project instance")?;
     let mut incident_recorder = JoinSet::new();
+    let mut incident_reader = None;
+    let incident_readers = Arc::new(Semaphore::new(2));
     if record_incidents {
         let directory = identity.state_dir.clone();
         let lease = store.clone();
@@ -114,6 +116,7 @@ pub(super) async fn start(
                 .await
                 .context("incident setup task failed")?
                 .context("cannot open incident storage")?;
+        incident_reader = Some(storage.reader());
         // Subscribe before the manager can emit startup failures.
         let source = super::incidents::Source {
             identity: identity.clone(),
@@ -207,6 +210,8 @@ pub(super) async fn start(
                 let identity = identity.clone();
                 let readiness = readiness.clone();
                 let waiters = waiters.clone();
+                let incident_reader = incident_reader.clone();
+                let incident_readers = incident_readers.clone();
                 clients.spawn(async move {
                     // Reload can remove a service while its bounded diagnostic
                     // history remains useful. Control still requires a live name.
@@ -306,6 +311,9 @@ pub(super) async fn start(
                                     Err(error) => Response::Error(error),
                                 }
                             }
+                        }
+                        Ok(Request::Incidents { id }) => {
+                            return super::incidents::query::serve(&mut stream, incident_reader, id, identity, incident_readers.try_acquire_owned().ok(), shutdown.subscribe()).await;
                         }
                         Ok(Request::Export { include_logs }) => {
                             match super::export::capture(

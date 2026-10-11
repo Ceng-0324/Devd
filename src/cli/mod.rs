@@ -122,8 +122,10 @@ enum Command {
     },
     /// Query lifecycle history and explicit gaps, or follow a running stack.
     Events(events::Args),
-    /// Save bounded live diagnostic evidence to a new JSON file.
+    /// Save bounded live, retained-run or incident evidence to a new JSON file.
     Export(export::Args),
+    /// List or inspect bounded recorded incident evidence.
+    Incidents(incidents::query::Args),
     /// Explain the latest deterministic cause for one service.
     Explain(explain::Args),
     /// Inspect local service prerequisites without starting or executing them.
@@ -321,6 +323,16 @@ impl Cli {
                 .await?;
             }
             Command::Events(args) => events::run(args, &socket, &state_dir).await?,
+            Command::Incidents(args) => {
+                incidents::query::run(
+                    args,
+                    &socket,
+                    &config_path,
+                    &state_dir,
+                    self.profile.as_deref(),
+                )
+                .await?
+            }
             Command::Export(args) => {
                 export::run(
                     args,

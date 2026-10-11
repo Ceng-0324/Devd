@@ -15,7 +15,7 @@ use std::{
     path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::Instant,
 };
@@ -39,7 +39,8 @@ pub(crate) struct Storage {
     directory: Arc<Dir>,
     retained: VecDeque<String>,
     evicted: u64,
-    _lock: files::FileLock,
+    _lock: Arc<files::FileLock>,
+    gate: Arc<Mutex<()>>,
     // Never release the supervisor lease while blocking I/O still owns writes.
     _lease: Arc<StateStore>,
 }
@@ -53,6 +54,15 @@ struct Artifact {
 }
 
 impl Storage {
+    pub(in crate::cli) fn reader(&self) -> super::query::Reader {
+        super::query::Reader::live(
+            self.directory.clone(),
+            self.gate.clone(),
+            self._lock.clone(),
+            self._lease.clone(),
+        )
+    }
+
     pub(in crate::cli) fn open(state: &Path, lease: Arc<StateStore>) -> Result<Self> {
         let parent = Dir::open_ambient_dir(state, cap_std::ambient_authority())?;
         let builder = cap_std::fs::DirBuilder::new();
@@ -101,7 +111,8 @@ impl Storage {
             directory,
             retained: retained.into_iter().map(|(_, name)| name).collect(),
             evicted: 0,
-            _lock: lock,
+            _lock: Arc::new(lock),
+            gate: Arc::new(Mutex::new(())),
             _lease: lease,
         };
         storage.prune(KEEP, &BTreeMap::new())?;
@@ -132,7 +143,11 @@ impl Storage {
         cancelled: Arc<AtomicBool>,
     ) -> Result<()> {
         let mut active: BTreeMap<String, Artifact> = BTreeMap::new();
+        let gate = self.gate.clone();
         while let Some(work) = receive.blocking_recv() {
+            let _guard = gate
+                .lock()
+                .map_err(|_| anyhow::anyhow!("incident storage mutex poisoned"))?;
             match work {
                 Work::Begin {
                     capture,
@@ -185,6 +200,9 @@ impl Storage {
         }
         // Dropping the async collector closes its queue. Already accepted
         // beginnings may finish only as explicitly cancelled, never complete.
+        let _guard = gate
+            .lock()
+            .map_err(|_| anyhow::anyhow!("incident storage mutex poisoned"))?;
         for (id, mut artifact) in active {
             artifact.append(&Record::End(&End {
                 id,
@@ -240,7 +258,7 @@ impl Write for Limited {
     }
 }
 
-fn managed_name(name: &str) -> bool {
+pub(super) fn managed_name(name: &str) -> bool {
     name.strip_suffix(".jsonl")
         .is_some_and(|id| uuid::Uuid::parse_str(id).is_ok_and(|uuid| uuid.to_string() == id))
 }
@@ -276,7 +294,7 @@ fn options() -> OpenOptions {
     options
 }
 
-fn open_directory(parent: &Dir, name: &str) -> Result<Dir> {
+pub(super) fn open_directory(parent: &Dir, name: &str) -> Result<Dir> {
     let mut options = options();
     options.read(true);
     #[cfg(unix)]
@@ -294,7 +312,7 @@ fn open_directory(parent: &Dir, name: &str) -> Result<Dir> {
     Ok(Dir::from_std_file(file))
 }
 
-fn read_file(directory: &Dir, name: &str) -> Result<cap_std::fs::File> {
+pub(super) fn read_file(directory: &Dir, name: &str) -> Result<cap_std::fs::File> {
     check_metadata(&directory.symlink_metadata(name)?)?;
     let file = directory.open_with(name, options().read(true))?;
     check_metadata(&file.metadata()?)?;

@@ -396,9 +396,92 @@ counts as null; a killed supervisor cannot complete the tail retroactively.
 
 Artifacts omit application logs, full YAML, commands, environment/dotenv contents
 and free-text errors. Paths, link targets and identifiers can still be sensitive.
-This module writes evidence; incident listing/inspection/export commands follow
-in the next module. `export --stored` continues to read independently persisted
-event history, not these incident files.
+`export --stored --run` reads independently persisted event history; incident
+queries and `export --incident` read these incident files.
+
+### Find and export a recorded incident
+
+```bash
+devd incidents list --json
+devd incidents show INCIDENT_UUID
+devd export --incident INCIDENT_UUID --output incident.json
+
+# After stopping the supervisor; YAML may already be gone:
+devd incidents list --stored --json
+devd incidents show INCIDENT_UUID --stored --json
+devd export --stored --incident INCIDENT_UUID --output saved-incident.json
+```
+
+Online queries bind to the selected supervisor's instance and current run; they
+require incident recording in that run. Offline queries select the same
+config/profile/state directory and list all retained runs for that instance.
+Select one full UUID for show/export; `--incident` and `--run` are exclusive.
+Results sort by recorded observation time descending, then UUID. Neither mode
+rechecks today's target, reads current YAML or substitutes a newer service state.
+
+Query JSON is schema 1. Incident exports are schema 3, using the existing safe
+event/explanation model with an `incident` evidence section; ordinary live
+exports and Agent remain schema 1, retained-run exports remain schema 2. Incident
+reports have `source: stored` even when fetched online: top-level live identity
+and state stay empty. Historical identity, observed state/generation, configuration
+summary, resource chains, control outcomes and omissions live in their recorded
+sections. Explanations use only the trigger service's captured generation.
+Schema-1 artifacts do not retain a complete M2 impact view: declared impact is
+explicitly `unknown-not-recorded-by-schema-1`, never rebuilt from current config.
+
+A completed window, early ending, missing end, truncated/corrupt suffix and
+unsupported schema are distinct. A valid prefix remains inspectable if later
+records are incomplete; unsupported versions expose bounded diagnostics, not
+unvalidated content. `complete` describes coverage of the bounded recorded
+window, not a complete run, root-cause proof or a complete resource impact map.
+Retention eviction counts cover only the recorder that wrote them; a missing
+UUID may have been evicted, and absence is not proof that no incident occurred.
+
+`--include-logs` is a separate opt-in export attachment, capped at 200 entries.
+Online logs belong to the selected current run but are not the incident window;
+offline disk logs have unknown run attribution. Neither attachment participates
+in the incident explanation. Default reports omit logs, commands, environment
+values and free-text failures; paths and identifiers may still be sensitive.
+These reports are evidence, not restorable sessions or database backups.
+
+Readers preserve state/writer leases and reject links, reparse points, multiple
+hard links and special files. Live reads run on at most two blocking workers,
+serialized with recorder writes; stop/disconnect cancels the reader between OS
+calls. Offline reads require the supervisor to be stopped. Directory scans are
+limited to 256 entries, lists to 20 artifacts (2 MiB each), and output to 16 MiB.
+If more than 20 files exist, selection is by filename and the omission is explicit.
+File replacement detected during reading is reported instead of returning mixed
+evidence. Queries/preparation expire after 30 seconds; terminal output after five.
+Ctrl+C cancels reads/output, and exports share the existing cancellation and
+no-overwrite publication rules. One stalled OS call cannot be forcibly interrupted.
+
+To reproduce the original kind of failure on Linux/macOS with Python 3, use a
+new temporary directory. In terminal A:
+
+```bash
+incident_demo=$(mktemp -d)
+cd "$incident_demo"
+printf 'keep me\n' > target.txt
+ln -s target.txt resource
+cat > devd.yml <<'YAML'
+version: '1'
+services:
+  worker:
+    command: python3 -u -c 'import time; print("ready"); time.sleep(600)'
+    restart: {policy: never}
+    requires: [{type: file, path: resource}]
+    monitor-requires: true
+YAML
+pwd  # Use this directory in terminal B.
+devd start --record-incidents
+```
+
+In terminal B, `cd` to that printed directory, run `devd wait --timeout 30s`, then
+`rm ./target.txt`. After the monitoring event, `devd incidents list` shows the UUID;
+`devd incidents show UUID` shows the captured dangling-link chain. The window
+closes after five seconds unless stop/reload/replacement ends it earlier.
+Run `devd stop`, then use the `--stored` commands above. Restoring `target.txt`
+later does not rewrite the saved observation.
 
 ### Explicit instance ports and paths (v0.7)
 
@@ -688,6 +771,8 @@ Choose exactly one of `--dry-run` or `--apply`. Preview validates YAML, quoting,
 | `devd status [--json]` | Show live state, PIDs, CPU / RSS, restart counts, and diagnostics |
 | `devd identity [--json]` | Show the selected live supervisor's instance and run identity (v0.7) |
 | `devd instances [--json]` | Discover registered instances in the current repository and its worktrees (v0.7) |
+| `devd incidents list/show [UUID] [--stored] [--json]` | Query recorded incidents in the current run or offline |
+| `devd export --incident UUID [--stored] --output FILE [--include-logs]` | Export one recorded incident (v0.8) |
 | `devd export --output FILE [--include-logs]` | Save bounded live diagnostics to a new JSON file |
 | `devd export --stored --run UUID/latest --output FILE [--include-logs]` | Export one retained run after shutdown (v0.8) |
 | `devd clean --dry-run [--json]` | Preview registered, explicitly disposable directories after successful shutdown |

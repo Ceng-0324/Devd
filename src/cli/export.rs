@@ -1,5 +1,6 @@
 //! Bounded diagnostic reports from live or explicitly selected retained sources.
-mod output;
+mod incident;
+pub(super) mod output;
 mod stored;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -43,11 +44,14 @@ pub(super) struct Args {
     #[arg(long)]
     include_logs: bool,
     /// Read retained evidence without connecting to a supervisor.
-    #[arg(long, requires = "run")]
+    #[arg(long)]
     stored: bool,
     /// Retained run UUID or latest in file order (requires --stored).
-    #[arg(long, requires = "stored", value_parser = stored::parse_run)]
+    #[arg(long, requires = "stored", conflicts_with = "incident", value_parser = stored::parse_run)]
     run: Option<String>,
+    /// Export one recorded incident UUID (current run unless --stored).
+    #[arg(long, value_parser = super::incidents::query::parse_id)]
+    incident: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -58,6 +62,8 @@ pub(super) struct Report {
     source: crate::core::events::query::EventSource,
     #[serde(skip_serializing_if = "Option::is_none")]
     stored: Option<stored::Evidence>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    incident: Option<incident::Evidence>,
     captured_from: DateTime<Utc>,
     captured_to: DateTime<Utc>,
     /// A stable bracket is an observation, not a cross-source atomic snapshot.
@@ -169,6 +175,7 @@ pub(super) fn capture(
         identity: Some(identity),
         source: live_source(),
         stored: None,
+        incident: None,
         captured_from,
         captured_to,
         stable_during_capture,
@@ -220,6 +227,9 @@ pub(super) async fn run(
     state: &Path,
     profile: Option<&str>,
 ) -> Result<()> {
+    if args.stored && args.run.is_none() && args.incident.is_none() {
+        bail!("--stored requires --run or --incident");
+    }
     let mut signals = crate::platform::shutdown::Shutdown::new(false)?;
     let control = Control::new();
     let _cancel_on_drop = CancelOnDrop(control.clone());
@@ -234,7 +244,17 @@ pub(super) async fn run(
     let work_control = control.clone();
     let output = args.output.clone();
     let work = async {
-        let report = if args.stored {
+        let report = if let Some(id) = args.incident {
+            incident::capture(
+                id,
+                args.stored,
+                args.include_logs,
+                socket,
+                selected,
+                &work_control,
+            )
+            .await?
+        } else if args.stored {
             let control = work_control.clone();
             tokio::task::spawn_blocking(move || {
                 stored::capture(selected, args.include_logs, &control)
