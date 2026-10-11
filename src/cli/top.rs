@@ -823,8 +823,11 @@ mod tests {
                 options,
                 socket.clone(),
                 LogFormatter::default(),
-                None,
-                None,
+                crate::cli::server::Recording {
+                    logs: None,
+                    events: None,
+                    incidents: false,
+                },
                 config_path.clone(),
             ));
             let identity = time::timeout(Duration::from_secs(15), async {

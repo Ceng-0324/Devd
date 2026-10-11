@@ -2,6 +2,14 @@
 
 ## Unreleased — v0.8.0-alpha.1
 
+- Add independent opt-in incident capture with `start --record-incidents`.
+  Correlate service/generation triggers in bounded five-second windows, preserve
+  allowlisted context and fresh path observations separately, and record early
+  endings and coverage loss. A single worker manages up to four pending captures
+  and twenty non-overwriting 2 MiB artifacts with independent locking and safe
+  retention. Runtime recording failure disables the recorder while services
+  continue; killed or cancelled captures never masquerade as complete evidence.
+
 - Keep event-follow signal subscriptions alive across receive/output transitions
   so an interrupt cannot fall into a listener registration gap.
 - Add `export --stored --run UUID|latest` for one retained run after shutdown,

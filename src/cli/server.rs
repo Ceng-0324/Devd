@@ -17,15 +17,25 @@ use tokio::{
     task::JoinSet,
 };
 
+pub(super) struct Recording {
+    pub logs: Option<StorageOptions>,
+    pub events: Option<StorageOptions>,
+    pub incidents: bool,
+}
+
 pub(super) async fn start(
     manager: ServiceManager,
     options: ManagerOptions,
     socket: PathBuf,
     formatter: LogFormatter,
-    storage_options: Option<StorageOptions>,
-    event_options: Option<StorageOptions>,
+    recording: Recording,
     config_path: PathBuf,
 ) -> Result<()> {
+    let Recording {
+        logs: storage_options,
+        events: event_options,
+        incidents: record_incidents,
+    } = recording;
     let mut signals = crate::platform::shutdown::Shutdown::new(false)?;
     // The state lock covers bind, the entire run, and socket cleanup.
     let store = Arc::new(
@@ -95,6 +105,24 @@ pub(super) async fn start(
     )
     .await
     .context("cannot register project instance")?;
+    let mut incident_recorder = JoinSet::new();
+    if record_incidents {
+        let directory = identity.state_dir.clone();
+        let lease = store.clone();
+        let storage =
+            tokio::task::spawn_blocking(move || super::incidents::Storage::open(&directory, lease))
+                .await
+                .context("incident setup task failed")?
+                .context("cannot open incident storage")?;
+        // Subscribe before the manager can emit startup failures.
+        let source = super::incidents::Source {
+            identity: identity.clone(),
+            events: manager.subscribe_events(),
+            snapshots: snapshots.clone(),
+            configurations: configurations.clone(),
+        };
+        incident_recorder.spawn(super::incidents::run(storage, source));
+    }
     let (shutdown, mut stopping) = watch::channel(false);
     let mut run = Box::pin(manager.run_with_store(
         async move {
@@ -136,6 +164,10 @@ pub(super) async fn start(
             biased;
             result = &mut run => break result,
             _ = signals.recv() => { shutdown.send_replace(true); },
+            Some(result) = incident_recorder.join_next() => {
+                let message = incident_result(result);
+                if let Some(message) = message { diagnostics.spawn(report_event_failure(message)); }
+            },
             Some(result) = event_writer.join_next() => {
                 if let Err(error) = result.context("disk event writer task failed").and_then(|r| r.context("cannot write persistent events")) {
                     event_status.send_replace(PersistenceState::Failed);
@@ -373,6 +405,11 @@ pub(super) async fn start(
         }
     };
     drop(run);
+    if let Some(result) = incident_recorder.join_next().await {
+        if let Some(message) = incident_result(result) {
+            diagnostics.spawn(report_event_failure(message));
+        }
+    }
     if let Some(result) = event_writer.join_next().await {
         if let Err(error) = result
             .context("disk event writer task failed")
@@ -421,6 +458,15 @@ pub(super) async fn start(
     }
     result?;
     Ok(())
+}
+
+fn incident_result(
+    result: Result<Result<super::incidents::Statistics>, tokio::task::JoinError>,
+) -> Option<String> {
+    match result.context("incident collector task failed").and_then(|r| r) {
+        Ok(statistics) => statistics.notice(),
+        Err(error) => Some(format!("{error:#}; incident recording disabled for this run; captures may be incomplete; services continue\n")),
+    }
 }
 
 async fn report_event_failure(message: String) {

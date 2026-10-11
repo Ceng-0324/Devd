@@ -188,9 +188,13 @@ pub(super) fn capture(
 
 fn sanitize_events(events: &mut EventBatch) {
     for event in &mut events.entries {
-        if let EventData::ReloadFinished { failure, .. } = &mut event.data {
-            *failure = None;
-        }
+        sanitize_event(event);
+    }
+}
+
+pub(super) fn sanitize_event(event: &mut crate::core::events::LifecycleEvent) {
+    if let EventData::ReloadFinished { failure, .. } = &mut event.data {
+        *failure = None;
     }
 }
 

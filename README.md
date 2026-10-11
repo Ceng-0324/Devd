@@ -337,6 +337,69 @@ does not remove an already saved report. Checks run between filesystem calls, so
 an individual stalled OS call cannot be forcibly interrupted. The saved-file
 confirmation has its own five-second output deadline.
 
+### Keep bounded incident evidence (v0.8)
+
+When the failure is intermittent, enable recording before reproducing it:
+
+```bash
+devd start --record-incidents
+```
+
+This opt-in is independent of event/log persistence, path monitoring, restart and
+cleanup permissions. It records nonzero or signal exits not preceded by an
+observed stop, spawn/process/actor failures, failed service states, unhealthy
+transitions, dependency failures/timeouts, resource-limit violations and failed
+path-condition transitions. Successful exits and manual controls alone do not
+trigger a capture. File failures are observed at startup or by an explicitly
+configured `monitor-requires`; this flag does not enable monitoring by itself.
+
+Triggers for the same service and generation merge into a five-second follow-up
+window starting when the collector receives the first trigger. The deadline is
+not extended by repeated failures. Each capture retains up to 200 prior and 200
+following events, with a separate 256 KiB budget for each tail. At most four
+captures may be collecting, queued or writing. Saturation drops new triggers;
+subscriber gaps, dropped triggers, merged triggers and omitted context are
+counted. Coverage loss is also reported on stderr when the collector finishes.
+Stop, reload and generation replacement end existing windows early with their
+reason; a later failure may start its own capture. Control events and outcomes
+are included only if observed within the window, never inferred from a request.
+
+Files live in the selected instance/profile's `incidents/` directory. Schema 1
+JSONL records contain a durable `begin`, a `resources` observation and an `end`.
+The beginning preserves instance/run identity, trigger generation, prior events,
+allowlisted state and an effective-runtime configuration summary observed after
+the trigger. That state/configuration may already belong to a later generation
+or reload: observation time and generation are explicit, and trigger-time
+equivalence is not guaranteed. Fresh post-trigger inspections reuse the bounded
+path/link resolver for at most eight declarations of the triggering service;
+they never substitute for the historical path-condition event or prove causation.
+Configuration summaries cap at 256 services, 64 dependencies per service and
+128 KiB. Missing services, skipped declarations and interrupted inspections remain
+explicit. No filesystem snapshot or restorable session is promised.
+
+Each artifact is limited to 2 MiB, and at most 20 are retained, including partial
+files. Existing artifacts are ordered by modification time/name at startup;
+new artifacts follow admission order, and active captures are protected from
+eviction. Eviction counts are recorded for the current recorder. Only UUID-named
+incident files are managed; other files, logs, events and snapshots are preserved.
+The directory has a separate writer lock, files are created without overwriting,
+and links, reparse points, special files and multiple hard links are rejected.
+
+One bounded subscriber and one blocking worker keep disk I/O off the supervisor
+control loop and application output drain. Path checks stop between OS calls at
+the deadline or an early ending. Shutdown drains accepted writes before releasing
+the state lease; a single stalled filesystem call cannot be forcibly interrupted.
+Setup failure starts no services. **A runtime recorder failure disables recording
+for this run, reports on stderr, and leaves services running.** Missing `end` or
+unfinished JSONL means incomplete evidence. Cancellation reports unavailable
+counts as null; a killed supervisor cannot complete the tail retroactively.
+
+Artifacts omit application logs, full YAML, commands, environment/dotenv contents
+and free-text errors. Paths, link targets and identifiers can still be sensitive.
+This module writes evidence; incident listing/inspection/export commands follow
+in the next module. `export --stored` continues to read independently persisted
+event history, not these incident files.
+
 ### Explicit instance ports and paths (v0.7)
 
 Two worktrees should not silently fight over the same API port or write into the
@@ -618,7 +681,7 @@ Choose exactly one of `--dry-run` or `--apply`. Preview validates YAML, quoting,
 
 | Command | Purpose |
 | --- | --- |
-| `devd start [--persist-logs] [--persist-events]` | Start the stack in the foreground, optionally retaining logs and lifecycle events with separate size/retention options |
+| `devd start [--persist-logs] [--persist-events] [--record-incidents]` | Start the stack; independently opt into logs, events and bounded incident capture |
 | `devd stop` | Request ordered shutdown; the foreground process exits after cleanup |
 | `devd restart <service>` | Restart one service using the current effective configuration, rechecking dependencies |
 | `devd reload --dry-run / --apply --plan ID [--candidate PATH] [--json]` | Preview or explicitly apply affected service changes (v0.6) |

@@ -72,6 +72,17 @@ no platform shell or external probe server is needed. In-memory protocol tests
 cover coalesced reload barriers, pending restarts, EOF and run-ID mismatch,
 deadline expiry, terminal states, and prompt permit release after disconnect.
 
+`incidents.rs` exercises explicit opt-in, unchanged service PIDs after target
+deletion, captured dangling-link chains, normal stop/manual restart exclusions,
+five-second windows, reload/stop endings, repeated failed generations, retention,
+abrupt supervisor death and runtime writer failure without stopping services.
+The ignored worker is launched as a real subprocess. Unit tests cover correlation,
+four-slot admission and eight-message ownership, subscriber lag, byte/count limits,
+privacy, cancellation before publication, active-capture retention, writer locks,
+no-clobber creation, writer-side file replacement and unsafe directories/files. Windows symlink privileges are
+required; Unix additionally rejects FIFO locks. Tests deliberately inspect files
+only for recorder verification, without promising an incident-query CLI yet.
+
 `instances.rs` runs natively on all three platforms: live identity, profiles,
 external state directories, restart identity/run separation, removed YAML,
 linked/detached worktrees, nested configurations, branch-at-start provenance,

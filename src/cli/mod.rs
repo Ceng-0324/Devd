@@ -6,6 +6,7 @@ mod explain;
 mod export;
 mod graph;
 mod impact;
+mod incidents;
 mod instances;
 mod protocol;
 mod reload;
@@ -82,6 +83,9 @@ enum Command {
         /// Persist lifecycle events separately from application logs.
         #[arg(long)]
         persist_events: bool,
+        /// Capture bounded incident evidence; independent of logs and recovery.
+        #[arg(long)]
+        record_incidents: bool,
         /// Maximum event file size in MiB (1–1024).
         #[arg(long, requires = "persist_events", value_parser = clap::value_parser!(u16).range(1..=1024))]
         event_max_size: Option<u16>,
@@ -288,6 +292,7 @@ impl Cli {
                 log_max_size,
                 log_keep,
                 persist_events,
+                record_incidents,
                 event_max_size,
                 event_keep,
             } => {
@@ -306,8 +311,11 @@ impl Cli {
                     options,
                     socket,
                     formatter,
-                    storage,
-                    event_storage,
+                    server::Recording {
+                        logs: storage,
+                        events: event_storage,
+                        incidents: record_incidents,
+                    },
                     config_path,
                 )
                 .await?;
