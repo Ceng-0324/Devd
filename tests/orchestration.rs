@@ -514,27 +514,43 @@ async fn test_dependency_recovery_coalesces_replacements_while_waiting_for_other
     child
         .depends_on
         .push(dependency("gate", DependencyCondition::HttpReady));
-    child.restart.initial_delay = Duration::from_millis(250);
+    // Hold the first child in its TERM handler until gate is observed unready.
+    // A short backoff or watch's transient Restarting state is not a barrier:
+    // CI can miss that state and allow the next generation to start too early.
+    child.command = service(
+        "trap 'echo recovery-stop; while [ ! -f \"$DEVD_TEST_DIR/release\" ]; do sleep 0.01; done; exit 0' TERM; echo ready; while :; do sleep 60 & wait || :; done",
+        directory.path(),
+    )
+    .command;
+    let mut settings = options(&directory);
+    settings.grace_period = Duration::from_secs(5);
+    settings.dependency_timeout = Duration::from_secs(5);
     let manager = ServiceManager::new(
         config([
             ("root", sleeper(directory.path())),
             ("gate", gate),
             ("child", child),
         ]),
-        options(&directory),
+        settings,
     )
     .unwrap();
     let controller = manager.controller();
     let mut run = RunningManager::start(manager);
-    run.until(|s| s.services["child"].pid.is_some()).await;
+    bounded(async { while run.output.recv().await.unwrap().message != "ready" {} }).await;
+    let initial = run.until(|s| s.services["child"].pid.is_some()).await;
     bounded(controller.restart("root".into())).await.unwrap();
-    run.until(|s| {
-        s.services["child"].status == ServiceState::Restarting && s.services["child"].pid.is_none()
-    })
-    .await;
+    bounded(async { while run.output.recv().await.unwrap().message != "recovery-stop" {} }).await;
     server.status.store(503, Ordering::SeqCst);
     run.until(|s| s.services["gate"].consecutive_failures >= 3)
         .await;
+    tokio::fs::write(directory.path().join("release"), "")
+        .await
+        .unwrap();
+    run.until(|s| {
+        s.services["child"].event_generation != initial.services["child"].event_generation
+            && s.services["child"].pid.is_none()
+    })
+    .await;
     bounded(controller.restart("root".into())).await.unwrap();
     bounded(controller.restart("gate".into())).await.unwrap();
     run.until(|s| s.services["gate"].consecutive_failures >= 3)
@@ -547,6 +563,25 @@ async fn test_dependency_recovery_coalesces_replacements_while_waiting_for_other
     let final_state = run.shutdown().await.unwrap();
     assert_eq!(final_state.services["child"].restart_count, 1);
     assert_eq!(final_state.services["root"].restart_count, 2);
+    assert_eq!(final_state.services["gate"].restart_count, 1);
+    assert_eq!(
+        run.events
+            .snapshot()
+            .entries
+            .iter()
+            .filter(|event| {
+                event.service.as_deref() == Some("child")
+                    && matches!(
+                        event.data,
+                        EventData::RestartTriggered {
+                            reason: RestartCause::DependencyRecovery { .. },
+                            ..
+                        }
+                    )
+            })
+            .count(),
+        1
+    );
 }
 
 #[tokio::test]
