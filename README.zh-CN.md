@@ -283,7 +283,7 @@ stdin 每行一个 UTF-8 JSON 对象，stdout 只输出 JSON 回复；启动或 
 | `restart` | `target`、`service`；沿用重启及依赖联动语义 | `restart` |
 | `stop` | `target`；回复只表示正在停止，不表示收尾完成 | `stop` |
 | `reload-apply` | `target`、`plan_id`、可选 `candidate`，须与预览一致 | `reload` |
-| `clean-apply` | `target`、`plan_id`，保留 M6 全部归属检查 | `clean` |
+| `clean-apply` | `target`、`plan_id`，保留全部目录归属检查 | `clean` |
 
 从 `describe` 或 `identity` 取得身份，每个控制请求都带两个标识。接口在 I/O 前检查授权，supervisor 在实际操作前再次核对作用域；离线清理在状态锁内核对运行。
 
@@ -556,7 +556,7 @@ services:
 
 同一指标连续 3 次有效采样超限才触发，大约每秒采样一次。恢复到阈值内或缺样会重置该指标的计数；CPU 预热只重置 CPU 计数。触发决定保留到当前进程代次结束。devd 停止进程组、排空日志，沿用现有退避并重新检查依赖后再启动。超限、崩溃、健康检查和依赖恢复重启共用累计预算；耗尽后服务失败并清理全栈。停止可以打断退避，手动重启可以接管等待，动作原因会写入日志和失败诊断。`on-exceed: restart` 与 `restart.policy: never` 冲突，启动前直接报错。profile 整体替换 `limits`，替换时省略 `on-exceed` 会回到 `warn`，`limits: null` 清除阈值。配置修改在下次启动 supervisor 或显式选择性重载时生效，不需要 root 权限或运行中弹窗确认。
 
-当前范围是本地进程管理。`init` 可生成初始配置；项目扫描、交互式模板和文件监听自动重载仍在后续规划里；v0.6 提供手动选择性重载。
+当前范围是本地进程管理。`init` 可生成初始配置，尚未实现项目扫描和交互式模板。文件前置条件可以按上文显式监测；配置文件监听和自动重载尚未实现，配置变化通过显式选择性重载应用。
 
 配置会拒绝未知字段和无效的 `limits`。YAML 值按字面使用，尚未实现 `${VAR}` 替换。`backoff: exponential` 从 `initial-delay` 开始，随累计重启次数翻倍，到 `max-delay` 封顶（默认 60s，不能小于初始延时）；健康检查成功不会重置计数。fixed 不使用 `max-delay`；两种等待均可被停止操作中断。
 

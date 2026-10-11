@@ -46,10 +46,7 @@ These are observations on your machine, not performance guarantees; `ps` CPU
 averaging differs by platform. Use `--duration 1800` for a longer local soak.
 The API is deliberately a local demo with no authentication or persistent data.
 
-On macOS arm64, the release build from the pre-release v0.1 checkout completed
-the 60-second run with three manual restarts, one killed API, and one induced
-health failure. Startup took 1.226 seconds; 59 `ps` samples reported a maximum
-supervisor RSS of 9312 KiB and a maximum CPU reading of 0.5%. The test also
-observed resumed job processing and no remaining service PIDs after shutdown.
-This single-machine sample does not establish longer-run or cross-platform
-performance; the CI smoke test checks behavior separately on Linux, macOS, and Windows.
+CI runs the short recovery scenario on Linux, macOS, and Windows. Release
+validation repeats it with each platform's extracted archive binary; results
+belong to that source revision and workflow run. Run the command above to
+measure this checkout on your machine.

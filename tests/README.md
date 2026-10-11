@@ -1,6 +1,9 @@
 # Validation
 
-Run from the repository root on Linux or macOS with Rust 1.95 or newer and `/bin/sh`. No Docker, Python, database, external endpoint, or fixed free port is required.
+Run from the repository root with Rust 1.95 or newer and Git on PATH.
+Linux/macOS integration tests also require `/bin/sh`; Windows requirements are
+listed below. The Rust suite needs no Docker, Python, database, external endpoint,
+or fixed free port. Python release checks require Python 3.11 or newer.
 
 ```bash
 cargo fmt --all -- --check
@@ -23,9 +26,9 @@ storage tests also cover native rotation and hard-link rejection; Windows unit
 tests cover reserved filenames and profile directory identities. Its ignored
 fixture is invoked by the parent tests.
 Windows path tests require symlink privileges and `icacls.exe`; denied setup
-fails validation rather than silently skipping coverage. The Python release
-checks require Python 3.11 or newer; the Rust suite itself does not need Python.
-Run the complete Unix MVP scenario suite separately with:
+fails validation rather than silently skipping coverage. On Windows, use your
+Python 3.11+ executable (commonly `python`) for the Python command above.
+Run the Unix service lifecycle scenario suite separately with:
 
 ```bash
 cargo test --locked --test integration
@@ -132,7 +135,7 @@ file locks, permissions, symlink/hard-link rejection, and explicit lag diagnosti
 
 ## Fixture ownership and determinism
 
-- Each scenario copies YAML and `workload.sh` into its own short temporary directory. The workload records start/stop events and publishes each generation's leader and descendant PIDs atomically. `crash-<service>` files inject a one-shot failure.
+- The Unix lifecycle scenarios in `integration.rs` copy YAML and `workload.sh` into their own short temporary directories. The workload records start/stop events and publishes each generation's leader and descendant PIDs atomically. `crash-<service>` files inject a one-shot failure. Other suites use their own native child fixtures and shared support.
 - The test-owned HTTP mock binds `127.0.0.1:0` once and holds the listener throughout the test. Tests insert its assigned URL through structured YAML before invoking the CLI. These endpoints simulate readiness/faults; the supervised shell workloads create the real process trees. The placeholder port in `dependency-chain.yml` is only for static validation, not a standalone healthy service.
 - Readiness gates and observed probe counts control sequencing. Short polling intervals yield CPU; tests do not assume a service becomes ready after a fixed sleep.
 - CLI commands have a 15-second deadline and capture output to temporary files to avoid pipe deadlocks. Scenario predicates have a 12-second deadline and report the last snapshot plus supervisor output when they fail. Supervisor guards send SIGTERM during unwinding, wait up to 8 seconds, then kill and reap if necessary. The HTTP mock shuts down and joins its thread on drop.
@@ -202,7 +205,14 @@ profile/custom-state attachment, restart/reload/stop, offline cleanup and stale
 plans, malformed/oversized requests, and EOF without service shutdown. Endpoint
 replacement is exercised with both a new run and a different configuration at
 the same state path. Unix additionally sends SIGTERM while stdin is idle.
-Unit tests reject unknown fields, duplicate IDs and privilege injection, verify
-per-operation grants before any I/O, and bound stalled output. The ignored worker
-is a subprocess fixture. Existing readiness, reload and cleanup suites remain
+Unit tests reject unknown fields, duplicate JSON fields (including `id`) and
+privilege injection, verify per-operation grants before any I/O, and bound stalled
+output. Reusing an ID across requests does not deduplicate controls. The ignored
+worker is a subprocess fixture. Existing readiness, reload and cleanup suites remain
 the source of their lifecycle/partial-progress semantics.
+
+The linked-worktree scenario starts two concurrent TCP-ready instances with
+profiles and custom state directories. It verifies discovery, mapped environments,
+Agent restart/reload/export, cross-instance control rejection, and stop/cleanup
+without changing the other instance's PID, generation or shared data. An old
+Agent session must reject a replacement run at the same endpoint.
