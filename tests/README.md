@@ -81,6 +81,18 @@ debouncing, atomic replacement, cyclic links, permissions, generation changes,
 and monitor cancellation. Native Windows tests check symlinks and ACL changes,
 and verify monitor retirement after restart and stop.
 
+`resource_inspection.rs` runs doctor on Linux/macOS/Windows against intermediate
+directory links, relative and dangling targets, cycles, selected profiles, custom
+state paths, structured requirement failures and bounded report coverage. Core
+resource inspection tests cover repeated noncyclic links, node/link/path/escaped
+JSON limits, deterministic replacement between inspection and recheck, and Unix
+permissions, special files and non-UTF-8 targets. Windows parent-segment resolution
+is explicitly unsupported rather than assigned Unix semantics. Symlink privileges
+(Developer Mode or equivalent on Windows) and non-root Unix permission tests are
+required, not silently skipped. Doctor output tests exercise timeout and
+cancellation under backpressure; existing native Windows evaluator tests cover ACL
+loss/recovery independently of metadata-only observations.
+
 `reload.rs` and the core reload tests cover invalid candidates, stale plans,
 selective stop/start order, unchanged processes, partial failure, competing
 reload/restart requests, and whole-stack stop before and after configuration

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased — v0.8.0-alpha.1
+
+- Extend `doctor` with read-only resolution chains for declared requirements and
+  runtime path mappings, including intermediate symlinks, observed failure nodes,
+  effective configuration provenance and structured prerequisite results.
+  Bound traversal and report size, expose omissions and detected changes, and
+  preserve existing readiness, restart and cleanup permissions. Reports are
+  non-atomic observations; Windows parent-segment paths and unsupported reparse
+  behavior remain explicit unknowns. Doctor output is cancellable with a separate
+  five-second write deadline.
+
 ## v0.7.0-alpha.1 — 2026-10-11
 
 Prerelease for local development on Linux, macOS and Windows. Adds worktree-aware

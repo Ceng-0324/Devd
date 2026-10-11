@@ -501,6 +501,12 @@ devd doctor
 devd doctor --profile staging --json
 ```
 
+doctor 还会展示显式 `requires` 与 `paths` 的解析链：中间目录链接、相对目标和可观测的失败节点。JSON 新增 schema 1 的 `resources`，包含 `entries`、`captured_from/to`、`complete`、`omitted` 和 `limits`。每项标注服务、有效声明（requires 索引/类型，或 paths 名称/scope）、声明路径、有效 cwd、请求路径和解析观察；结合报告的 `config`、`profile` 与资源 `state_dir` 定位来源。这是合并后字段的来源，不提供 YAML 行号，也不把选中 profile 等同于该字段被覆盖。requires 项另有原检查器的 `condition.satisfied/failure`，与解析链分别呈现。
+
+`inspection.nodes` 包含路径、类型与链接目标，`resolved` 表示解析终点，`failure` 与 `failed_node` 标注失败和从零开始的节点索引，位置不可用时为 null。解析只读取元数据与链接目标，不读文件正文。`atomic` 始终为 false；`change_detected` 表示复查发现变化，false 也不能排除竞争。缺失、悬空、类型错误、拒绝访问和循环分别报告。不支持的 reparse 行为、Windows 含父目录段的路径、非 UTF-8 路径或容量耗尽会标为不完整。`display_paths_lossy` 标出经过替换显示的路径，不能拿它作为精确标识。Windows 支持普通软链接，不假定其他 reparse 类型也有相同语义。
+
+资源视图最多 128 项，每项最多 128 个观测节点、跟随 40 个链接；单路径上限 4096 字节，每条链的紧凑节点 JSON 上限 64 KiB，全部条目的紧凑 JSON 上限 1 MiB，排版和原有检查输出另计。省略条目或观察到变化会令 `resources.complete: false`；覆盖完整不表示所有资源都存在。这些限额约束遍历工作量，不保证阻塞文件系统上单次 OS 调用的耗时。原有前置检查仍会执行，`ready` 语义不变：普通路径映射缺失不会额外阻止启动，doctor 也不会创建 `cleanup: true` 目录。输出另有 5 秒写入/flush 期限，Ctrl+C 可取消输出；被中断的报告可能不完整。路径和链接目标本身仍可能包含敏感信息。
+
 **日志默认保存在内存里。** 保留全栈最近 1000 条，单行最多 16 KiB；没有开启持久化时，停止后无法再查询。`logs --follow` 先输出指定条数的历史日志，再持续接收新日志，按 Ctrl+C 或 supervisor 停止时退出；跟随者落后过多会报错退出。最多同时连接 16 个跟随者，为控制命令保留连接槽位。前台输出过慢时会丢弃部分实时条目并告警；前台输出管道断开会触发服务清理。
 
 **需要留案底，就显式写盘。** 用 `devd start --persist-logs` 启动，退出后用 `devd logs --stored` 查询：

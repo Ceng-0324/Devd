@@ -70,6 +70,17 @@ fn is_false(value: &bool) -> bool {
     !value
 }
 
+impl RuntimePath {
+    /// Resolve exactly as the environment binding supplied to the service.
+    pub(crate) fn resolve(&self, cwd: Option<&Path>, state_dir: &Path) -> std::io::Result<PathBuf> {
+        let path = match self.scope {
+            PathScope::Shared => cwd.unwrap_or(Path::new(".")).join(&self.path),
+            PathScope::Instance => state_dir.join("runtime").join(&self.path),
+        };
+        std::path::absolute(path)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum PathScope {
@@ -97,15 +108,7 @@ impl DevdConfig {
                 service.env.insert(key.clone(), address.to_string());
             }
             for (key, binding) in &source.paths {
-                let path = match binding.scope {
-                    PathScope::Shared => source
-                        .cwd
-                        .as_deref()
-                        .unwrap_or(Path::new("."))
-                        .join(&binding.path),
-                    PathScope::Instance => state_dir.join("runtime").join(&binding.path),
-                };
-                let path = std::path::absolute(path)?;
+                let path = binding.resolve(source.cwd.as_deref(), state_dir)?;
                 let value = path.into_os_string().into_string().map_err(|_| {
                     std::io::Error::new(
                         std::io::ErrorKind::InvalidData,

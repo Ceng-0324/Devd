@@ -662,6 +662,38 @@ devd doctor
 devd doctor --profile staging --json
 ```
 
+Doctor also shows how declared `requires` and `paths` resolve, including intermediate
+directory links, relative targets and the observed failing node. JSON adds a
+`resources` section (schema 1): `entries`, `captured_from/to`, `complete`, `omitted`
+and `limits`. Each entry identifies the service, effective declaration (`requires`
+index/type or `paths` name/scope), declared path, effective cwd, requested path and
+inspection. The report's `config`, `profile` and resource `state_dir` locate the
+selected configuration; this is effective-field provenance, not YAML line numbers
+or a claim that a field was overridden by the profile. Requirement entries include
+the existing evaluator's `condition.satisfied/failure` independently of the chain.
+
+An inspection contains `nodes` with path/type/link target, `resolved`, `failure`
+and `failed_node` (a zero-based node index, or null if unavailable). It reads metadata
+and link targets, not file contents. `atomic` is always false; `change_detected`
+records changes found during rechecks, and false cannot rule out races. Missing,
+dangling, wrong-type, access-denied and cyclic paths are distinct. Unsupported
+reparse behavior, Windows parent-segment paths, non-UTF-8 paths and exhausted limits
+produce incomplete observations. `display_paths_lossy` flags substituted display
+paths; they must not be used as exact identifiers. Windows supports ordinary
+symbolic links; other reparse types are not assumed to resolve like them.
+
+Coverage is capped at 128 resources, 128 observed nodes and 40 followed links per
+resource, 4096 bytes per path, 64 KiB of compact node JSON per chain and 1 MiB of
+compact entry JSON overall. Formatting and existing doctor checks are additional.
+Omitted entries and detected changes set `resources.complete: false`; complete
+coverage does not mean every resource exists. These limits bound traversal work,
+not the duration of an individual OS call on a stalled filesystem. Existing
+prerequisite checks still run, and `ready` keeps its original meaning: absent
+ordinary path mappings do not become launch blockers. Doctor never creates even
+`cleanup: true` directories. Output has a separate five-second write/flush deadline
+and can be cancelled with Ctrl+C; interrupted output may be incomplete. Paths and
+link targets may contain sensitive information.
+
 **Logs stay in memory by default.** devd retains the latest 1000 entries across the stack, with a 16 KiB limit per line. Without persistence they cannot be queried after shutdown. `logs --follow` starts with the requested tail and then streams new entries until Ctrl+C or supervisor shutdown; a lagging follower exits with an error. Up to 16 followers can connect at once, leaving room for control commands. Slow foreground output can lose live entries, with a warning; a broken foreground output pipe triggers service cleanup.
 
 **Keep logs after shutdown when you need them.** Start with `devd start --persist-logs`, then use `devd logs --stored` after the supervisor exits. For example:

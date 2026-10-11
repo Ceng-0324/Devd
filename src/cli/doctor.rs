@@ -1,11 +1,13 @@
+mod resources;
+
 use crate::{
     config::{ConfigError, HealthCheck, ServiceConfig},
-    core::path_requirements::{evaluate, PathRequirementFailure},
+    core::path_requirements::PathRequirementFailure,
     core::process_manager::{
         environment_file_path, load_environment_file, parse_command, ProcessError,
     },
 };
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde::Serialize;
 use std::{
     collections::HashMap,
@@ -61,6 +63,7 @@ struct DoctorReport {
     profile: Option<String>,
     ready: bool,
     checks: Vec<DoctorCheck>,
+    resources: Option<resources::ResourceReport>,
 }
 
 pub(super) async fn run(
@@ -77,6 +80,7 @@ pub(super) async fn run(
                 config: config_path.to_owned(),
                 profile: profile.map(str::to_owned),
                 ready: false,
+                resources: None,
                 checks: vec![check(
                     None,
                     "configuration",
@@ -86,12 +90,19 @@ pub(super) async fn run(
                     Some("Run `devd check` for the configuration diagnostic."),
                 )],
             };
-            super::output(&render(&report, args.json)?)?;
+            output(&render(&report, args.json)?).await?;
             bail!("doctor found configuration errors");
         }
     };
 
-    let mut checks = Vec::new();
+    // One owned blocking task per invocation, awaited before any next work.
+    // It carries no supervisor control or persistence handles.
+    let resource_config = config.clone();
+    let resource_state = state_dir.to_owned();
+    let (mut checks, resources) =
+        tokio::task::spawn_blocking(move || resources::collect(&resource_config, &resource_state))
+            .await
+            .context("resource inspection worker failed")?;
     let mut service_names: Vec<_> = config.services.keys().collect();
     service_names.sort();
     for name in service_names {
@@ -110,19 +121,6 @@ pub(super) async fn run(
             }
         };
         check_working_directory(name, &service, &mut checks);
-        for requirement in &service.requires {
-            match evaluate(requirement, service.cwd.as_deref()) {
-                Ok(path) => checks.push(check(
-                    Some(name),
-                    required_check_name(requirement.kind),
-                    CheckStatus::Passed,
-                    "Required path exists, has the declared type, and is readable.",
-                    vec![path.display().to_string()],
-                    None,
-                )),
-                Err(error) => checks.push(path_requirement_failure(name, error)),
-            }
-        }
 
         let environment = match load_environment_file(name, &service).await {
             Ok(environment) => {
@@ -192,13 +190,37 @@ pub(super) async fn run(
             .iter()
             .any(|check| check.status == CheckStatus::Failed),
         checks,
+        resources: Some(resources),
     };
     let failed = !report.ready;
-    super::output(&render(&report, args.json)?)?;
+    output(&render(&report, args.json)?).await?;
     if failed {
         bail!("doctor found environment failures");
     }
     Ok(())
+}
+
+async fn output(text: &str) -> Result<()> {
+    let mut signals = crate::platform::shutdown::Shutdown::new(false)?;
+    let mut writer = super::stdout::Stdout::new()?;
+    write_output(&mut writer, text, signals.recv()).await
+}
+
+async fn write_output(
+    writer: &mut (impl tokio::io::AsyncWrite + Unpin),
+    text: &str,
+    cancelled: impl std::future::Future<Output = ()>,
+) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+    tokio::select! {
+        biased;
+        _ = cancelled => bail!("doctor output cancelled; report may be incomplete"),
+        result = tokio::time::timeout(super::protocol::IO_TIMEOUT, async {
+            writer.write_all(text.as_bytes()).await?;
+            writer.flush().await
+        }) => result.context("doctor output timed out after 5s; report may be incomplete")?
+            .context("cannot write doctor report"),
+    }
 }
 
 fn required_check_name(kind: crate::config::PathRequirementType) -> &'static str {
@@ -584,6 +606,9 @@ fn render(report: &DoctorReport, json: bool) -> Result<String> {
             text.push_str(&format!("  next: {}\n", safe_text(recommendation)));
         }
     }
+    if let Some(resources) = &report.resources {
+        resources::render(resources, &mut text);
+    }
     text.push_str(if report.ready {
         "Result: no blocking environment failures found.\n"
     } else {
@@ -612,5 +637,22 @@ mod tests {
     fn test_doctor_text_escapes_terminal_controls() {
         assert_eq!(safe_text("path\u{1b}[2J\nnext"), "path\\u{1b}[2J\\nnext");
         assert_eq!(safe_text("tab\tkept"), "tab\tkept");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_doctor_output_backpressure_times_out() {
+        let (mut writer, _reader) = tokio::io::duplex(1);
+        let result = super::write_output(&mut writer, "report", std::future::pending()).await;
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("timed out after 5s"));
+    }
+
+    #[tokio::test]
+    async fn test_doctor_output_cancellation_does_not_wait_for_stdout() {
+        let (mut writer, _reader) = tokio::io::duplex(1);
+        let result = super::write_output(&mut writer, "report", std::future::ready(())).await;
+        assert!(result.unwrap_err().to_string().contains("cancelled"));
     }
 }

@@ -106,6 +106,10 @@ flowchart LR
 
 `core::path_requirements` 复用同一个只读 evaluator 为启动前的 `service.requires` 和 `doctor` 检查文件、目录及软链接条件。相对路径按有效服务 cwd 解析；启动时在进程依赖就绪后、spawn 前检查。失败拒绝启动并沿用全栈清理。Unix 打开文件带 O_NONBLOCK 并复查句柄类型，避免路径在 metadata 与 open 之间被替换成 FIFO 后阻塞。
 
+`core::resource_inspection` 独立观察路径元数据及链接解析链，不承担可读性、就绪或所有权判定。组件按序解析，中间链接先展开再处理 Unix 父目录段；重复链接结合剩余路径检测循环。节点元数据和链接目标在结束前复查，发现变化标不完整，但始终不承诺原子快照。未知 Windows reparse 类型、Windows 父目录段和非 UTF-8 路径保守报告未知。每链限制节点、跟随链接、路径字节与紧凑节点 JSON，详细限额由报告给出。
+
+`cli::doctor::resources` 在单个顺序等待的 blocking worker 中收集有效配置的 requires 与 paths，后者复用 `RuntimePath::resolve`，与实际环境注入保持一致。报告保留声明索引/名称、scope、cwd、请求路径、采集区间、独立 evaluator 结果和解析观察；限制总条目与紧凑条目 JSON，容量耗尽停止后续链检查并计数省略，但原有前置条件仍逐条检查。链信息不改变 doctor ready；映射缺失也不授予创建或删除权限。doctor 的 stdout 使用平台可取消 writer 与独立 5 秒写入/flush 期限。
+
 `core::path_monitor` 仅在服务显式设置 `monitor-requires: true` 时启用，允许 `restart.policy: never`。每次阻塞线程池检查完成后等待一秒，每条条件连续两次相同变化才发布 `path-condition-changed` 及 WARN/INFO 日志，重复失效、恢复和原子替换中仍成立的条件均不刷屏。监测 future 由 actor 在一整个进程代次内驱动，跨健康检查及快照更新保持；停止、退出、换代时直接取消。在途 OS 调用只持有路径与 cwd，没有记录器或日志句柄，返回后无法给旧代次补发事件。监测不改变状态、健康、重启预算，也不执行文件修复。
 
 路径事件保存 requires 索引、类型、解析路径与稳定失败分类（null 表示恢复），不保存文件内容或解析后的链接目标，沿用现有事件容量和截断规则。`explain` 按运行实例与进程代次引用每条条件的最近观测，恢复时附上保留的最近失效，并明确观测不等于应用故障因果；历史缺口照常显示。磁盘留存仍由独立的 `--persist-events` 授权。
