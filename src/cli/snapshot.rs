@@ -126,7 +126,7 @@ pub(super) async fn create_new(path: PathBuf, bytes: Vec<u8>) -> Result<()> {
 }
 
 #[cfg(windows)]
-fn validate_windows_filename(path: &Path) -> Result<()> {
+pub(super) fn validate_windows_filename(path: &Path) -> Result<()> {
     let name = path
         .file_name()
         .and_then(|name| name.to_str())

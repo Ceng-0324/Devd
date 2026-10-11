@@ -98,17 +98,58 @@ impl EventStorage {
 /// Scan retained records in order, without loading the YAML or treating old
 /// PIDs as live. Filtering, cursor selection, and tail never hide gap metadata.
 pub fn read_stored(directory: &Path, query: &EventQuery) -> io::Result<EventBatch> {
+    Ok(read_history(directory, query, None, || Ok(()))?.batch)
+}
+
+/// A single retained run. Markers describe the writer, not current process liveness.
+#[derive(Debug)]
+pub struct StoredRun {
+    pub batch: EventBatch,
+    pub begin_retained: bool,
+    pub end_retained: bool,
+}
+
+/// Select exactly one UUID or the last run in retained file order. No wall-clock
+/// ordering or YAML lookup is used; missing requested history is an error.
+pub fn read_run(
+    directory: &Path,
+    run: &str,
+    tail: usize,
+    check: impl FnMut() -> io::Result<()>,
+) -> io::Result<StoredRun> {
+    if run != "latest" {
+        uuid::Uuid::parse_str(run).map_err(|_| invalid("invalid retained run UUID"))?;
+    }
+    read_history(
+        directory,
+        &EventQuery {
+            filter: Default::default(),
+            tail,
+            cursor: None,
+        },
+        Some(run),
+        check,
+    )
+}
+
+fn push_gap(gaps: &mut VecDeque<EventGap>, omitted: &mut u64, item: EventGap) {
+    if gaps.len() == MAX_GAPS {
+        gaps.pop_front();
+        *omitted += 1;
+    }
+    gaps.push_back(item);
+}
+
+fn read_history(
+    directory: &Path,
+    query: &EventQuery,
+    selection: Option<&str>,
+    check: impl FnMut() -> io::Result<()>,
+) -> io::Result<StoredRun> {
     query.validate().map_err(invalid)?;
     let mut entries = VecDeque::new();
     let mut gaps = VecDeque::new();
     let mut omitted_gaps = 0u64;
-    let mut gap = |item| {
-        if gaps.len() == MAX_GAPS {
-            gaps.pop_front();
-            omitted_gaps += 1;
-        }
-        gaps.push_back(item);
-    };
     let mut context: Option<EventContext> = None;
     let mut next = 0;
     let mut first_available = None;
@@ -117,145 +158,236 @@ pub fn read_stored(directory: &Path, query: &EventQuery) -> io::Result<EventBatc
     let mut cursor_found = query.cursor.is_none();
     let mut cursor_run_seen = false;
     let mut skipped = 0u64;
-    crate::storage::scan(directory, MAX_RECORD_BYTES, |record| {
-        let Record::Complete(line) = record else {
-            if let Record::Unfinished(bytes) = record {
-                gap(EventGap::UnfinishedRecord { bytes });
-            }
-            return Ok(());
-        };
-        let record: StoredRecord = serde_json::from_slice(line)
-            .map_err(|error| invalid(format!("invalid stored event record: {error}")))?;
-        uuid::Uuid::parse_str(&record.context.run_id)
-            .map_err(|_| invalid("invalid stored run UUID"))?;
-        if context
-            .as_ref()
-            .is_none_or(|old| old.run_id != record.context.run_id)
-        {
-            if let Some(old) = &context {
-                if !ended {
-                    gap(EventGap::IncompleteRun {
-                        run_id: old.run_id.clone(),
-                    });
-                }
-                if cursor_run_seen && !cursor_found {
-                    return Err(invalid("cursor is ahead of the stored run"));
+    let mut seen_runs = std::collections::BTreeSet::new();
+    let mut last_run: Option<String> = None;
+    let mut scanned_bytes = 0u64;
+    crate::storage::scan_controlled(
+        directory,
+        MAX_RECORD_BYTES,
+        |record| {
+            if selection.is_some() {
+                scanned_bytes += match &record {
+                    Record::Complete(line) => line.len() as u64,
+                    Record::Unfinished(bytes) => *bytes,
+                };
+                if scanned_bytes > 64 * 1024 * 1024 {
+                    return Err(invalid("stored export event scan exceeds 64 MiB"));
                 }
             }
-            context = Some(record.context.clone());
-            next = 0;
-            first_available = None;
-            ended = false;
-            began = false;
-        } else if context.as_ref() != Some(&record.context) {
-            return Err(invalid("stored run context changed within a run"));
-        }
-        let in_cursor_run = query
-            .cursor
-            .as_ref()
-            .is_some_and(|cursor| cursor.run_id == record.context.run_id);
-        cursor_run_seen |= in_cursor_run;
-        match record.record {
-            StoredData::Event(event) => {
-                if ended || event.run_id != record.context.run_id || event.sequence < next {
-                    return Err(invalid(
-                        "stored events are out of order or have a mismatched run",
-                    ));
+            let Record::Complete(line) = record else {
+                if let Record::Unfinished(bytes) = record {
+                    // An unparseable tail cannot be attributed to the selected run.
+                    push_gap(
+                        &mut gaps,
+                        &mut omitted_gaps,
+                        EventGap::UnfinishedRecord { bytes },
+                    );
                 }
-                first_available.get_or_insert(event.sequence);
-                if event.sequence > next {
-                    gap(EventGap::StoredSequence {
-                        run_id: event.run_id.clone(),
-                        from: next,
-                        to: event.sequence,
-                    });
+                return Ok(());
+            };
+            let record: StoredRecord = serde_json::from_slice(line)
+                .map_err(|error| invalid(format!("invalid stored event record: {error}")))?;
+            uuid::Uuid::parse_str(&record.context.run_id)
+                .map_err(|_| invalid("invalid stored run UUID"))?;
+            if selection.is_some() && last_run.as_deref() != Some(&record.context.run_id) {
+                if !seen_runs.insert(record.context.run_id.clone()) {
+                    return Err(invalid("stored run reappeared out of order"));
                 }
-                next = event
-                    .sequence
-                    .checked_add(1)
-                    .ok_or_else(|| invalid("stored sequence overflow"))?;
-                if in_cursor_run && event.sequence >= query.cursor.as_ref().unwrap().next_sequence {
-                    cursor_found = true;
+                if seen_runs.len() > 256 {
+                    return Err(invalid("stored export exceeds 256 retained runs"));
                 }
-                if cursor_found && query.filter.matches(&event) {
-                    if entries.len() == query.tail {
-                        entries.pop_front();
-                        skipped += 1;
+                last_run = Some(record.context.run_id.clone());
+            }
+            if let Some(selected) = selection {
+                if selected != "latest" && selected != record.context.run_id {
+                    return Ok(());
+                }
+                if selected == "latest"
+                    && context
+                        .as_ref()
+                        .is_some_and(|old| old.run_id != record.context.run_id)
+                {
+                    entries.clear();
+                    gaps.clear();
+                    omitted_gaps = 0;
+                    skipped = 0;
+                    context = None;
+                }
+            }
+            if context
+                .as_ref()
+                .is_none_or(|old| old.run_id != record.context.run_id)
+            {
+                if let Some(old) = &context {
+                    if !ended {
+                        push_gap(
+                            &mut gaps,
+                            &mut omitted_gaps,
+                            EventGap::IncompleteRun {
+                                run_id: old.run_id.clone(),
+                            },
+                        );
                     }
-                    entries.push_back(*event);
-                }
-            }
-            StoredData::Gap(item) => {
-                if ended {
-                    return Err(invalid("stored gap follows run ending"));
-                }
-                if let EventGap::SubscriberLag { run_id, .. } = &item {
-                    if run_id != &record.context.run_id {
-                        return Err(invalid("stored gap has a mismatched run"));
+                    if cursor_run_seen && !cursor_found {
+                        return Err(invalid("cursor is ahead of the stored run"));
                     }
                 }
-                gap(item);
+                context = Some(record.context.clone());
+                next = 0;
+                first_available = None;
+                ended = false;
+                began = false;
+            } else if context.as_ref() != Some(&record.context) {
+                return Err(invalid("stored run context changed within a run"));
             }
-            StoredData::Begin => {
-                if began || next != 0 || ended {
-                    return Err(invalid("misplaced stored run beginning"));
+            let in_cursor_run = query
+                .cursor
+                .as_ref()
+                .is_some_and(|cursor| cursor.run_id == record.context.run_id);
+            cursor_run_seen |= in_cursor_run;
+            match record.record {
+                StoredData::Event(event) => {
+                    if ended || event.run_id != record.context.run_id || event.sequence < next {
+                        return Err(invalid(
+                            "stored events are out of order or have a mismatched run",
+                        ));
+                    }
+                    first_available.get_or_insert(event.sequence);
+                    if event.sequence > next {
+                        push_gap(
+                            &mut gaps,
+                            &mut omitted_gaps,
+                            EventGap::StoredSequence {
+                                run_id: event.run_id.clone(),
+                                from: next,
+                                to: event.sequence,
+                            },
+                        );
+                    }
+                    next = event
+                        .sequence
+                        .checked_add(1)
+                        .ok_or_else(|| invalid("stored sequence overflow"))?;
+                    if in_cursor_run
+                        && event.sequence >= query.cursor.as_ref().unwrap().next_sequence
+                    {
+                        cursor_found = true;
+                    }
+                    if cursor_found && query.filter.matches(&event) {
+                        if entries.len() == query.tail {
+                            entries.pop_front();
+                            skipped += 1;
+                        }
+                        entries.push_back(*event);
+                    }
                 }
-                began = true;
+                StoredData::Gap(item) => {
+                    if selection.is_some()
+                        && !matches!(
+                            &item,
+                            EventGap::SubscriberLag { .. } | EventGap::RecoveredTail { .. }
+                        )
+                    {
+                        return Err(invalid("unsupported gap in retained writer records"));
+                    }
+                    if ended {
+                        return Err(invalid("stored gap follows run ending"));
+                    }
+                    if let EventGap::SubscriberLag { run_id, .. } = &item {
+                        if run_id != &record.context.run_id {
+                            return Err(invalid("stored gap has a mismatched run"));
+                        }
+                    }
+                    push_gap(&mut gaps, &mut omitted_gaps, item);
+                }
+                StoredData::Begin => {
+                    if began || next != 0 || ended {
+                        return Err(invalid("misplaced stored run beginning"));
+                    }
+                    began = true;
+                }
+                StoredData::End { next_sequence } => {
+                    if ended || next_sequence < next {
+                        return Err(invalid("invalid stored run ending"));
+                    }
+                    if next_sequence > next {
+                        push_gap(
+                            &mut gaps,
+                            &mut omitted_gaps,
+                            EventGap::StoredSequence {
+                                run_id: record.context.run_id,
+                                from: next,
+                                to: next_sequence,
+                            },
+                        );
+                    }
+                    next = next_sequence;
+                    ended = true;
+                }
             }
-            StoredData::End { next_sequence } => {
-                if ended || next_sequence < next {
-                    return Err(invalid("invalid stored run ending"));
-                }
-                if next_sequence > next {
-                    gap(EventGap::StoredSequence {
-                        run_id: record.context.run_id,
-                        from: next,
-                        to: next_sequence,
-                    });
-                }
-                next = next_sequence;
-                ended = true;
+            // A cursor at the retained run's end is valid even with no matches.
+            if in_cursor_run && query.cursor.as_ref().unwrap().next_sequence <= next {
+                cursor_found = true;
             }
-        }
-        // A cursor at the retained run's end is valid even with no matches.
-        if in_cursor_run && query.cursor.as_ref().unwrap().next_sequence <= next {
-            cursor_found = true;
-        }
-        Ok(())
-    })?;
+            Ok(())
+        },
+        check,
+    )?;
+    if selection.is_some() && context.is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "selected run has no retained event records",
+        ));
+    }
     if let Some(context) = &context {
         if !ended {
-            gap(EventGap::IncompleteRun {
-                run_id: context.run_id.clone(),
-            });
+            push_gap(
+                &mut gaps,
+                &mut omitted_gaps,
+                EventGap::IncompleteRun {
+                    run_id: context.run_id.clone(),
+                },
+            );
         }
     }
     if cursor_run_seen && !cursor_found {
         return Err(invalid("cursor is ahead of the stored run"));
     }
     if !cursor_found {
-        gap(EventGap::StoredCursorMissing {
-            requested: query.cursor.clone().unwrap(),
-        });
+        push_gap(
+            &mut gaps,
+            &mut omitted_gaps,
+            EventGap::StoredCursorMissing {
+                requested: query.cursor.clone().unwrap(),
+            },
+        );
     }
     if skipped > 0 {
-        gap(EventGap::TailLimited {
-            matching_records: skipped,
-        });
+        push_gap(
+            &mut gaps,
+            &mut omitted_gaps,
+            EventGap::TailLimited {
+                matching_records: skipped,
+            },
+        );
     }
-    Ok(EventBatch {
-        schema_version: EVENT_SCHEMA_VERSION,
-        source: EventSource::Stored,
-        persistence: None,
-        cursor: context.as_ref().map(|context| EventCursor {
-            run_id: context.run_id.clone(),
-            next_sequence: next,
-        }),
-        context,
-        first_available,
-        gaps: gaps.into_iter().collect(),
-        omitted_gaps,
-        entries: entries.into_iter().collect(),
+    Ok(StoredRun {
+        begin_retained: began,
+        end_retained: ended,
+        batch: EventBatch {
+            schema_version: EVENT_SCHEMA_VERSION,
+            source: EventSource::Stored,
+            persistence: None,
+            cursor: context.as_ref().map(|context| EventCursor {
+                run_id: context.run_id.clone(),
+                next_sequence: next,
+            }),
+            context,
+            first_available,
+            gaps: gaps.into_iter().collect(),
+            omitted_gaps,
+            entries: entries.into_iter().collect(),
+        },
     })
 }
 
@@ -292,6 +424,144 @@ mod tests {
         drop(recorder);
         storage.run(receiver).unwrap();
         run
+    }
+
+    #[test]
+    fn test_selected_run_never_mixes_runs_and_retains_marker_gaps() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("events");
+        let first = save(&path, StorageOptions::default(), 4);
+        let second = save(&path, StorageOptions::default(), 2);
+        let old = read_run(&path, &first, 3, || Ok(())).unwrap();
+        assert!(old.begin_retained && old.end_retained);
+        assert_eq!(old.batch.context.unwrap().run_id, first);
+        assert_eq!(old.batch.entries.len(), 3);
+        assert!(old.batch.entries.iter().all(|e| e.run_id == first));
+        assert!(old.batch.gaps.contains(&EventGap::TailLimited {
+            matching_records: 1
+        }));
+        let latest = read_run(&path, "latest", 1000, || Ok(())).unwrap();
+        assert_eq!(latest.batch.context.unwrap().run_id, second);
+        assert_eq!(latest.batch.entries.len(), 2);
+        assert!(latest.batch.gaps.is_empty());
+        assert!(read_run(&path, &uuid::Uuid::new_v4().to_string(), 1000, || Ok(())).is_err());
+        let error = read_run(&path, "latest", 1000, || {
+            Err(io::Error::new(io::ErrorKind::Interrupted, "cancel"))
+        })
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::Interrupted);
+        let file = path.join("current.jsonl");
+        let bytes = fs::read_to_string(&file).unwrap();
+        let lines: Vec<_> = bytes.lines().collect();
+        fs::write(
+            &file,
+            format!("{}\n{{unfinished", lines[..lines.len() - 1].join("\n")),
+        )
+        .unwrap();
+        let latest = read_run(&path, "latest", 1000, || Ok(())).unwrap();
+        assert!(latest.begin_retained && !latest.end_retained);
+        assert!(latest
+            .batch
+            .gaps
+            .iter()
+            .any(|gap| matches!(gap, EventGap::IncompleteRun { .. })));
+        assert!(latest
+            .batch
+            .gaps
+            .iter()
+            .any(|gap| matches!(gap, EventGap::UnfinishedRecord { .. })));
+        let old = read_run(&path, &first, 1000, || Ok(())).unwrap();
+        assert!(old.end_retained);
+        assert!(!old
+            .batch
+            .gaps
+            .iter()
+            .any(|gap| matches!(gap, EventGap::IncompleteRun { .. })));
+    }
+
+    #[test]
+    fn test_selected_run_limit_and_gap_context_are_checked() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("events");
+        save(&path, StorageOptions::default(), 1);
+        let file = path.join("current.jsonl");
+        let mut writer = fs::File::create(&file).unwrap();
+        for _ in 0..257 {
+            let record = StoredRecord {
+                schema_version: 1,
+                context: EventContext {
+                    run_id: uuid::Uuid::new_v4().to_string(),
+                    state_path: "state".into(),
+                    profile: None,
+                },
+                record: StoredData::Begin,
+            };
+            serde_json::to_writer(&mut writer, &record).unwrap();
+            writer.write_all(b"\n").unwrap();
+        }
+        drop(writer);
+        assert!(read_run(&path, "latest", 1000, || Ok(()))
+            .unwrap_err()
+            .to_string()
+            .contains("256 retained runs"));
+        let record = StoredRecord {
+            schema_version: 1,
+            context: EventContext {
+                run_id: uuid::Uuid::new_v4().to_string(),
+                state_path: "state".into(),
+                profile: None,
+            },
+            record: StoredData::Gap(EventGap::StoredSequence {
+                run_id: uuid::Uuid::new_v4().to_string(),
+                from: 0,
+                to: 1,
+            }),
+        };
+        fs::write(
+            &file,
+            format!("{}\n", serde_json::to_string(&record).unwrap()),
+        )
+        .unwrap();
+        assert!(read_run(&path, "latest", 1000, || Ok(()))
+            .unwrap_err()
+            .to_string()
+            .contains("unsupported gap"));
+    }
+
+    #[test]
+    fn test_selected_run_rotation_and_reappearing_run_rejected() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("events");
+        let first = save(
+            &path,
+            StorageOptions {
+                max_file_bytes: 1500,
+                keep: 2,
+            },
+            12,
+        );
+        let run = read_run(&path, &first, 1000, || Ok(())).unwrap();
+        assert!(!run.begin_retained && run.end_retained);
+        assert!(run
+            .batch
+            .gaps
+            .iter()
+            .any(|gap| matches!(gap, EventGap::StoredSequence { .. })));
+        let first_line = fs::read_to_string(path.join("current.jsonl"))
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap()
+            .to_owned();
+        save(&path, StorageOptions::default(), 1);
+        crate::storage::open_file(&path.join("current.jsonl"), true)
+            .unwrap()
+            .write_all(format!("{first_line}\n").as_bytes())
+            .unwrap();
+        assert!(read_run(&path, "latest", 1000, || Ok(()))
+            .unwrap_err()
+            .to_string()
+            .contains("reappeared"));
     }
 
     #[test]

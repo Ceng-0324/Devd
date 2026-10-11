@@ -230,7 +230,7 @@ Final output has a separate five-second write/flush deadline after the readiness
 deadline. Ctrl+C can cancel a stalled output pipe too. An output failure exits
 nonzero and may leave partial text or JSON; it never stops services.
 
-### Export diagnostics (v0.7)
+### Export diagnostics
 
 When a failure needs to be shared, capture one bounded report from the selected
 live supervisor:
@@ -260,7 +260,82 @@ local configuration/state/worktree paths, path-condition paths, Git context,
 and any explicitly included logs can still reveal private information. The
 report is written as a new file using a temporary file and never overwrites an
 existing path. It works after the YAML is removed while the supervisor is
-running; it does not read stored history or control any service.
+running. Live mode does not read stored history; neither mode controls services.
+
+**The supervisor has already stopped? Export what was actually retained.**
+Event persistence must have been enabled for the run you need:
+
+```bash
+# Before reproducing a failure:
+devd start --persist-events
+# After shutdown, even if devd.yml has since been removed:
+devd export --stored --run latest --output retained.json
+# Pin the UUID from identity/events or a previous report:
+devd export --stored --run 123e4567-e89b-12d3-a456-426614174000 --output selected-run.json
+```
+
+`--stored` requires `--run UUID|latest`. `latest` means the last run in retained
+file order, not the most recent supervisor launch or wall-clock timestamp. An
+unknown/fully rotated-away run is an error. Select the same config/profile/state
+as at startup; no YAML is loaded, endpoint contacted, process probed or current
+resource inspection substituted for missing evidence. Events never cross the
+selected run boundary. Explanations follow each service's latest retained event
+generation; older generations remain labeled in the event window.
+
+Live CLI and Agent exports remain schema 1, adding `source: live`; old schema 1
+reports without source are understood as live. Offline reports use schema 2 and
+`source: stored`, reusing the event, explanation and safe-state models. Top-level
+`identity` is null and `state` is empty: legacy event storage has run/profile/state
+context but no full instance identity or Git snapshot. `stored.selection` records
+the requested config/profile/state and derived `selected_instance_id`; this is
+query provenance, not proof of historical instance identity. `events.context`
+keeps the retained context as recorded, even if files were moved. Capture times
+refer to this export, event timestamps to the original observations;
+`event_watermark_after` is the retained cursor, `stable_during_capture` is false,
+and `stored.atomic` is false.
+
+`stored.historical_state` describes the optional `services.json`: `missing`,
+`invalid`, `unknown-run`, `different-run`, or `retained-matching-run`. Only a
+matching run contributes allowlisted historical service fields. They remain
+`stale: true`; `file_modified_at` is filesystem metadata, not an observation time.
+Historical PIDs never authorize control, and historical state does not feed
+current-health explanations. `stored.live_state` is `unavailable-offline` and
+explanation `status` remains null. This still cannot certify what a process is
+doing now, including after a forced supervisor termination.
+
+`begin_retained` and `end_retained` report stored writer markers independently.
+`event_coverage_complete` is false for missing markers, event gaps, truncated event
+content or the bounded tail. Sequence gaps can indicate rotation loss, while
+`unfinished-record` means the current file ends mid-record; that fragment has no
+reliable run attribution. Complete malformed records or unfinished archives are
+errors. An end marker proves the writer closed its stream, not that every process
+stopped successfully. Missing history is never reconstructed.
+
+Offline `--include-logs` adds a separate `stored.unassigned_logs` attachment of
+at most 200 raw retained entries. The old log format has no run ID: these entries
+may span runs, are explicitly `run_attribution: unknown-no-run-id-in-log-format`,
+and never feed the selected run's explanations. Rotation/run coverage stays
+unknown; `omitted_entries` and `unfinished_bytes` expose the observed tail limits.
+An absent log directory is reported as missing. Default export does not read it.
+The attachment is marked potentially sensitive, and the same field allowlist
+and path-privacy limitations as live export apply.
+
+Offline collection holds the existing `services.json.lock` in shared mode and
+uses the existing event/log reader locks. An active supervisor/writer, missing
+state lock, or linked/special/multiply-linked managed file is rejected. It creates
+no source directories or lock files. Each history scan is limited to 64 MiB and
+101 managed files; event selection additionally limits retained runs to 256,
+output events to 1,000, and service names to 256. Historical state is at most
+1 MiB, and the final JSON for either mode is at most 16 MiB; exceeding a bound
+fails without publishing a partial report.
+
+Both CLI modes use a 30-second collection/preparation deadline and Ctrl+C
+cancellation, then publish a temporary file without replacing an existing target.
+Cancellation accepted before publication prevents a background task from creating
+a late report. Once publication is accepted it is allowed to finish; cancellation
+does not remove an already saved report. Checks run between filesystem calls, so
+an individual stalled OS call cannot be forcibly interrupted. The saved-file
+confirmation has its own five-second output deadline.
 
 ### Explicit instance ports and paths (v0.7)
 
@@ -550,7 +625,8 @@ Choose exactly one of `--dry-run` or `--apply`. Preview validates YAML, quoting,
 | `devd status [--json]` | Show live state, PIDs, CPU / RSS, restart counts, and diagnostics |
 | `devd identity [--json]` | Show the selected live supervisor's instance and run identity (v0.7) |
 | `devd instances [--json]` | Discover registered instances in the current repository and its worktrees (v0.7) |
-| `devd export --output FILE [--include-logs]` | Save bounded live diagnostics to a new JSON file (v0.7) |
+| `devd export --output FILE [--include-logs]` | Save bounded live diagnostics to a new JSON file |
+| `devd export --stored --run UUID/latest --output FILE [--include-logs]` | Export one retained run after shutdown (v0.8) |
 | `devd clean --dry-run [--json]` | Preview registered, explicitly disposable directories after successful shutdown |
 | `devd clean --apply --plan ID [--json]` | Apply a current cleanup plan; preserve shared and unregistered data |
 | `devd agent --stdio [--allow restart,stop,reload,clean]` | Serve a run-bound JSON interface with explicit control grants |

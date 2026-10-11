@@ -174,7 +174,7 @@ devd wait api --profile staging --state-dir ./runtime
 
 最终输出在就绪等待结束后另有 5 秒的写入和 flush 期限；管道阻塞时仍可用 Ctrl+C 取消。输出失败以非零状态退出，文本或 JSON 可能不完整，服务不会因此停止。
 
-### 导出诊断证据（v0.7）
+### 导出诊断证据
 
 需要分享故障现场时，从选中的活 supervisor 导出一份有界报告：
 
@@ -185,7 +185,32 @@ devd export --profile staging --state-dir ./runtime --output staging.json --incl
 
 新 JSON 文件包含实例与运行身份、服务状态和 PID/代次、最近最多 1000 条生命周期事件，以及当前或近期出现的服务解释（最多 256 个服务）。事件游标、`gaps` 和 `omitted_gaps` 表示历史缺口。`captured_from`、`captured_to`、`event_watermark_after` 与 `stable_during_capture` 描述采样区间；稳定只表示采集期间未观测到状态或事件水位变化，不代表跨来源原子快照，也不保证之后仍是这个状态。不稳定的报告仍可排查，但状态与事件可能对应不同时间。
 
-`omitted_fields` 列出有意省略的自由文本字段，错误正文缺席不表示没有发生错误。默认不包含应用日志；`--include-logs` 才加入最近最多 200 条原始内存日志，分享前必须检查。状态错误正文、重载失败正文、配置命令和环境值不会进入默认报告。这是字段白名单，不是通用秘密脱敏：服务名称、配置/状态/worktree 路径、路径条件中的文件路径、Git 上下文，以及显式加入的日志仍可能泄露隐私。导出通过临时文件发布为新文件，绝不覆盖现有目标；YAML 被删除后，只要 supervisor 还在运行仍可导出。命令不查询离线历史，也不控制服务。
+`omitted_fields` 列出有意省略的自由文本字段，错误正文缺席不表示没有发生错误。默认不包含应用日志；`--include-logs` 才加入最近最多 200 条原始内存日志，分享前必须检查。状态错误正文、重载失败正文、配置命令和环境值不会进入默认报告。这是字段白名单，不是通用秘密脱敏：服务名称、配置/状态/worktree 路径、路径条件中的文件路径、Git 上下文，以及显式加入的日志仍可能泄露隐私。导出通过临时文件发布为新文件，绝不覆盖现有目标；YAML 被删除后，只要 supervisor 还在运行仍可导出。默认在线模式不查询离线历史；两种模式都不控制服务。
+
+**supervisor 已经停了，就导出真正留下来的证据。** 要分析的运行必须事先开启事件持久化：
+
+```bash
+# 重现问题之前：
+devd start --persist-events
+# 停止后，即使 devd.yml 已删除也能导出：
+devd export --stored --run latest --output retained.json
+# 使用 identity/events 或此前报告中的运行 UUID：
+devd export --stored --run 123e4567-e89b-12d3-a456-426614174000 --output selected-run.json
+```
+
+`--stored` 必须搭配 `--run UUID|latest`。latest 指保留文件顺序中的最后一次运行，不代表最近启动的 supervisor，也不按墙上时钟排序。UUID 不存在或已被完全轮转删除时返回错误。使用启动时相同的 config/profile/state 选择；命令不加载 YAML、不连接端点、不探测进程，也不拿当前文件检查结果补造历史。事件严格限定在所选 run，各服务解释使用保留下来的最新事件代次，窗口中的旧代事件仍保留代次标签。
+
+在线 CLI 与 Agent 导出保持 schema 1，增加 `source: live`；没有 source 的旧 schema 1 报告仍按 live 读取。离线使用 schema 2、`source: stored`，复用事件、解释和安全状态模型。顶层 `identity` 为 null、`state` 为空：旧事件存储只有 run/profile/state 上下文，没有完整实例身份或 Git 快照。`stored.selection` 保存请求的 config/profile/state 及推导的 `selected_instance_id`，它是查询来源，不是历史实例身份证明。`events.context` 保留原始记录，即使文件后来被移动。采集时间指本次导出，事件时间指原观察；`event_watermark_after` 为保留游标，`stable_during_capture` 与 `stored.atomic` 均为 false。
+
+`stored.historical_state` 区分 services.json 的 `missing`、`invalid`、`unknown-run`、`different-run` 和 `retained-matching-run`。只有匹配 run 的快照才附带白名单服务字段，始终标为 `stale: true`；`file_modified_at` 只是文件元数据，不是状态观察时间。历史 PID 不授予控制权，历史状态不参与当前健康判断。`stored.live_state` 为 `unavailable-offline`，解释中的 `status` 保持 null；即使曾强杀 supervisor，也不能据此断言进程现在是否存活。
+
+`begin_retained`、`end_retained` 独立表示存储 writer 的起止记录。标记缺失、事件缺口、内容截断或尾部限额都会令 `event_coverage_complete` 为 false。序号缺口可能来自轮转，`unfinished-record` 表示 current 文件尾部未写完，该片段不能可靠归属某次运行。完整记录损坏、归档文件截断则返回错误。结束标记只证明 writer 关闭事件流，不证明所有进程都成功停止；未记录的证据不会被重建。
+
+离线 `--include-logs` 将最多 200 条原始历史日志放在独立的 `stored.unassigned_logs` 附件。旧日志格式没有 run_id，内容可能跨越多次运行，明确标为 `run_attribution: unknown-no-run-id-in-log-format`，不参与所选 run 的解释。轮转/运行覆盖保持未知，`omitted_entries` 与 `unfinished_bytes` 分别报告尾部省略及未写完字节。日志目录不存在时标为 missing，默认不读取它。附件标注可能敏感，沿用在线报告的字段白名单和路径隐私边界。
+
+离线采集以共享模式持有已有 `services.json.lock`，并复用事件/日志读取锁。supervisor 或 writer 正在写入、状态锁缺失、受管文件是链接/特殊文件/多硬链接时拒绝读取，不创建源目录或锁文件。每种历史最多扫描 64 MiB、101 个受管文件，最多识别 256 次运行，事件尾部最多 1000 条、服务名最多 256 个；历史状态上限 1 MiB，两种模式最终 JSON 上限 16 MiB。超限失败，不发布部分报告。
+
+两种 CLI 模式采集及准备阶段限时 30 秒、支持 Ctrl+C，再通过临时文件以不覆盖方式发布。发布前受理的取消可阻止后台任务迟到落盘；发布已被受理时允许完成，取消不删除已保存的报告。取消/期限在文件系统调用之间检查，单次阻塞 OS 调用无法强行打断。保存成功提示另有 5 秒输出期限。
 
 ### 显式配置实例端口与路径（v0.7）
 
@@ -389,7 +414,8 @@ devd reload --apply --plan 'sha256:<64位十六进制摘要>' --candidate devd.n
 | `devd status [--json]` | 查看实时状态、PID、CPU／RSS、重启次数和诊断信息 |
 | `devd identity [--json]` | 查看所选活 supervisor 的实例与运行身份（v0.7） |
 | `devd instances [--json]` | 发现当前仓库及其 worktree 中已登记的实例（v0.7） |
-| `devd export --output FILE [--include-logs]` | 导出有界的活实例诊断报告到新 JSON 文件（v0.7） |
+| `devd export --output FILE [--include-logs]` | 导出有界的活实例诊断报告到新 JSON 文件 |
+| `devd export --stored --run UUID/latest --output FILE [--include-logs]` | 停止后导出指定历史运行（v0.8） |
 | `devd clean --dry-run [--json]` | 在成功停止后预览已登记、明确授权丢弃的目录 |
 | `devd clean --apply --plan ID [--json]` | 应用当前清理计划，保留共享和未登记数据 |
 | `devd agent --stdio [--allow restart,stop,reload,clean]` | 提供绑定本次运行、控制须显式授权的 JSON 接口 |

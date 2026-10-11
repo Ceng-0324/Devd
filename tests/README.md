@@ -53,9 +53,14 @@ the manual console check remains in `RELEASING.md`.
 `export.rs` runs on all three platforms with a real supervisor: it checks live
 identity and generation correlation, missing YAML, default exclusion of raw
 log/environment text, explicit log inclusion, no-clobber output, and refusal
-after shutdown. Its ignored worker fixture emits a secret sentinel. Core unit
-coverage checks free-text failure removal, retained-history gaps and explanation
-completeness.
+after shutdown without explicit stored mode. Offline tests cover two persisted runs,
+UUID/latest selection, profile/custom-state isolation, missing YAML, separate
+runless logs, historical state variants, incomplete tails, active writer locks,
+unsafe/special files and existing output. Unix sends SIGINT during a retained scan
+and verifies no report is published and the state lease is released. Its ignored
+worker fixture emits a secret sentinel. Unit coverage checks privacy fields,
+marker/rotation/run-order gaps, report limits and the cancellation/publication
+boundary; existing live Agent export tests remain regression coverage.
 
 `wait.rs` runs real CLI/supervisor processes on all three platforms: whole-stack
 and named readiness, health gates, deduplication, timeout evidence, invalid

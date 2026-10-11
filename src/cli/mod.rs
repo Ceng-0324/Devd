@@ -313,7 +313,16 @@ impl Cli {
                 .await?;
             }
             Command::Events(args) => events::run(args, &socket, &state_dir).await?,
-            Command::Export(args) => export::run(args, &socket).await?,
+            Command::Export(args) => {
+                export::run(
+                    args,
+                    &socket,
+                    &config_path,
+                    &state_dir,
+                    self.profile.as_deref(),
+                )
+                .await?
+            }
             Command::Wait(args) => wait::run(args, &socket).await?,
             Command::Identity { json } => instances::show(&socket, json).await?,
             Command::Instances { .. } => unreachable!("handled before configuration resolution"),

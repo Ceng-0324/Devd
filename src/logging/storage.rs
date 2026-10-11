@@ -61,24 +61,76 @@ pub fn read_stored(
     filter: &LogFilter,
     limit: usize,
 ) -> io::Result<Vec<LogEntry>> {
+    Ok(read_history(directory, service, filter, limit, false, || Ok(()))?.entries)
+}
+
+/// Legacy application logs contain generations but no supervisor run identity.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct StoredLogs {
+    pub entries: Vec<LogEntry>,
+    pub omitted_entries: u64,
+    pub unfinished_bytes: u64,
+}
+
+pub fn read_export(
+    directory: &Path,
+    limit: usize,
+    check: impl FnMut() -> io::Result<()>,
+) -> io::Result<StoredLogs> {
+    read_history(directory, None, &LogFilter::default(), limit, true, check)
+}
+
+fn read_history(
+    directory: &Path,
+    service: Option<&str>,
+    filter: &LogFilter,
+    limit: usize,
+    bounded: bool,
+    check: impl FnMut() -> io::Result<()>,
+) -> io::Result<StoredLogs> {
     if !(1..=1000).contains(&limit) {
         return Err(invalid("stored log tail must be between 1 and 1000"));
     }
     let mut result = VecDeque::new();
-    crate::storage::scan(directory, MAX_RECORD_BYTES, |record| {
-        if let Record::Complete(line) = record {
-            let entry: LogEntry = serde_json::from_slice(line)
-                .map_err(|error| invalid(format!("invalid log record: {error}")))?;
-            if service.is_none_or(|name| entry.service == name) && filter.matches(&entry) {
-                if result.len() == limit {
-                    result.pop_front();
+    let mut omitted_entries = 0;
+    let mut unfinished_bytes = 0;
+    let mut scanned_bytes = 0;
+    crate::storage::scan_controlled(
+        directory,
+        MAX_RECORD_BYTES,
+        |record| {
+            if bounded {
+                scanned_bytes += match &record {
+                    Record::Complete(line) => line.len() as u64,
+                    Record::Unfinished(bytes) => *bytes,
+                };
+                if scanned_bytes > 64 * 1024 * 1024 {
+                    return Err(invalid("stored export log scan exceeds 64 MiB"));
                 }
-                result.push_back(entry);
             }
-        }
-        Ok(())
-    })?;
-    Ok(result.into_iter().collect())
+            if let Record::Unfinished(bytes) = record {
+                unfinished_bytes += bytes;
+            }
+            if let Record::Complete(line) = record {
+                let entry: LogEntry = serde_json::from_slice(line)
+                    .map_err(|error| invalid(format!("invalid log record: {error}")))?;
+                if service.is_none_or(|name| entry.service == name) && filter.matches(&entry) {
+                    if result.len() == limit {
+                        result.pop_front();
+                        omitted_entries += 1;
+                    }
+                    result.push_back(entry);
+                }
+            }
+            Ok(())
+        },
+        check,
+    )?;
+    Ok(StoredLogs {
+        entries: result.into_iter().collect(),
+        omitted_entries,
+        unfinished_bytes,
+    })
 }
 
 fn diagnostic(message: String) -> LogEntry {
@@ -117,6 +169,35 @@ mod tests {
 
     fn read(directory: &Path, limit: usize) -> Vec<LogEntry> {
         read_stored(directory, None, &LogFilter::default(), limit).unwrap()
+    }
+
+    #[test]
+    fn test_export_log_attachment_preserves_tail_and_unfinished_evidence() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("logs");
+        let mut storage = LogStorage::open(&path, StorageOptions::default()).unwrap();
+        for index in 0..3 {
+            storage.append(&entry(index)).unwrap();
+        }
+        drop(storage);
+        use std::io::Write;
+        open_file(&log_path(&path, 0), true)
+            .unwrap()
+            .write_all(b"{unfinished")
+            .unwrap();
+        let report = read_export(&path, 2, || Ok(())).unwrap();
+        assert_eq!(report.entries, vec![entry(1), entry(2)]);
+        assert_eq!(report.omitted_entries, 1);
+        assert_eq!(report.unfinished_bytes, 11);
+        assert_eq!(
+            read_export(&path, 2, || Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "cancel"
+            )))
+            .unwrap_err()
+            .kind(),
+            io::ErrorKind::Interrupted
+        );
     }
 
     #[test]

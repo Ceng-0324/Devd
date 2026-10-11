@@ -1,4 +1,6 @@
-//! One bounded, read-only diagnostic collection from the live supervisor.
+//! Bounded diagnostic reports from live or explicitly selected retained sources.
+mod output;
+mod stored;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
@@ -25,6 +27,8 @@ use crate::{
     },
     logging::{LogEntry, LogHistory},
 };
+use output::{publish_report, CancelOnDrop, Control, DEADLINE};
+use stored::Selection;
 
 const EVENT_LIMIT: usize = 1000;
 const LOG_LIMIT: usize = 200;
@@ -38,12 +42,22 @@ pub(super) struct Args {
     /// Include the most recent 200 raw application log entries.
     #[arg(long)]
     include_logs: bool,
+    /// Read retained evidence without connecting to a supervisor.
+    #[arg(long, requires = "run")]
+    stored: bool,
+    /// Retained run UUID or latest in file order (requires --stored).
+    #[arg(long, requires = "stored", value_parser = stored::parse_run)]
+    run: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct Report {
     schema_version: u16,
-    identity: Identity,
+    identity: Option<Identity>,
+    #[serde(default = "live_source")]
+    source: crate::core::events::query::EventSource,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stored: Option<stored::Evidence>,
     captured_from: DateTime<Utc>,
     captured_to: DateTime<Utc>,
     /// A stable bracket is an observation, not a cross-source atomic snapshot.
@@ -109,12 +123,7 @@ pub(super) fn capture(
     }
     .select(window)?;
     events.persistence = Some(persistence);
-    // Free text in a reload failure can embed command, URL or environment data.
-    for event in &mut events.entries {
-        if let EventData::ReloadFinished { failure, .. } = &mut event.data {
-            *failure = None;
-        }
-    }
+    sanitize_events(&mut events);
     let logs = logs.map(|history| {
         history
             .recent(None, LOG_LIMIT)
@@ -157,19 +166,14 @@ pub(super) fn capture(
         .collect();
     Ok(Report {
         schema_version: 1,
-        identity,
+        identity: Some(identity),
+        source: live_source(),
+        stored: None,
         captured_from,
         captured_to,
         stable_during_capture,
         event_watermark_after,
-        omitted_fields: [
-            "state.*.last_error",
-            "state.*.resource_restart_reason",
-            "events.entries[].data.reload-finished.failure",
-        ]
-        .into_iter()
-        .map(str::to_owned)
-        .collect(),
+        omitted_fields: omitted_fields(),
         state: after
             .services
             .iter()
@@ -182,23 +186,96 @@ pub(super) fn capture(
     })
 }
 
-pub(super) async fn run(args: Args, socket: &Path) -> Result<()> {
-    let Response::Export(report) = protocol::request(
-        socket,
-        Request::Export {
-            include_logs: args.include_logs,
-        },
-    )
-    .await?
-    else {
-        bail!("unexpected diagnostic export response");
+fn sanitize_events(events: &mut EventBatch) {
+    for event in &mut events.entries {
+        if let EventData::ReloadFinished { failure, .. } = &mut event.data {
+            *failure = None;
+        }
+    }
+}
+
+fn omitted_fields() -> Vec<String> {
+    [
+        "state.*.last_error",
+        "state.*.resource_restart_reason",
+        "events.entries[].data.reload-finished.failure",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
+}
+
+fn live_source() -> crate::core::events::query::EventSource {
+    crate::core::events::query::EventSource::Live
+}
+
+pub(super) async fn run(
+    args: Args,
+    socket: &Path,
+    config: &Path,
+    state: &Path,
+    profile: Option<&str>,
+) -> Result<()> {
+    let mut signals = crate::platform::shutdown::Shutdown::new(false)?;
+    let control = Control::new();
+    let _cancel_on_drop = CancelOnDrop(control.clone());
+    let selected = Selection {
+        requested_run: args.run.clone().unwrap_or_default(),
+        config: config.to_owned(),
+        state_dir: state.to_owned(),
+        profile: profile.map(str::to_owned),
+        selected_instance_id: String::new(),
+        historical_instance_identity: "not-retained-in-event-files".into(),
     };
-    let bytes = serde_json::to_vec_pretty(&report).context("cannot encode diagnostic report")?;
-    super::snapshot::create_new(args.output.clone(), bytes).await?;
-    super::output(&format!(
-        "Saved diagnostic report to {}\n",
-        args.output.display()
-    ))
+    let work_control = control.clone();
+    let output = args.output.clone();
+    let work = async {
+        let report = if args.stored {
+            let control = work_control.clone();
+            tokio::task::spawn_blocking(move || {
+                stored::capture(selected, args.include_logs, &control)
+            })
+            .await
+            .context("offline export worker failed")??
+        } else {
+            let Response::Export(report) = protocol::request(
+                socket,
+                Request::Export {
+                    include_logs: args.include_logs,
+                },
+            )
+            .await?
+            else {
+                bail!("unexpected diagnostic export response");
+            };
+            *report
+        };
+        tokio::task::spawn_blocking(move || publish_report(&args.output, &report, &work_control))
+            .await
+            .context("export publication worker failed")?
+    };
+    tokio::pin!(work);
+    tokio::select! {
+        biased;
+        _ = signals.recv() => {
+            if control.cancel() { bail!("export cancelled before publication"); }
+            work.await?;
+        },
+        _ = tokio::time::sleep(DEADLINE) => {
+            if control.cancel() { bail!("export exceeded 30s deadline before publication"); }
+            work.await?;
+        },
+        result = &mut work => result?,
+    }
+    // Publication has completed. Slow stdout must not hold this command forever.
+    let text = format!("Saved diagnostic report to {output:?}\n");
+    use tokio::io::AsyncWriteExt;
+    let mut stdout = super::stdout::Stdout::new()?;
+    tokio::select! {
+        _ = signals.recv() => bail!("report saved; confirmation output cancelled"),
+        result = tokio::time::timeout(protocol::IO_TIMEOUT, async { stdout.write_all(text.as_bytes()).await?; stdout.flush().await }) => result.context("report saved; confirmation output timed out")??,
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -293,7 +370,15 @@ mod tests {
         )));
         assert!(!report.explanations["api"].complete);
         assert!(report.logs.is_none());
-        let mut wrong = report.identity.clone();
+        let mut legacy = value.clone();
+        legacy.as_object_mut().unwrap().remove("source");
+        let decoded: Report = serde_json::from_value(legacy).unwrap();
+        assert_eq!(
+            decoded.source,
+            crate::core::events::query::EventSource::Live
+        );
+        assert!(decoded.identity.is_some() && decoded.stored.is_none());
+        let mut wrong = report.identity.clone().unwrap();
         wrong.run_id = uuid::Uuid::new_v4().to_string();
         assert!(capture(
             wrong,
@@ -313,7 +398,7 @@ mod tests {
         }
         tx.send_replace(crowded);
         assert!(capture(
-            report.identity,
+            report.identity.unwrap(),
             &rx,
             &recorder.history(),
             PersistenceState::Disabled,

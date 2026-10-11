@@ -2,6 +2,13 @@
 
 ## Unreleased — v0.8.0-alpha.1
 
+- Add `export --stored --run UUID|latest` for one retained run after shutdown,
+  including explicit missing/stale state, writer markers and history gaps.
+  Offline schema 2 shares safe fields and explanations with live schema 1;
+  optional legacy disk logs are a separate attachment with unknown run attribution.
+  Preserve reader locks and file checks, bound scans/output, and prevent late
+  publication after accepted cancellation. Existing files are never overwritten.
+
 - Add read-only `impact` queries for selected `requires` entries or named `paths`,
   with direct declared users, deduplicated downstream services and explanatory
   dependency paths. Preserve ownership declarations and conservative alias

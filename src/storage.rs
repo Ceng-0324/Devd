@@ -127,14 +127,18 @@ pub(crate) enum Record<'a> {
     Unfinished(u64),
 }
 
-pub(crate) fn scan(
+/// The caller owns cancellation/deadline state; checks run between bounded reads.
+pub(crate) fn scan_controlled(
     directory: &Path,
     max_record_bytes: usize,
     mut visit: impl FnMut(Record<'_>) -> io::Result<()>,
+    mut check: impl FnMut() -> io::Result<()>,
 ) -> io::Result<()> {
+    check()?;
     check_directory(directory)?;
     let _lock = lock(directory, false)?;
     for index in (0..=MAX_ARCHIVES).rev() {
+        check()?;
         let path = record_path(directory, index);
         if !check_file(&path)? {
             continue;
@@ -142,6 +146,7 @@ pub(crate) fn scan(
         let mut reader = BufReader::new(open_file(&path, false)?);
         let mut line = Vec::new();
         loop {
+            check()?;
             line.clear();
             Read::by_ref(&mut reader)
                 .take(max_record_bytes as u64 + 1)
