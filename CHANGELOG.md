@@ -2,6 +2,8 @@
 
 ## Unreleased — v0.8.0-alpha.1
 
+- Keep event-follow signal subscriptions alive across receive/output transitions
+  so an interrupt cannot fall into a listener registration gap.
 - Add `export --stored --run UUID|latest` for one retained run after shutdown,
   including explicit missing/stale state, writer markers and history gaps.
   Offline schema 2 shares safe fields and explanations with live schema 1;

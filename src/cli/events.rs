@@ -64,13 +64,16 @@ pub(super) async fn run(args: Args, socket: &Path, state_dir: &Path) -> Result<(
         };
         return super::output(&render(&batch, args.json)?);
     }
+    // Keep one subscription alive across receive/render/write transitions.
+    // Recreating ctrl_c futures can lose a signal between select branches.
+    let mut shutdown = crate::platform::shutdown::Shutdown::new(false)?;
     let mut stream = protocol::connect(socket).await?;
     protocol::write(&mut stream, &Request::FollowEvents { query }).await?;
     let mut stdout = super::stdout::Stdout::new()?;
     let mut first = true;
     loop {
         let response = tokio::select! {
-            _ = tokio::signal::ctrl_c() => break,
+            _ = shutdown.recv() => break,
             response = async {
                 if first { tokio::time::timeout(protocol::IO_TIMEOUT, protocol::next_response(&mut stream)).await.context("event stream did not start")? }
                 else { protocol::next_response(&mut stream).await }
@@ -81,7 +84,7 @@ pub(super) async fn run(args: Args, socket: &Path, state_dir: &Path) -> Result<(
                 first = false;
                 let text = render(&batch, args.json)?;
                 tokio::select! {
-                    _ = tokio::signal::ctrl_c() => break,
+                    _ = shutdown.recv() => break,
                     result = async {
                         stdout.write_all(text.as_bytes()).await?;
                         stdout.flush().await
@@ -94,7 +97,7 @@ pub(super) async fn run(args: Args, socket: &Path, state_dir: &Path) -> Result<(
         }
     }
     tokio::select! {
-        _ = tokio::signal::ctrl_c() => {},
+        _ = shutdown.recv() => {},
         result = stdout.flush() => result?,
     }
     Ok(())

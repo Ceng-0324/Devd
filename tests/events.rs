@@ -302,14 +302,22 @@ fn test_cli_event_follow_handoff_ctrl_c_and_shutdown() {
                 .unwrap(),
         );
         wait(|| (!followed(&path).is_empty()).then_some(()));
+        let first_cursor = followed(&path)
+            .last()
+            .unwrap()
+            .cursor
+            .as_ref()
+            .unwrap()
+            .next_sequence;
         success(project.invoke(&["restart", "worker"]));
         wait(|| {
             followed(&path)
                 .iter()
                 .any(|b| {
-                    b.entries
-                        .iter()
-                        .any(|e| matches!(e.data, EventData::ManualRestartRequested))
+                    b.entries.iter().any(|e| {
+                        e.sequence >= first_cursor
+                            && matches!(e.data, EventData::ManualRestartRequested)
+                    })
                 })
                 .then_some(())
         });
@@ -335,6 +343,30 @@ fn test_cli_event_follow_handoff_ctrl_c_and_shutdown() {
             assert!(project.snapshot().is_some());
         }
     }
+}
+
+#[test]
+fn test_cli_event_follow_interrupt_after_first_output_keeps_supervisor_running() {
+    let project = project();
+    let mut supervisor = project.start();
+    project.running();
+    for attempt in 0..12 {
+        let path = project.path().join(format!("interrupt-{attempt}"));
+        let mut follower = Supervisor(
+            project
+                .command(&["events", "--follow", "--json"])
+                .stdout(fs::File::create(&path).unwrap())
+                .stderr(Stdio::inherit())
+                .spawn()
+                .unwrap(),
+        );
+        wait(|| (!followed(&path).is_empty()).then_some(()));
+        kill(Pid::from_raw(follower.0.id() as i32), Signal::SIGINT).unwrap();
+        follower.finish(true);
+        assert!(project.snapshot().is_some());
+    }
+    success(project.invoke(&["stop"]));
+    supervisor.finish(true);
 }
 
 #[test]

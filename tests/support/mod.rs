@@ -78,6 +78,7 @@ impl Project {
 pub struct Supervisor(pub Child);
 
 impl Supervisor {
+    #[track_caller]
     pub fn finish(&mut self, success: bool) {
         let status = wait(|| self.0.try_wait().unwrap());
         assert_eq!(status.success(), success, "supervisor exit: {status}");
@@ -140,6 +141,7 @@ fn read_output(file: &mut fs::File) -> Vec<u8> {
     bytes
 }
 
+#[track_caller]
 pub fn wait<T>(mut check: impl FnMut() -> Option<T>) -> T {
     let deadline = Instant::now() + Duration::from_secs(12);
     loop {
