@@ -34,6 +34,11 @@ Run the Unix service lifecycle scenario suite separately with:
 cargo test --locked --test integration
 ```
 
+`process_lifecycle.rs` uses an ignored Rust subprocess fixture for graceful
+group shutdown: it registers TERM handling before readiness and verifies that
+the descendant received TERM. This avoids depending on shell trap/reaping
+behavior while preserving exit-status and process-group cleanup assertions.
+
 ## Coverage
 
 `top.rs` uses Unix PTYs to exercise the actual terminal: log/event switching,

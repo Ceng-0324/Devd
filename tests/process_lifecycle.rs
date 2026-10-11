@@ -49,6 +49,49 @@ fn shell_config(script: &str) -> ServiceConfig {
     config(shell_words::join(["/bin/sh", "-c", script]))
 }
 
+fn graceful_config() -> ServiceConfig {
+    config(shell_words::join([
+        std::env::current_exe().unwrap().to_str().unwrap(),
+        "--ignored",
+        "--exact",
+        "test_process_graceful_worker",
+        "--nocapture",
+        "--quiet",
+    ]))
+}
+
+// CI observed Darwin's /bin/sh exiting with SIGSEGV during group shutdown.
+// Keep this fixture's signal handling outside that shell runtime.
+#[tokio::test]
+#[ignore = "subprocess fixture for graceful process-group shutdown"]
+async fn test_process_graceful_worker() {
+    use std::io::Write;
+    let mut term =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+    let mut descendant = tokio::process::Command::new("sleep")
+        .arg("60")
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    println!("ready");
+    std::io::stdout().flush().unwrap();
+    term.recv().await.unwrap();
+    // Reap the group-signaled child; a missing descendant signal must fail the
+    // parent's graceful-stop assertion rather than be hidden by fixture cleanup.
+    let status = descendant.wait().await.unwrap();
+    assert_eq!(status.signal(), Some(nix::libc::SIGTERM));
+    println!("stopped");
+    std::io::stdout().flush().unwrap();
+    std::process::exit(0);
+}
+
+async fn graceful_ready(process: &mut ManagedProcess) -> BufReader<ChildStdout> {
+    let mut reader = BufReader::new(process.take_stdout().unwrap());
+    // The subprocess test harness writes a preamble before entering the worker.
+    bounded(async { while line(&mut reader).await != "ready\n" {} }).await;
+    reader
+}
+
 async fn line(reader: &mut BufReader<ChildStdout>) -> String {
     let mut line = String::new();
     assert!(
@@ -197,10 +240,10 @@ async fn test_process_exit_status_is_cached_and_stop_is_idempotent() {
 
 #[tokio::test]
 async fn test_process_graceful_stop_uses_an_isolated_process_group() {
-    let mut process = ManagedProcess::spawn("graceful", &fixture_config("graceful"))
+    let mut process = ManagedProcess::spawn("graceful", &graceful_config())
         .await
         .unwrap();
-    let mut stdout = ready(&mut process).await;
+    let mut stdout = graceful_ready(&mut process).await;
     let pid = process.pid().unwrap();
     assert_eq!(
         process.state().await.unwrap(),
@@ -221,10 +264,10 @@ async fn test_process_graceful_stop_uses_an_isolated_process_group() {
 #[tokio::test]
 async fn test_process_stop_handles_rapidly_exiting_descendant_groups() {
     for _ in 0..32 {
-        let mut process = ManagedProcess::spawn("rapid-group", &fixture_config("graceful"))
+        let mut process = ManagedProcess::spawn("rapid-group", &graceful_config())
             .await
             .unwrap();
-        let _reader = ready(&mut process).await;
+        let _reader = graceful_ready(&mut process).await;
         let pid = process.pid().unwrap();
         let status = bounded(process.stop(Duration::from_secs(1))).await.unwrap();
         assert!(status.success(), "unexpected stop status: {status:?}");
@@ -403,16 +446,16 @@ async fn test_process_rejects_overflowing_grace_period_without_signaling_child()
 
 #[tokio::test]
 async fn test_process_restart_has_new_pipes_and_uses_original_config_snapshot() {
-    let mut config = fixture_config("graceful");
+    let mut config = graceful_config();
     let mut process = ManagedProcess::spawn("restart", &config).await.unwrap();
-    let mut old_stdout = ready(&mut process).await;
+    let mut old_stdout = graceful_ready(&mut process).await;
     let old_pid = process.pid().unwrap();
     config.command = "missing-command-after-config-mutation".into();
     let new_pid = bounded(process.restart(Duration::from_secs(1)))
         .await
         .unwrap();
     assert_ne!(old_pid, new_pid);
-    let _new_stdout = ready(&mut process).await;
+    let _new_stdout = graceful_ready(&mut process).await;
     let mut old_output = String::new();
     bounded(old_stdout.read_to_string(&mut old_output))
         .await
@@ -431,12 +474,12 @@ async fn test_process_failed_restart_leaves_old_generation_stopped() {
     tokio::fs::write(&path, "DEVD_RESTART_TEST=1\n")
         .await
         .unwrap();
-    let mut config = fixture_config("graceful");
+    let mut config = graceful_config();
     config.env_file = Some(path.clone());
     let mut process = ManagedProcess::spawn("failed-restart", &config)
         .await
         .unwrap();
-    let _stdout = ready(&mut process).await;
+    let _stdout = graceful_ready(&mut process).await;
     tokio::fs::remove_file(&path).await.unwrap();
     assert!(matches!(
         bounded(process.restart(Duration::from_secs(1))).await,
@@ -452,7 +495,7 @@ async fn test_process_failed_restart_leaves_old_generation_stopped() {
     bounded(process.restart(Duration::from_secs(1)))
         .await
         .unwrap();
-    let _new_stdout = ready(&mut process).await;
+    let _new_stdout = graceful_ready(&mut process).await;
     assert!(bounded(process.stop(Duration::from_secs(1)))
         .await
         .unwrap()
