@@ -2,6 +2,12 @@
 
 ## Unreleased — v0.8.0-alpha.1
 
+- Add read-only `impact` queries for selected `requires` entries or named `paths`,
+  with direct declared users, deduplicated downstream services and explanatory
+  dependency paths. Preserve ownership declarations and conservative alias
+  observations. Optional worktree discovery labels peer disk candidates and
+  unknown runtime coverage explicitly; traversal, peers and output are bounded.
+
 - Extend `doctor` with read-only resolution chains for declared requirements and
   runtime path mappings, including intermediate symlinks, observed failure nodes,
   effective configuration provenance and structured prerequisite results.

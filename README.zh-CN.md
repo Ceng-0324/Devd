@@ -397,6 +397,7 @@ devd reload --apply --plan 'sha256:<64位十六进制摘要>' --candidate devd.n
 | `devd events [service] [--type TYPE] [--since DURATION] [--tail N] [--cursor RUN_UUID:NEXT_SEQUENCE] [--json] [--follow \| --stored]` | 查询生命周期经过、游标与历史缺口 |
 | `devd explain <service> [--json] [--stored]` | 基于确定性事件证据解释一个服务最近的故障或状态 |
 | `devd doctor [--json]` | 检查服务启动前置条件，不启动服务 |
+| `devd impact SERVICE --require INDEX/--path NAME [--scope project/worktrees] [--json]` | 查看声明资源的使用者和潜在下游影响 |
 | `devd logs [service] [--tail N] [--level info|warn|error] [--since DURATION] [--grep TEXT] [--follow \| --stored]` | 查询内存或离线磁盘日志，跟随实时输出 |
 | `devd check` | 校验配置、命令引号、依赖关系及当前支持的设置 |
 | `devd graph [--format text|dot|mermaid]` | 显示依赖边与启动层，或导出依赖图 |
@@ -506,6 +507,23 @@ doctor 还会展示显式 `requires` 与 `paths` 的解析链：中间目录链�
 `inspection.nodes` 包含路径、类型与链接目标，`resolved` 表示解析终点，`failure` 与 `failed_node` 标注失败和从零开始的节点索引，位置不可用时为 null。解析只读取元数据与链接目标，不读文件正文。`atomic` 始终为 false；`change_detected` 表示复查发现变化，false 也不能排除竞争。缺失、悬空、类型错误、拒绝访问和循环分别报告。不支持的 reparse 行为、Windows 含父目录段的路径、非 UTF-8 路径或容量耗尽会标为不完整。`display_paths_lossy` 标出经过替换显示的路径，不能拿它作为精确标识。Windows 支持普通软链接，不假定其他 reparse 类型也有相同语义。
 
 资源视图最多 128 项，每项最多 128 个观测节点、跟随 40 个链接；单路径上限 4096 字节，每条链的紧凑节点 JSON 上限 64 KiB，全部条目的紧凑 JSON 上限 1 MiB，排版和原有检查输出另计。省略条目或观察到变化会令 `resources.complete: false`；覆盖完整不表示所有资源都存在。这些限额约束遍历工作量，不保证阻塞文件系统上单次 OS 调用的耗时。原有前置检查仍会执行，`ready` 语义不变：普通路径映射缺失不会额外阻止启动，doctor 也不会创建 `cleanup: true` 目录。输出另有 5 秒写入/flush 期限，Ctrl+C 可取消输出；被中断的报告可能不完整。路径和链接目标本身仍可能包含敏感信息。
+
+**看看一条路径牵连了谁。** 选定一个有效声明，再沿服务依赖图查看潜在影响：
+
+```bash
+# 0 表示 profile 合并后的第一个 requires 条目。
+devd impact api --require 0 --profile staging
+# DATA 是该服务 paths 映射中的名称。
+devd impact database --path DATA --scope worktrees --json
+```
+
+默认 `--scope project` 只读取选定的磁盘配置。`requires` 的声明服务是直接使用者；`paths` 的提供者和直接依赖它、接收路径映射的服务都是直接使用者。下游服务去重显示，并给出一条最短服务依赖链解释来源。关联依据是相同请求路径或成功观察到的相同解析终点，不识别硬链接身份、目录包含关系或应用动态访问。`shared`、`instance` 保留各声明的归属；requires 即使与某映射互为别名，归属仍是未知。临时目录提示不授予清理权限；查询不会启动、重启、创建或删除资源。
+
+显式 `--scope worktrees` 才复用当前 Git 仓库及其 worktree 中的实例登记；非 Git 目录只查当前项目，未登记实例不在覆盖内。在线身份只证明哪个实例应答，其他实例 YAML 标为 `disk-candidate`，`runtime_equivalence: unknown` 表示磁盘编辑或重载可能使它与内存配置不同。不可达、身份替换或协议不兼容的实例不推断影响。配置缺失/无效、损坏索引及省略实例均明确报告。`registry_complete` 表示登记覆盖；只要存在其他实例，因未核实运行配置，`impact_complete` 就保持 false。默认项目查询同样不声称磁盘配置等于运行配置。
+
+JSON schema 1 保留 config/profile/state、推导的 `instance_id`（不证明在线）、采集区间、所选解析链、`current.matches`、`direct_consumers`、`downstream` 及可选的 `discovery.peers`。匹配条目给出依据和归属；观察矛盾时标记 `conflicts_with_selection` 并令视图不完整。`complete` 只描述有界声明覆盖，不代表资源健康或原子快照（`atomic` 始终 false），也不把潜在影响当作应用故障因果。
+
+每份配置最多 256 个服务、1024 条依赖边、256 个检查声明、64 个匹配。图超限或选中声明位于扫描限额之外时返回错误，其余省略项和不确定别名计数报告。扩展查询最多分析 8 个其他实例，各自 YAML 必须为不超过 1 MiB 的普通文件，同时沿用发现模块的 64 worktree／256 记录限制。完整排版输出最多 2 MiB，写入/flush 期限 5 秒，Ctrl+C 可取消输出。文件系统调用沿用 doctor 的非原子观察及阻塞 I/O 边界；路径本身仍可能敏感。
 
 **日志默认保存在内存里。** 保留全栈最近 1000 条，单行最多 16 KiB；没有开启持久化时，停止后无法再查询。`logs --follow` 先输出指定条数的历史日志，再持续接收新日志，按 Ctrl+C 或 supervisor 停止时退出；跟随者落后过多会报错退出。最多同时连接 16 个跟随者，为控制命令保留连接槽位。前台输出过慢时会丢弃部分实时条目并告警；前台输出管道断开会触发服务清理。
 

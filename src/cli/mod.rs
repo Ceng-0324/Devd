@@ -5,6 +5,7 @@ mod events;
 mod explain;
 mod export;
 mod graph;
+mod impact;
 mod instances;
 mod protocol;
 mod reload;
@@ -123,6 +124,8 @@ enum Command {
     Explain(explain::Args),
     /// Inspect local service prerequisites without starting or executing them.
     Doctor(doctor::Args),
+    /// Trace consumers and potential downstream impact of a declared resource.
+    Impact(impact::Args),
     /// Print buffered logs, or query stored logs after shutdown (oldest first).
     Logs {
         service: Option<String>,
@@ -321,6 +324,9 @@ impl Cli {
             }
             Command::Doctor(args) => {
                 doctor::run(args, &config_path, self.profile.as_deref(), &state_dir).await?;
+            }
+            Command::Impact(args) => {
+                impact::run(args, &config_path, self.profile.as_deref(), &state_dir).await?;
             }
             Command::Check => {
                 ServiceManager::new(

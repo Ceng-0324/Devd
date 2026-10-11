@@ -42,18 +42,18 @@ pub(super) struct GitContext {
 }
 
 #[derive(Serialize)]
-struct Entry {
-    identity: Identity,
-    status: &'static str,
+pub(super) struct Entry {
+    pub identity: Identity,
+    pub status: &'static str,
 }
 
 #[derive(Serialize)]
-struct Report {
+pub(super) struct Report {
     schema_version: u16,
-    project_root: PathBuf,
-    complete: bool,
-    entries: Vec<Entry>,
-    warnings: Vec<String>,
+    pub project_root: PathBuf,
+    pub complete: bool,
+    pub entries: Vec<Entry>,
+    pub warnings: Vec<String>,
 }
 
 // Run only bounded, read-only Git commands. A cancelled command is killed.
@@ -295,6 +295,25 @@ fn render(identity: &Identity, status: &str) -> String {
 }
 
 pub(super) async fn list(directory: &Path, json: bool) -> Result<()> {
+    let report = discover(directory).await?;
+    if json {
+        super::output(&format!("{}\n", serde_json::to_string_pretty(&report)?))
+    } else {
+        let mut text = format!("Instances in {:?}\n", report.project_root);
+        for entry in &report.entries {
+            text.push_str(&format!("{}\n", render(&entry.identity, entry.status)));
+        }
+        if report.entries.is_empty() {
+            text.push_str("No registered instances.\n");
+        }
+        for warning in &report.warnings {
+            text.push_str(&format!("Warning: {warning:?}\n"));
+        }
+        super::output(&text)
+    }
+}
+
+pub(super) async fn discover(directory: &Path) -> Result<Report> {
     let (project_root, context) = project(directory).await?;
     let mut roots = BTreeSet::from([project_root.clone()]);
     let mut warnings = Vec::new();
@@ -367,21 +386,7 @@ pub(super) async fn list(directory: &Path, json: bool) -> Result<()> {
         entries,
         warnings,
     };
-    if json {
-        super::output(&format!("{}\n", serde_json::to_string_pretty(&report)?))
-    } else {
-        let mut text = format!("Instances in {:?}\n", report.project_root);
-        for entry in &report.entries {
-            text.push_str(&format!("{}\n", render(&entry.identity, entry.status)));
-        }
-        if report.entries.is_empty() {
-            text.push_str("No registered instances.\n");
-        }
-        for warning in &report.warnings {
-            text.push_str(&format!("Warning: {warning:?}\n"));
-        }
-        super::output(&text)
-    }
+    Ok(report)
 }
 
 async fn inspect(identity: Identity) -> Entry {

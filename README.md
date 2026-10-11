@@ -558,6 +558,7 @@ Choose exactly one of `--dry-run` or `--apply`. Preview validates YAML, quoting,
 | `devd events [service] [--type TYPE] [--since DURATION] [--tail N] [--cursor RUN_UUID:NEXT_SEQUENCE] [--json] [--follow \| --stored]` | Query lifecycle facts, cursors and history gaps |
 | `devd explain <service> [--json] [--stored]` | Explain the latest deterministic failure evidence for one service |
 | `devd doctor [--json]` | Check configured service prerequisites without starting them |
+| `devd impact SERVICE --require INDEX/--path NAME [--scope project/worktrees] [--json]` | Show declared resource users and potential downstream impact |
 | `devd logs [service] [--tail N] [--level info|warn|error] [--since DURATION] [--grep TEXT] [--follow \| --stored]` | Query live memory or offline disk logs; follow live output |
 | `devd check` | Validate configuration, command quoting, dependencies, and supported settings |
 | `devd graph [--format text|dot|mermaid]` | Show dependency edges and startup layers, or export a diagram |
@@ -693,6 +694,53 @@ ordinary path mappings do not become launch blockers. Doctor never creates even
 `cleanup: true` directories. Output has a separate five-second write/flush deadline
 and can be cancelled with Ctrl+C; interrupted output may be incomplete. Paths and
 link targets may contain sensitive information.
+
+**See what depends on a path.** Select one effective declaration, then follow its
+potential impact through the service graph:
+
+```bash
+# Index 0 means the first requires entry after profile merging.
+devd impact api --require 0 --profile staging
+# DATA is a name from the selected service's paths map.
+devd impact database --path DATA --scope worktrees --json
+```
+
+The default `--scope project` reads only the selected on-disk configuration.
+`requires` names its declaring service as a direct user; `paths` names its provider
+and direct dependency recipients. The report deduplicates downstream services and
+includes a shortest service-edge path explaining each result. Declarations match
+by the same requested path or the same successfully observed resolution endpoint;
+this does not detect hard-link identity, directory containment or dynamic file
+access. `shared` and `instance` remain declaration scopes; requirements have unknown
+ownership even when they alias a scoped path. Temporary-location hints never grant
+cleanup rights. Nothing is started, restarted, provisioned or deleted.
+
+Explicit `--scope worktrees` reuses the current repository's registered instances
+across its worktrees (only the current project outside Git). Unregistered instances
+are outside coverage. A live identity only establishes which instance answered:
+peer YAML is labeled `disk-candidate`, and `runtime_equivalence: unknown` means edits
+or reloads may make it differ from memory. Unreachable, replaced or incompatible
+instances have no inferred impact. Missing/invalid peer YAML, corrupt registries
+and omitted peers are visible. `registry_complete` describes index coverage;
+`impact_complete` stays false when any peer exists because its runtime configuration
+is unverified. Default queries likewise make no claim about a running configuration.
+
+JSON schema 1 records config/profile/state, the derived `instance_id` (not proof of
+a live run), capture interval, selected resolution chain, `current.matches`,
+`direct_consumers`, `downstream`, and optional `discovery.peers`. Each match gives its
+basis and scope; contradictory observations set `conflicts_with_selection` and
+make the view incomplete. `complete` describes bounded declared coverage, not
+resource health or an atomic snapshot (`atomic` is always false). Potential impact
+is not evidence of application failure causation.
+
+Each configuration is limited to 256 services, 1024 dependency edges, 256 inspected
+declarations and 64 matches. Graph overflow or a selected declaration outside the
+scan limit is an error; other omissions and uncertain aliases are counted. Wider
+queries analyze at most eight peers, each with a regular YAML file of at most
+1 MiB, within discovery's existing 64-worktree/256-record limits. The complete
+rendered report is limited to 2 MiB; output has a five-second write/flush deadline
+and Ctrl+C cancellation. Filesystem calls have the same non-atomic and stalled-I/O
+limitations as doctor. Paths themselves may contain sensitive information.
 
 **Logs stay in memory by default.** devd retains the latest 1000 entries across the stack, with a 16 KiB limit per line. Without persistence they cannot be queried after shutdown. `logs --follow` starts with the requested tail and then streams new entries until Ctrl+C or supervisor shutdown; a lagging follower exits with an error. Up to 16 followers can connect at once, leaving room for control commands. Slow foreground output can lose live entries, with a warning; a broken foreground output pipe triggers service cleanup.
 

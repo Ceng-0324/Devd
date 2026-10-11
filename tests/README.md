@@ -93,6 +93,16 @@ required, not silently skipped. Doctor output tests exercise timeout and
 cancellation under backpressure; existing native Windows evaluator tests cover ACL
 loss/recovery independently of metadata-only observations.
 
+`impact.rs` covers selected profiles, aliases, custom state without provisioning,
+invalid selectors, corrupt discovery records, and live linked worktrees whose YAML
+is edited, invalidated or removed before shutdown. Core impact tests cover diamond
+and cyclic graphs, direct binding recipients, shortest downstream witnesses,
+unknown ownership, observation conflicts and capacity limits. CLI unit tests cover
+oversized/invalid/special peer files and output timeout/cancellation under
+backpressure. The worktree test requires Git; symlink privileges are required on
+Windows. Impact observes declarations and disk candidates, never live-config
+equivalence or actual file access.
+
 `reload.rs` and the core reload tests cover invalid candidates, stale plans,
 selective stop/start order, unchanged processes, partial failure, competing
 reload/restart requests, and whole-stack stop before and after configuration

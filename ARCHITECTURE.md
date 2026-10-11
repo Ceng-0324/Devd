@@ -18,6 +18,12 @@
 
 服务级 `ports` 与 `paths` 分别保存命名 TCP 地址和带 shared/instance 归属的路径。配置校验拒绝端口冲突、独占路径重叠及可见环境名冲突；profile 对映射整体替换。`prepare_config` 从自身与直接依赖生成有效环境并缓存，服务 actor 和脚本探测共用该结果；原始配置仍作为 reload 基线，不混入派生环境。实例路径按所选状态目录的 `runtime/` 解析，共享路径按声明服务 cwd 解析，解析为绝对 UTF-8 路径；默认不会创建或删除目录，显式 cleanup 的目录创建与删除见上文。reload 提交时同步替换探测与有效环境，沿用原有下游影响与停启顺序。doctor 将映射端口与 listen 去重后试绑，检查不预约端口；实际应用绑定失败由原有日志、退出及健康证据呈现，不推断因果。路径 scope 是声明，不是沙箱或自动清理授权。
 
+### 资源影响视图
+
+`core::resource_impact` 将有效 requires/paths 与 M1 的元数据解析观察关联，再复用 `DependencyGraph` 生成直接使用者和去重的下游最短解释路径。paths 的提供者及直接依赖接收者均计入直接使用者；同请求路径与同成功解析终点分别标注，保持声明 scope，不从别名推导所有权。每配置限制 256 服务／1024 边／256 声明／64 匹配；循环以 visited 集合终止。矛盾观察、不确定别名和省略项显式影响完整性。
+
+`cli::impact` 提供 project/worktrees 只读文本与 schema 1 JSON。默认分析所选磁盘配置，不连接 supervisor；扩展范围复用 `instances::discover` 的有界登记与身份核对，最多分析 8 个 peer，每个配置通过普通文件句柄限读 1 MiB。在线身份不证明运行配置等价，peer 仅为 disk-candidate，runtime_equivalence 始终 unknown；不可达、身份不符或配置失效的 peer 不推断影响。登记覆盖与运行影响完整性分开报告，不发现未登记实例。文件观察在顺序等待的 blocking worker 中执行，报告给出采集区间且始终非原子；完整输出上限 2 MiB，写入可取消且有 5 秒期限。该视图不调用控制、清理或目录创建用例，不改变就绪与授权。
+
 ### 诊断导出
 
 `cli::export` 通过单次控制请求从活 supervisor 采集实例身份、状态快照、事件窗口和可选的内存日志。报告为状态字段白名单，省略重载失败自由文本；每个当前或近期服务的解释复用同一批事件。采样前后比较状态与事件水位，只标记观测期间是否稳定，不承诺跨来源原子快照。客户端将 JSON 先写到目标目录的临时文件，再以不覆盖方式发布，失败不会替换既有报告。
@@ -66,7 +72,7 @@ flowchart LR
 
 配置快照按完整 YAML 文件保存于基础状态目录的 `snapshots/<name>.yml`，不进入 profile 子目录。保存和恢复复制原始字节，支持未完成编辑的配置；校验仍由 `check` 负责。临时文件先写入同一目录并同步，再通过不覆盖的原子发布创建目标；快照名限制为安全的小写 ASCII，恢复目标只能是原配置目录的新文件名，以维持相对路径语义。配置快照不接触 `services.json`、控制 socket 或进程；恢复不会修改运行中实例，也不会接管遗留 PID。
 
-当前可用命令为 start、stop、restart、reload、wait、identity、instances、export、agent、clean、status、top、logs、events、explain、doctor、check、graph、init、snapshot；logs/events 支持 --follow 和 --stored，支持 TCP/HTTP/Unix Socket/Script 健康检查和 fixed/exponential 重启延时。status 提供服务主进程 CPU／RSS 采样。top 仅连接活实例，退出界面不停止服务，停止全栈必须在界面内确认；终端恢复由 RAII 处理。配置监听、自动重载和文件自动修复尚未实现。
+当前可用命令为 start、stop、restart、reload、wait、identity、instances、export、agent、clean、status、top、logs、events、explain、doctor、impact、check、graph、init、snapshot；logs/events 支持 --follow 和 --stored，支持 TCP/HTTP/Unix Socket/Script 健康检查和 fixed/exponential 重启延时。status 提供服务主进程 CPU／RSS 采样。top 仅连接活实例，退出界面不停止服务，停止全栈必须在界面内确认；终端恢复由 RAII 处理。配置监听、自动重载和文件自动修复尚未实现。
 
 ### 选择性配置重载
 

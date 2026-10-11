@@ -38,14 +38,14 @@ pub enum NodeKind {
     Unknown,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Node {
     pub path: String,
     pub kind: NodeKind,
     pub target: Option<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Inspection {
     pub nodes: Vec<Node>,
     pub resolved: Option<String>,
