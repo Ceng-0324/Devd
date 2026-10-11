@@ -278,21 +278,33 @@ fn test_top_event_tab_shows_identity_generation_and_recorded_evidence() {
     let generation = project.running().services["worker"]
         .event_generation
         .unwrap();
-    wait(|| top.seen(&format!("g={generation} ")).then_some(()));
-    // Paging must reach the recorded restart request even on a short viewport.
-    let deadline = Instant::now() + Duration::from_secs(6);
-    loop {
-        if top.seen("manual-restart-requested") {
+    let history: serde_json::Value =
+        serde_json::from_str(&success(project.invoke(&["events", "--json"]))).unwrap();
+    let entries = history["entries"].as_array().unwrap();
+    let manual = entries
+        .iter()
+        .find(|event| event["data"]["type"] == "manual-restart-requested")
+        .expect("restart acknowledged without its lifecycle event")["sequence"]
+        .as_u64()
+        .unwrap();
+    let latest = entries.last().unwrap()["sequence"].as_u64().unwrap();
+    // First wait for the TUI to ingest this exact event window. Paging earlier
+    // pins the old top row while new events arrive, hiding fresh evidence.
+    wait(|| top.seen(&format!("#{latest} g=")).then_some(()));
+    assert!(top.seen(&format!("g={generation} ")));
+    for _ in 0..8 {
+        if top.seen(&format!("#{manual} g=")) {
+            assert!(top.seen("manual-restart-requested"));
             break;
         }
         top.write(b"\x1b[5~"); // Page Up
-        thread::sleep(Duration::from_millis(130));
-        assert!(
-            Instant::now() < deadline,
-            "restart evidence not visible: {}",
-            top.terminal.screen().contents()
-        );
+        thread::sleep(Duration::from_millis(150));
     }
+    assert!(
+        top.seen(&format!("#{manual} g=")),
+        "restart evidence not visible: {}",
+        top.terminal.screen().contents()
+    );
     top.write(b"s");
     wait(|| top.seen("Esc/n").then_some(()));
     top.write(b"n\t");
