@@ -20,7 +20,7 @@
 
 ### 资源影响视图
 
-`core::resource_impact` 将有效 requires/paths 与 M1 的元数据解析观察关联，再复用 `DependencyGraph` 生成直接使用者和去重的下游最短解释路径。paths 的提供者及直接依赖接收者均计入直接使用者；同请求路径与同成功解析终点分别标注，保持声明 scope，不从别名推导所有权。每配置限制 256 服务／1024 边／256 声明／64 匹配；循环以 visited 集合终止。矛盾观察、不确定别名和省略项显式影响完整性。
+`core::resource_impact` 将有效 requires/paths 与 `resource_inspection` 的元数据解析观察关联，再复用 `DependencyGraph` 生成直接使用者和去重的下游最短解释路径。paths 的提供者及直接依赖接收者均计入直接使用者；同请求路径与同成功解析终点分别标注，保持声明 scope，不从别名推导所有权。每配置限制 256 服务／1024 边／256 声明／64 匹配；循环以 visited 集合终止。矛盾观察、不确定别名和省略项显式影响完整性。
 
 `cli::impact` 提供 project/worktrees 只读文本与 schema 1 JSON。默认分析所选磁盘配置，不连接 supervisor；扩展范围复用 `instances::discover` 的有界登记与身份核对，最多分析 8 个 peer，每个配置通过普通文件句柄限读 1 MiB。在线身份不证明运行配置等价，peer 仅为 disk-candidate，runtime_equivalence 始终 unknown；不可达、身份不符或配置失效的 peer 不推断影响。登记覆盖与运行影响完整性分开报告，不发现未登记实例。文件观察在顺序等待的 blocking worker 中执行，报告给出采集区间且始终非原子；完整输出上限 2 MiB，写入可取消且有 5 秒期限。该视图不调用控制、清理或目录创建用例，不改变就绪与授权。
 
@@ -38,7 +38,7 @@
 
 一个异步采集任务通过容量 8 的 channel 驱动单个 blocking worker。4 个 semaphore permits 覆盖采集中、排队中、在写中的事故；permit 由采集状态和 writer 共同持有到结束记录写完，不能因入队就提前释放。新触发满额时丢弃并计数；状态映射最多 256 服务，超限按记录器失败处理。事件任务退出时，取消标记阻止尚未受理的 begin 落盘；已受理制品可结束为 cancelled，不假装完整。正常关闭排空后释放状态锁；单次 OS 阻塞调用不能打断。
 
-`incidents::evidence` 在 begin 保存完整实例/run、触发事件代次和观察时间；状态与有效配置由消费事件时的 watch 读取，始终标注非原子、与触发瞬间等价性不保证。配置摘要最多 256 服务／每服务 64 依赖／128 KiB，保留类型化恢复策略与资源授权，不保存命令或环境正文。begin 同步落盘后才检查触发服务最多 8 个声明，复用 M1 路径链与 M2 选择器，并分别保留期望类型、声明 scope/cleanup 和检查时间。历史条件事件与新检查互不替代，不生成时序因果结论。
+`incidents::evidence` 在 begin 保存完整实例/run、触发事件代次和观察时间；状态与有效配置由消费事件时的 watch 读取，始终标注非原子、与触发瞬间等价性不保证。配置摘要最多 256 服务／每服务 64 依赖／128 KiB，保留类型化恢复策略与资源授权，不保存命令或环境正文。begin 同步落盘后才检查触发服务最多 8 个声明，复用 `resource_inspection` 路径链与 `resource_impact` 选择器，并分别保留期望类型、声明 scope/cleanup 和检查时间。历史条件事件与新检查互不替代，不生成时序因果结论。
 
 `incidents::storage` 持有 supervisor lease、独立 `.lock` 和 cap-std 目录能力，通过 no-follow 新建 UUID JSONL 制品，不覆盖已有文件。schema 1 为 begin/resources/end；缺少结束、尾部截断、提前结束、检查省略与未知取消计数各自可见。单制品 2 MiB、最多 20 个（包括部分制品），已受理活跃文件不参与淘汰；目录枚举最多 256 项，拒绝链接、重解析点、多硬链接和特殊文件。启动失败阻止服务启动，运行失败由 server 限时写 stderr 并停用本次记录器，服务继续运行。`incidents::query` 共用该目录能力、安全打开和持有的 writer/state lease；在线最多两个 blocking 读取任务，与写入通过独立 mutex 串行，取消后名额与 lease 保留至阻塞任务返回。离线按状态锁→事故锁顺序取得已有文件的共享 lease，不创建源文件。每次文件读取核对前后 handle/path 身份、大小及修改时间；单文件 2 MiB、目录 256 项、列表 20 制品，超限/损坏/版本未知给出有界诊断。
 
@@ -87,8 +87,6 @@ flowchart LR
 单文件 `profiles` 配合全局 `--profile` 选择有效配置。`config/profile.rs` 独占文档解析、别名归一化及覆盖合并；运行时 `DevdConfig` 只包含所选结果。所有定义检查 schema，选中结果再执行依赖和就绪校验。`env`、`restart` 按字段合并，其余字段整体替换；可选字段支持 null 清除。CLI 在默认或显式运行目录下追加 profile 子目录：Unix 将大写字节转义为 `~hh`，Windows 使用前述名称编码，保证大小写不敏感文件系统上的不同 profile 也有不同端点。控制命令只校验名称和计算路径，不读取 YAML；服务目录、端口与应用文件不在隔离范围内。
 
 配置快照按完整 YAML 文件保存于基础状态目录的 `snapshots/<name>.yml`，不进入 profile 子目录。保存和恢复复制原始字节，支持未完成编辑的配置；校验仍由 `check` 负责。临时文件先写入同一目录并同步，再通过不覆盖的原子发布创建目标；快照名限制为安全的小写 ASCII，恢复目标只能是原配置目录的新文件名，以维持相对路径语义。配置快照不接触 `services.json`、控制 socket 或进程；恢复不会修改运行中实例，也不会接管遗留 PID。
-
-当前可用命令为 start、stop、restart、reload、wait、identity、instances、incidents、export、agent、clean、status、top、logs、events、explain、doctor、impact、check、graph、init、snapshot；logs/events 支持 --follow 和 --stored，支持 TCP/HTTP/Unix Socket/Script 健康检查和 fixed/exponential 重启延时。status 提供服务主进程 CPU／RSS 采样。top 仅连接活实例，退出界面不停止服务，停止全栈必须在界面内确认；终端恢复由 RAII 处理。配置监听、自动重载和文件自动修复尚未实现。
 
 ### 选择性配置重载
 
@@ -212,12 +210,7 @@ stateDiagram-v2
 
 ## 验证边界
 
-每次候选均要求格式、Clippy、全量测试和公开包检查。原生 Linux、macOS、
-Windows CI 验证各自平台代码；跨编译不能替代实际进程、文件系统和控制端点测试。
-并发 worktree 验收同时启动两个实例，核对映射、发现、就绪、报告、重启/重载、
-停止后清理，以及旧 Agent 会话拒绝控制新 run。
-
-发布流程见 [RELEASING.md](RELEASING.md)。归档必须绑定完整源码 SHA，
-核对版本、文件白名单与 SHA-256，并在三个原生平台运行归档二进制的恢复演练。
-TUI 控制台视觉效果不能由无界面 CI 证明。本文不承诺未经基准测试的 CPU、
-内存、启动速度或日志吞吐量指标。
+验证命令、平台前置条件与场景覆盖集中在 [tests/README.md](tests/README.md)，
+同 SHA 的 CI、归档二进制演练与附件核验见 [RELEASING.md](RELEASING.md)。
+跨编译不能替代原生进程、文件系统和控制端点测试；无界面 CI 不能证明 TUI
+控制台视觉效果。性能结论须有对应基准，不根据架构推断吞吐量或资源开销。

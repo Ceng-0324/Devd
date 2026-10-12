@@ -18,17 +18,13 @@ Broken file dependencies still need fixing. devd takes care of the services you 
 
 ## What it does
 
-devd is a local development service manager written in Rust. **v0.7.0-alpha.1 is available as a prerelease for Linux, macOS, and Windows.**
+devd is a local development service manager written in Rust. **v0.8.0-alpha.1 is available as a prerelease for Linux, macOS, and Windows.** [Download binaries and SHA-256 checksums](https://github.com/Ceng-0324/Devd/releases/tag/v0.8.0-alpha.1) for Linux x86_64, macOS arm64, or Windows x86_64 MSVC.
 
-v0.7 is about keeping parallel development sessions out of each other's way. Find the instance running in each worktree, wait until its services are ready, export evidence when something goes wrong, and give an Agent only the controls you choose. Declare ports and paths explicitly, inspect a live event timeline, then preview and clean only registered disposable data after a normal stop. Shared files stay shared; another worktree keeps running.
+The accident that started this project now has a diagnostic path: declare the files and links a service needs, inspect their resolution chains, and see which declared services sit downstream. Opt into incident recording before reproducing a failure, then inspect or export the saved evidence even after the supervisor stops. devd preserves what it observed; repairing the target later does not rewrite that history.
 
-v0.6 brings the original accident a little closer to something you can catch: declare required files, directories, and symlinks before a service starts, then opt in to observing them while it runs. When configuration changes, preview the affected services and explicitly apply the reviewed plan. File monitoring reports what changed; it does not repair files or authorize restarts. Reload failures stop the whole stack without automatic rollback. Publication requires native CI and archive verification on Linux, macOS, and Windows for the same source revision.
+For parallel development, find instances across worktrees, wait for real readiness, and give an Agent only the controls you choose. Preview configuration changes before applying them; after a normal stop, clean only registered disposable directories. File monitoring reports changes without authorizing repairs or restarts, and reload failures stop the stack without automatic rollback.
 
-Published binaries and SHA-256 checksums are on [GitHub Releases](https://github.com/Ceng-0324/Devd/releases/tag/v0.7.0-alpha.1), with Linux x86_64, macOS arm64, and Windows x86_64 MSVC archives. This release passed native CI and archived-binary recovery checks on all three platforms.
-
-The diagnostic tools introduced in v0.5 remain part of that workflow: `events` traces what happened, `explain` connects failures to recorded evidence, and `doctor` checks the environment before starting. The `listen` setting declares owned TCP ports.
-
-It also includes opt-in disk logs, an interactive terminal view, CPU and memory samples, resource warnings and explicitly enabled recovery, custom script health checks, opt-in restarts after dependency recovery, named configuration profiles, configuration snapshots, dependency diagram export, and log filters.
+Profiles, configuration snapshots, dependency diagrams, filtered logs, optional disk history and a live terminal view support the same workflow. `doctor` checks the environment, `events` shows the timeline, and `explain` connects service failures to recorded evidence.
 
 Describe your services and their dependencies in `devd.yml`, then run `devd start` in the foreground. Use another terminal to check status, read logs, or restart a service.
 
@@ -141,7 +137,7 @@ Inspect them with `devd events api --type path-condition-changed --json` or `dev
 
 ## Commands
 
-### Instance discovery (v0.7)
+### Instance discovery
 
 ```bash
 devd instances --json                 # Current repository and its worktrees
@@ -181,7 +177,7 @@ profiles, and state directories. `identity` uses the same selectors as `status` 
 the YAML has been removed. Neither command isolates ports, files, or databases.
 Reports include local paths; consider that before sharing them.
 
-### Wait for readiness (v0.7)
+### Wait for readiness
 
 Starting a process does not mean the next step can use it. Before running tests
 or handing a stack to another tool, wait for the live supervisor's readiness:
@@ -337,7 +333,7 @@ does not remove an already saved report. Checks run between filesystem calls, so
 an individual stalled OS call cannot be forcibly interrupted. The saved-file
 confirmation has its own five-second output deadline.
 
-### Keep bounded incident evidence (v0.8)
+### Keep bounded incident evidence
 
 When the failure is intermittent, enable recording before reproducing it:
 
@@ -426,7 +422,7 @@ reports have `source: stored` even when fetched online: top-level live identity
 and state stay empty. Historical identity, observed state/generation, configuration
 summary, resource chains, control outcomes and omissions live in their recorded
 sections. Explanations use only the trigger service's captured generation.
-Schema-1 artifacts do not retain a complete M2 impact view: declared impact is
+Schema-1 artifacts do not retain a complete declared impact view: declared impact is
 explicitly `unknown-not-recorded-by-schema-1`, never rebuilt from current config.
 
 A completed window, early ending, missing end, truncated/corrupt suffix and
@@ -483,7 +479,7 @@ closes after five seconds unless stop/reload/replacement ends it earlier.
 Run `devd stop`, then use the `--stored` commands above. Restoring `target.txt`
 later does not rewrite the saved observation.
 
-### Explicit instance ports and paths (v0.7)
+### Explicit instance ports and paths
 
 Two worktrees should not silently fight over the same API port or write into the
 same scratch directory. Declare the addresses and paths your application reads:
@@ -540,7 +536,7 @@ releases them. **That does not reserve a port.** Another process can take it
 before startup; application bind errors still appear in its logs and exit/health
 evidence. devd does not automatically allocate ports or infer failure causes.
 
-### Clean disposable instance data (v0.7)
+### Clean disposable instance data
 
 The accident that started this project is a good reason to make deletion explicit.
 `scope: instance` alone grants no deletion permission. For scratch data you can
@@ -598,7 +594,7 @@ contents; they are not content hashes or protection against a malicious process
 running as the same user. Parent directories and ownership records remain so
 that retries and subsequent starts can check what happened.
 
-### A scoped interface for Agents (v0.7)
+### A scoped interface for Agents
 
 An Agent can inspect a stack without being handed its stop button. Start the
 stack first, then launch a JSON-lines session with the same instance selectors:
@@ -731,7 +727,7 @@ devd graph --profile staging --format mermaid > dependencies.mmd
 
 Diagram arrows point from each prerequisite to the service that depends on it; edge labels show the readiness condition. Services without dependencies also appear. `graph` validates the configuration but does not start services or create runtime state. DOT and Mermaid output are source text for their respective renderers, not image files.
 
-### Preview and apply configuration changes (v0.6)
+### Preview and apply configuration changes
 
 Editing one service can affect half the stack. Before restarting anything, ask the running supervisor what would change:
 
@@ -767,14 +763,14 @@ Choose exactly one of `--dry-run` or `--apply`. Preview validates YAML, quoting,
 | `devd start [--persist-logs] [--persist-events] [--record-incidents]` | Start the stack; independently opt into logs, events and bounded incident capture |
 | `devd stop` | Request ordered shutdown; the foreground process exits after cleanup |
 | `devd restart <service>` | Restart one service using the current effective configuration, rechecking dependencies |
-| `devd reload --dry-run / --apply --plan ID [--candidate PATH] [--json]` | Preview or explicitly apply affected service changes (v0.6) |
+| `devd reload --dry-run / --apply --plan ID [--candidate PATH] [--json]` | Preview or explicitly apply affected service changes |
 | `devd status [--json]` | Show live state, PIDs, CPU / RSS, restart counts, and diagnostics |
-| `devd identity [--json]` | Show the selected live supervisor's instance and run identity (v0.7) |
-| `devd instances [--json]` | Discover registered instances in the current repository and its worktrees (v0.7) |
+| `devd identity [--json]` | Show the selected live supervisor's instance and run identity |
+| `devd instances [--json]` | Discover registered instances in the current repository and its worktrees |
 | `devd incidents list/show [UUID] [--stored] [--json]` | Query recorded incidents in the current run or offline |
-| `devd export --incident UUID [--stored] --output FILE [--include-logs]` | Export one recorded incident (v0.8) |
+| `devd export --incident UUID [--stored] --output FILE [--include-logs]` | Export one recorded incident |
 | `devd export --output FILE [--include-logs]` | Save bounded live diagnostics to a new JSON file |
-| `devd export --stored --run UUID/latest --output FILE [--include-logs]` | Export one retained run after shutdown (v0.8) |
+| `devd export --stored --run UUID/latest --output FILE [--include-logs]` | Export one retained run after shutdown |
 | `devd clean --dry-run [--json]` | Preview registered, explicitly disposable directories after successful shutdown |
 | `devd clean --apply --plan ID [--json]` | Apply a current cleanup plan; preserve shared and unregistered data |
 | `devd agent --stdio [--allow restart,stop,reload,clean]` | Serve a run-bound JSON interface with explicit control grants |
@@ -1037,10 +1033,6 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo build --locked
 ```
 
-End-to-end tests launch real child processes and verify dependency readiness, failure recovery, logs, status, and process cleanup after shutdown:
-
-```bash
-cargo test --locked --test integration
-```
+The native test suite launches real child processes to verify readiness, recovery, diagnostics and shutdown. Platform prerequisites and focused validation commands are in the test guide below.
 
 [Tests and manual validation](tests/README.md) · [Release checklist](RELEASING.md) · [Changelog](CHANGELOG.md) · [MIT license](LICENSE) · [Architecture (中文)](ARCHITECTURE.md)

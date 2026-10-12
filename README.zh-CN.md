@@ -16,17 +16,13 @@
 
 ## 它能做什么
 
-devd 是用 Rust 编写的本地开发服务管理器。**v0.7.0-alpha.1 已作为预发布版本发布，支持 Linux、macOS 和 Windows。**
+devd 是用 Rust 编写的本地开发服务管理器。**v0.8.0-alpha.1 已作为预发布版本发布，支持 Linux、macOS 和 Windows。** [下载二进制及 SHA-256 校验文件](https://github.com/Ceng-0324/Devd/releases/tag/v0.8.0-alpha.1)，提供 Linux x86_64、macOS arm64 和 Windows x86_64 MSVC 归档。
 
-v0.7 要解决的是多个开发现场别互相踩脚：看清每个 worktree 跑着哪个实例，等服务真正就绪，出问题时导出证据，再按需把控制权交给 Agent。端口和路径明确声明，事件经过能在终端里追，正常停止后先预览、再清理登记过的可丢弃目录。共享文件留下，另一个 worktree 照常跑。
+当初那场事故，现在有了一条能查下去的线：声明服务需要哪些文件和软链接，看清解析在哪一环断了、哪些声明服务在下游。重现问题前显式开启事故记录，supervisor 停止后仍能查看和导出证据。后来把目标补回来，也不会改写当时留下的记录。
 
-v0.6 开始能提前发现当初那场事故里的问题：启动前声明必需的文件、目录和软链接，运行中可以显式开启监测；改了配置，先看影响范围，再明确应用审阅过的计划。文件监测只报告变化，不会修文件，也不等于授权重启。重载失败会停止全栈，不自动回滚。发布要求同一源码提交通过 Linux、macOS 和 Windows 原生 CI 与归档核验。
+多个开发现场一起跑时，可以找到各个 worktree 的实例，等待服务真正就绪，再按需把控制权交给 Agent。配置变化先预览再应用；正常停止后，只清理登记过的可丢弃目录。文件监测只报告变化，不授权修复或重启；重载失败会停止全栈，不自动回滚。
 
-已发布的二进制与 SHA-256 校验文件见 [GitHub Releases](https://github.com/Ceng-0324/Devd/releases/tag/v0.7.0-alpha.1)，包含 Linux x86_64、macOS arm64 和 Windows x86_64 MSVC 归档。本次发布已通过三平台原生 CI 与归档二进制恢复演练。
-
-v0.5 补上的诊断工具也贯穿这套流程：`events` 查经过，`explain` 根据记录解释故障，`doctor` 在启动前检查环境，`listen` 声明服务自己的 TCP 监听端口。
-
-已有的可选磁盘日志、交互式终端界面、CPU／内存采样、资源告警与显式授权的自动恢复、自定义脚本健康检查、依赖恢复联动、多环境配置、配置快照、依赖图导出和日志筛选继续保留。
+多环境配置、配置快照、依赖图、日志筛选、可选磁盘留存和实时终端视图贯穿这套流程：`doctor` 检查环境，`events` 查经过，`explain` 根据记录解释服务故障。
 
 一份 `devd.yml` 描述服务和依赖，`devd start` 在前台管理它们。你可以继续在另一个终端查状态、翻日志或重启某个服务。
 
@@ -139,7 +135,7 @@ services:
 
 ## 常用命令
 
-### 实例身份与发现（v0.7）
+### 实例身份与发现
 
 ```bash
 devd instances --json                  # 当前仓库和全部 worktree
@@ -154,7 +150,7 @@ devd identity --profile staging --json # 指定活实例的身份
 
 `instances` 以当前目录确定范围，不接受非默认配置路径、profile 或状态目录选择器；`identity` 沿用 `status` 的选择器，YAML 删除后仍可查询。它们不隔离端口、应用文件或数据库。报告包含本地路径，分享前请留意。
 
-### 等待就绪（v0.7）
+### 等待就绪
 
 进程启动了，不代表下一步就能用。跑测试、执行脚本，或者把环境交给另一个工具之前，可以先等活实例报告就绪：
 
@@ -212,7 +208,7 @@ devd export --stored --run 123e4567-e89b-12d3-a456-426614174000 --output selecte
 
 两种 CLI 模式采集及准备阶段限时 30 秒、支持 Ctrl+C，再通过临时文件以不覆盖方式发布。发布前受理的取消可阻止后台任务迟到落盘；发布已被受理时允许完成，取消不删除已保存的报告。取消/期限在文件系统调用之间检查，单次阻塞 OS 调用无法强行打断。保存成功提示另有 5 秒输出期限。
 
-### 留下有界的事故证据（v0.8）
+### 留下有界的事故证据
 
 碰上偶发故障，不必等它消失后再拼现场。重现前显式开启采集：
 
@@ -248,7 +244,7 @@ devd export --stored --incident INCIDENT_UUID --output saved-incident.json
 
 在线查询绑定所选 supervisor 的 instance 和当前 run，要求本次运行开启事故记录。离线选择相同 config/profile/state，列出该实例所有保留运行的事故；查看、导出使用完整 UUID，`--incident` 与 `--run` 互斥。列表按记录的观察时间倒序、UUID 排序。两种方式都不会重新检查今天的目标、加载当前 YAML，或拿新代次状态填补旧现场。
 
-查询 JSON 为 schema 1；事故导出为 schema 3，复用已有事件/解释白名单，增加 `incident` 证据区。普通在线导出与 Agent 保持 schema 1，历史运行导出保持 schema 2。即使在线获取，事故报告的 `source` 仍为 `stored`，顶层实时 identity/state 留空；历史身份、观察到的状态和代次、配置摘要、路径链、控制结果及省略量各自保留来源。解释只使用触发服务所属代次的已存事件。schema 1 事故未保存完整 M2 影响图，因此明确标为 `unknown-not-recorded-by-schema-1`，不从当前配置重建成历史事实。
+查询 JSON 为 schema 1；事故导出为 schema 3，复用已有事件/解释白名单，增加 `incident` 证据区。普通在线导出与 Agent 保持 schema 1，历史运行导出保持 schema 2。即使在线获取，事故报告的 `source` 仍为 `stored`，顶层实时 identity/state 留空；历史身份、观察到的状态和代次、配置摘要、路径链、控制结果及省略量各自保留来源。解释只使用触发服务所属代次的已存事件。schema 1 事故未保存完整声明影响图，因此明确标为 `unknown-not-recorded-by-schema-1`，不从当前配置重建成历史事实。
 
 完整窗口、提前结束、缺少 end、尾部截断/损坏及不支持的版本分别显示。有效前缀可以继续查看，不支持的版本只提供有界诊断。`complete` 只说明有界记录窗口的覆盖情况，不代表完整运行历史、根因证明或完整资源影响图。淘汰计数仅覆盖写入它的那次记录器；UUID 不存在可能是留存淘汰，不能据此断定事故没发生过。
 
@@ -278,7 +274,7 @@ devd start --record-incidents
 
 终端 B 进入该目录，先执行 `devd wait --timeout 30s`，再执行 `rm ./target.txt`。监测事件产生后，`devd incidents list` 给出 UUID，`devd incidents show UUID` 展示当时保存的悬空链接链。窗口在 5 秒后结束，停止/重载/换代也可能提前结束。执行 `devd stop` 后即可使用上面的 `--stored` 命令；后来补回 `target.txt`，也不会改写已有事故证据。
 
-### 显式配置实例端口与路径（v0.7）
+### 显式配置实例端口与路径
 
 两个 worktree 不该一边抢同一个 API 端口，一边往同一个临时目录里写东西。把应用需要的地址和路径集中声明：
 
@@ -310,7 +306,7 @@ profiles:
 
 `check` 拒绝地址声明冲突和实例独占路径重叠；`doctor` 对 `ports` 与 `listen` 地址实际尝试绑定后立即释放。**检查空闲不等于预约成功。** 启动前仍可能被其他进程抢占，应用绑定失败继续通过日志、退出和健康事件呈现；devd 不自动分配端口，也不凭退出状态猜测失败原因。
 
-### 清理可丢弃的实例数据（v0.7）
+### 清理可丢弃的实例数据
 
 项目就是从一次误删事故开始的，删除权限当然不能靠猜。单独声明 `scope: instance` 不允许删除。确实可以丢弃的缓存，给它一个专用目录，再显式开启：
 
@@ -340,7 +336,7 @@ devd clean --apply --plan sha256:... --json  # 使用预览返回的 plan_id
 
 清理期间也应停止外部写入者。链接／reparse point、硬链接、特殊文件、跨文件系统目录、嵌套 devd 归属或状态标记、非 UTF-8 文件名都会拒绝；最多登记 128 个根目录，每根最多 10,000 个条目、64 层嵌套目录。清单检查文件元数据，不读取应用文件内容，因此不构成内容哈希，也不抵御同用户恶意进程任意篡改文件系统。父目录和归属记录保留，供重试和后续启动核对。
 
-### 给 Agent 的实例接口（v0.7）
+### 给 Agent 的实例接口
 
 让 Agent 看状态，不代表顺手把停机按钮也递过去。先启动服务，再用相同的实例参数启动逐行 JSON 接口：
 
@@ -440,7 +436,7 @@ devd graph --profile staging --format mermaid > dependencies.mmd
 
 图中的箭头从前置服务指向依赖它的服务，边上的标签是就绪条件；没有依赖边的服务也会显示。`graph` 会校验配置，但不启动服务或创建运行状态。DOT 和 Mermaid 输出是供相应渲染器使用的源码，不是图片文件。
 
-### 配置变更预览与应用（v0.6）
+### 配置变更预览与应用
 
 改一个服务，可能牵动半个栈。动进程之前，先让正在运行的 supervisor 列出影响：
 
@@ -476,14 +472,14 @@ devd reload --apply --plan 'sha256:<64位十六进制摘要>' --candidate devd.n
 | `devd start [--persist-logs] [--persist-events] [--record-incidents]` | 前台启动全栈，分别显式开启日志、事件留存与有界事故采集 |
 | `devd stop` | 请求有序关闭，前台进程完成清理后退出 |
 | `devd restart <service>` | 用当前有效配置重启一个服务，重新检查依赖 |
-| `devd reload --dry-run / --apply --plan ID [--candidate PATH] [--json]` | 预览或显式应用受影响服务的配置变化（v0.6） |
+| `devd reload --dry-run / --apply --plan ID [--candidate PATH] [--json]` | 预览或显式应用受影响服务的配置变化 |
 | `devd status [--json]` | 查看实时状态、PID、CPU／RSS、重启次数和诊断信息 |
-| `devd identity [--json]` | 查看所选活 supervisor 的实例与运行身份（v0.7） |
-| `devd instances [--json]` | 发现当前仓库及其 worktree 中已登记的实例（v0.7） |
+| `devd identity [--json]` | 查看所选活 supervisor 的实例与运行身份 |
+| `devd instances [--json]` | 发现当前仓库及其 worktree 中已登记的实例 |
 | `devd incidents list/show [UUID] [--stored] [--json]` | 查询当前运行或离线保留的事故证据 |
-| `devd export --incident UUID [--stored] --output FILE [--include-logs]` | 导出单事故报告（v0.8） |
+| `devd export --incident UUID [--stored] --output FILE [--include-logs]` | 导出单事故报告 |
 | `devd export --output FILE [--include-logs]` | 导出有界的活实例诊断报告到新 JSON 文件 |
-| `devd export --stored --run UUID/latest --output FILE [--include-logs]` | 停止后导出指定历史运行（v0.8） |
+| `devd export --stored --run UUID/latest --output FILE [--include-logs]` | 停止后导出指定历史运行 |
 | `devd clean --dry-run [--json]` | 在成功停止后预览已登记、明确授权丢弃的目录 |
 | `devd clean --apply --plan ID [--json]` | 应用当前清理计划，保留共享和未登记数据 |
 | `devd agent --stdio [--allow restart,stop,reload,clean]` | 提供绑定本次运行、控制须显式授权的 JSON 接口 |
@@ -690,10 +686,6 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo build --locked
 ```
 
-端到端测试会启动真实子进程，验证依赖就绪、故障恢复、日志、状态和关闭后的进程清理：
-
-```bash
-cargo test --locked --test integration
-```
+原生测试会启动真实子进程，验证就绪、恢复、诊断和关闭行为。平台前置条件与专项验证命令见下方测试指南。
 
 [测试与手动验证](tests/README.md) · [发布清单](RELEASING.md) · [变更记录](CHANGELOG.md) · [MIT 许可证](LICENSE) · [架构设计](ARCHITECTURE.md)

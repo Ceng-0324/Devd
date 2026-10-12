@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased — v0.8.0-alpha.1
+Release assets, source revisions and validation evidence are on
+[GitHub Releases](https://github.com/Ceng-0324/Devd/releases).
+
+## v0.8.0-alpha.1 — 2026-10-12
 
 - Validate archived native binaries with an end-to-end dangling-resource incident
   exercise, including declared downstream impact, unchanged service PIDs,
@@ -52,9 +55,6 @@
 Prerelease for local development on Linux, macOS and Windows. Adds worktree-aware
 instance discovery, readiness waits, diagnostic export, explicit bindings,
 an event timeline, owned-directory cleanup and an opt-in Agent control interface.
-Native CI and archived-binary recovery tests passed on all three platforms for
-source revision `3e74d87786620a2e85ab8ef08dbbe011faa795a9`; archive contents,
-versions, revisions, SHA-256 checksums and all six uploaded assets were verified.
 Cleanup requires explicit ownership and a reviewed plan after normal shutdown;
 Agent controls are closed by default. No MCP, automatic port allocation, file
 repair, automatic reload or transactional rollback is included.
@@ -121,11 +121,8 @@ repair, automatic reload or transactional rollback is included.
 
 ## v0.6.0-alpha.1 — 2026-10-08
 
-Prerelease for local development on Linux, macOS, and Windows. Native CI and
-packaged-binary recovery tests passed on all three platforms for source revision
-`e9ca335f2aedc90c2c67f568ee7a926067a257d4`; archives, SHA-256 checksums, and all six
-uploaded assets were verified. No automatic file repair, file-triggered restart,
-automatic reload, or transactional rollback is included.
+Prerelease for local development on Linux, macOS, and Windows. No automatic file
+repair, file-triggered restart, automatic reload, or transactional rollback is included.
 
 - Apply a reviewed configuration plan with `reload --apply --plan ID`. Reject
   stale plans before process changes, stop affected old services in reverse
@@ -152,10 +149,7 @@ automatic reload, or transactional rollback is included.
 
 ## v0.5.0-alpha.1 — 2026-10-07
 
-Prerelease for local development on Linux, macOS, and Windows. Native CI and
-release-binary recovery tests passed on all three platforms for source revision
-`a39f1e233504131f7cbca3609007ce2e914ff559`; archives and SHA-256 checksums were
-verified.
+Prerelease for local development on Linux, macOS, and Windows.
 
 - Add read-only `devd doctor` environment reports in text or versioned JSON,
   checking service directories, dotenv files, executable discovery, script
@@ -181,9 +175,7 @@ verified.
 
 ## v0.4.0-alpha.1 — 2026-10-06
 
-Prerelease for local development on Linux, macOS, and Windows. Native CI and
-release-binary recovery tests passed on all three platforms for source revision
-`a044e60909ee1dec9ec40c49fb6e6ae4ee3de6c2`; archives and SHA-256 checksums were verified.
+Prerelease for local development on Linux, macOS, and Windows.
 
 - Add `devd top` for live service status, resource metrics, bounded logs, asynchronous single-service restart, and confirmed whole-stack stop; quitting the view leaves services running.
 - Add opt-in JSONL persistence with `start --persist-logs`, per-instance/profile storage, size-based rotation, and configurable archive retention (`--log-max-size` in MiB and `--log-keep`).
