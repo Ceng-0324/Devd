@@ -66,13 +66,15 @@ def verify_archive(archive, version, revision, smoke=False):
             executable = Path(directory) / binary
             executable.write_bytes(contents[binary])
             executable.chmod(0o700)
-            actual = subprocess.check_output([str(executable), "--version"], text=True).strip()
+            actual = subprocess.check_output([str(executable), "--version"], text=True, timeout=15).strip()
             if actual != f"devd {version}":
                 raise ValueError("packaged binary version does not match VERSION")
             root = Path(__file__).resolve().parents[1]
             subprocess.run([sys.executable, str(root / "examples/local-stack/smoke.py"),
                             "--binary", str(executable), "--duration", "5", "--restarts", "2"],
-                           cwd=root, check=True)
+                           cwd=root, check=True, timeout=120)
+            subprocess.run([sys.executable, str(root / "scripts/incident-smoke.py"),
+                            "--binary", str(executable)], cwd=root, check=True, timeout=120)
     return target
 
 

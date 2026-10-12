@@ -82,3 +82,5 @@ jobs:
         run: python -m unittest discover -s scripts -p 'test_*.py' -v
       - name: Exercise API, web and worker recovery
         run: python examples/local-stack/smoke.py --duration 5 --restarts 2
+      - name: Exercise resource failure and retained incident evidence
+        run: python scripts/incident-smoke.py

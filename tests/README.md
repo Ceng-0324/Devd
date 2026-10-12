@@ -13,6 +13,7 @@ cargo run --locked -- check --config tests/fixtures/simple.yml
 cargo build --locked
 cargo doc --locked --no-deps
 python3 -m unittest discover -s scripts -p 'test_*.py' -v
+python3 scripts/incident-smoke.py
 ```
 
 The CI matrix builds, lints, and runs all applicable test targets on Linux, macOS,
@@ -93,6 +94,13 @@ files, unsupported schemas, hard links, symlinks and oversized records. Reader
 unit tests cover schema/identity/order checks, privacy filtering, scan limits,
 replacement during reads, state/writer lease retention, cancellation and output
 backpressure. The end-to-end deletion walkthrough is in both READMEs.
+`scripts/incident-smoke.py` executes that workflow against a selected native
+binary, including declared direct/downstream impact, unchanged PIDs, independent
+recording permissions, offline export after configuration deletion and target
+repair, privacy, no-clobber output and abrupt-death incomplete evidence. It owns
+isolated temporary fixtures and releases its Unix workers after a supervisor kill;
+Windows uses Job teardown. CI runs it on all three platforms, and release archive
+verification repeats it with the extracted executable rather than a debug build.
 
 `instances.rs` runs natively on all three platforms: live identity, profiles,
 external state directories, restart identity/run separation, removed YAML,

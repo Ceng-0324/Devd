@@ -7,6 +7,7 @@ import tarfile
 import subprocess
 import tempfile
 import unittest
+from unittest import mock
 import warnings
 import zipfile
 
@@ -60,6 +61,27 @@ class ReleaseVerificationTests(unittest.TestCase):
             with self.subTest(windows=windows), tempfile.TemporaryDirectory() as directory:
                 archive = self.archive(directory, windows)
                 verify_release.verify_archive(archive, self.version, self.revision)
+
+    def test_native_smokes_use_the_extracted_binary_and_propagate_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            archive = self.archive(directory)
+            with mock.patch.object(verify_release.sys, "platform", "darwin"), \
+                    mock.patch.object(verify_release.platform, "machine", return_value="arm64"), \
+                    mock.patch.object(verify_release.subprocess, "check_output",
+                                      return_value=f"devd {self.version}\n") as version, \
+                    mock.patch.object(verify_release.subprocess, "run") as run:
+                verify_release.verify_archive(archive, self.version, self.revision, smoke=True)
+                executable = Path(version.call_args.args[0][0])
+                self.assertFalse(executable.exists(), "extracted binary must be temporary")
+                self.assertNotEqual(executable.parent, archive.parent)
+                commands = [call.args[0] for call in run.call_args_list]
+                self.assertEqual([Path(command[1]).name for command in commands],
+                                 ["smoke.py", "incident-smoke.py"])
+                for command in commands:
+                    self.assertEqual(command[command.index("--binary") + 1], str(executable))
+                run.side_effect = [None, subprocess.CalledProcessError(1, "incident-smoke")]
+                with self.assertRaises(subprocess.CalledProcessError):
+                    verify_release.verify_archive(archive, self.version, self.revision, smoke=True)
 
     def test_archives_reject_invalid_contents_even_with_valid_checksum(self):
         for windows in [False, True]:

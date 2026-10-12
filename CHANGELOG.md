@@ -2,6 +2,12 @@
 
 ## Unreleased — v0.8.0-alpha.1
 
+- Validate archived native binaries with an end-to-end dangling-resource incident
+  exercise, including declared downstream impact, unchanged service PIDs,
+  privacy, offline export after configuration deletion/target repair, no-clobber
+  publication and incomplete evidence after abrupt supervisor death. Run the
+  same bounded exercise in Linux/macOS/Windows CI.
+
 - Add `incidents list/show` and `export --incident UUID` for recorded evidence,
   with explicit `--stored` access after shutdown. Pin online queries to the
   current instance/run; preserve historical generations, partial files, schema

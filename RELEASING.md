@@ -28,15 +28,23 @@ action after the source revision, checks, and artifacts have been reviewed.
    from foreign working directories, recovery-aware explanations, and bounded
    final readiness output under real pipe backpressure. Run the binding and
    cooperative shutdown fixture regressions as part of the same native suite.
+   v0.8 requires resource-chain/declared-impact coverage, retained single-run
+   export, incident correlation/retention and writer failures, recorded-evidence
+   isolation, missing configuration, repaired targets, partial tails and safe
+   reader leases. Run `python scripts/incident-smoke.py` against the selected
+   binary: it reproduces a dangling target, verifies unchanged service PIDs,
+   exports the original evidence offline, and checks the incomplete boundary
+   after abrupt supervisor death. Symlink privileges are mandatory on Windows.
 4. Trigger **Release artifacts** from main with the full source commit SHA in
    its required `revision` input. The workflow verifies the checkout and tests
    the archived release binary on each target platform.
    The packaging entry point is `python scripts/package-release.py <target>`;
    it requires committed tracked sources and an already-built native release
    binary, checks its version against Cargo.toml, writes archives/checksums under
-   `target/release-artifacts/`, then verifies the archive and runs recovery smoke
-   using its extracted binary. Python 3.11 or newer is required. It never publishes
-   them. The six-file allowlist excludes local-only design and agent documents.
+   `target/release-artifacts/`, then verifies the archive and runs recovery and
+   incident smoke using its extracted binary. Python 3.11 or newer is required.
+   It never publishes them. The six-file allowlist excludes local-only design
+   and agent documents.
 5. Download the Linux x86_64 and macOS arm64 `.tar.gz` artifacts and Windows
    x86_64 MSVC `.zip`. Verify each archive with `shasum -a 256 -c <file>.sha256`
    (or compare PowerShell `Get-FileHash -Algorithm SHA256` against its checksum).
@@ -47,19 +55,24 @@ action after the source revision, checks, and artifacts have been reviewed.
 
    ```bash
    python3 scripts/verify-release.py <archive> [<archive> ...] \
-     --version 0.7.0-alpha.1 --revision <full-40-character-SHA>
+     --version 0.8.0-alpha.1 --revision <full-40-character-SHA>
    ```
 
    Keep each checksum beside its archive. Add `--smoke` for a single native
-   archive to verify the actual executable version and repeat recovery testing.
+   archive to verify the executable version and repeat recovery/incident testing.
    The packaging workflow already does this on all three native hosts.
 6. Create a draft GitHub Release targeting that SHA, attach all three archives and
    checksums, and verify its notes, tag target, assets, and prerelease flag
    before publishing it. Use ordinary forward commits for any follow-up fixes.
    Use the matching changelog section for notes, state the validated source SHA,
    and keep the file-observation, reload failure, Agent grant and owned-directory
-   cleanup boundaries explicit. Candidate validation alone does not publish it. Any
-   source change requires CI and artifacts for the new SHA before publication.
+   cleanup boundaries explicit. Resource impact is declared reachability, not
+   causation; schema-1 incidents do not retain the complete impact graph. Fresh
+   post-trigger observations are non-atomic, abrupt death can leave incomplete
+   captures, and default exports still contain potentially sensitive identifiers
+   and paths. Optional logs have separate attribution. Candidate validation alone
+   does not publish it. Any source change requires CI and artifacts for the new
+   SHA before publication.
 
 The v0.1 MVP was an internal milestone, not a separately published release.
 Historical revisions are not release candidates for the current version.
