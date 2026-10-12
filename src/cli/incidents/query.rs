@@ -11,7 +11,11 @@ use crate::{
     platform::files,
 };
 use anyhow::{bail, Context, Result};
-use cap_std::fs::{Dir, MetadataExt};
+#[cfg(windows)]
+use cap_fs_ext::MetadataExt;
+use cap_std::fs::Dir;
+#[cfg(unix)]
+use cap_std::fs::MetadataExt;
 pub(in crate::cli) use model::Evidence;
 use serde::{Deserialize, Serialize};
 use std::{
