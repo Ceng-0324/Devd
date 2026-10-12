@@ -193,7 +193,10 @@ fn test_incidents_capture_deleted_target_chain_and_deadline_without_recovery() {
     write_config(
         root.path(),
         json!({"worker":{"command":fixture(),"env":{"PRIVATE":"SECRET-ENV"},"restart":{"policy":"never"},
-        "requires":[{"type":"file","path":"resource"}],"monitor-requires":true}}),
+        "requires":[{"type":"file","path":"resource"}],"monitor-requires":true},
+        "api":{"command":fixture(),"depends-on":["worker"],"restart":{"policy":"never"}},
+        "jobs":{"command":fixture(),"depends-on":["worker"],"restart":{"policy":"never"}},
+        "web":{"command":fixture(),"depends-on":["api","jobs"],"restart":{"policy":"never"}}}),
     );
     let mut child = start(root.path(), true);
     success(invoke(root.path(), &["wait", "--timeout", "15s"]));
@@ -238,7 +241,24 @@ fn test_incidents_capture_deleted_target_chain_and_deadline_without_recovery() {
     assert!(shown["incident"]["declared_impact"]
         .as_str()
         .unwrap()
-        .contains("unknown"));
+        .contains("recorded-declared-relationships"));
+    let relationships = &shown["incident"]["resources"]["relationships"];
+    assert_eq!(relationships["dependencies"].as_array().unwrap().len(), 4);
+    assert_eq!(
+        relationships["impacts"][0]["view"]["downstream"]
+            .as_array()
+            .unwrap()
+            .len(),
+        3
+    );
+    let tree = invoke(root.path(), &["incidents", "show", id]);
+    assert!(tree.status.success());
+    let text = String::from_utf8(tree.stdout).unwrap();
+    assert!(
+        text.contains("[ref]")
+            && text.contains("resource observation #0")
+            && text.contains("not proven causation")
+    );
     assert!(!invoke(root.path(), &["incidents", "list", "--stored"])
         .status
         .success());

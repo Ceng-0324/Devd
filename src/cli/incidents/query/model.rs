@@ -95,7 +95,7 @@ pub(super) fn parse(id: String, bytes: &[u8]) -> Evidence {
                 result.artifact_schema_version = data
                     .pointer("/capture/schema_version")
                     .and_then(|v| v.as_u64());
-                if result.artifact_schema_version != Some(1) {
+                if !matches!(result.artifact_schema_version, Some(1 | 2)) {
                     result.diagnostics = vec!["unsupported-incident-schema-upgrade-devd".into()];
                     result.collection_status = "unsupported-schema".into();
                     return result;
@@ -119,10 +119,25 @@ pub(super) fn parse(id: String, bytes: &[u8]) -> Evidence {
                     "effective-runtime-config-observed-after-trigger".into();
                 beginning.configuration.atomic = false;
                 beginning.configuration.trigger_time_equivalence = "not-guaranteed".into();
+                if result.artifact_schema_version == Some(2) {
+                    result.declared_impact = "unknown-missing-relationship-evidence".into();
+                    if beginning.configuration.observed_at != Some(beginning.capture.observed_at) {
+                        result
+                            .diagnostics
+                            .push("invalid-configuration-observation-time".into());
+                        break;
+                    }
+                } else {
+                    beginning.configuration.observed_at = None;
+                }
                 result.diagnostics.clear();
                 result.beginning = Some(beginning);
             }
             (1, Some("resources")) if result.beginning.is_some() => {
+                // Decode the graph independently: a damaged optional relationship
+                // section must not erase otherwise valid resource/end evidence.
+                let mut data = data;
+                let relationships = data.as_object_mut().and_then(|d| d.remove("relationships"));
                 let Ok(mut resource) = serde_json::from_value::<evidence::Resources>(data) else {
                     result.diagnostics.push("invalid-resource-record".into());
                     break;
@@ -160,6 +175,47 @@ pub(super) fn parse(id: String, bytes: &[u8]) -> Evidence {
                         .target
                         .risk_hints
                         .retain(|s| s == "temporary-location-is-not-deletion-authorization");
+                }
+                if result.artifact_schema_version == Some(1) {
+                    resource.relationships = None;
+                } else if let Some(saved) = relationships.filter(|v| !v.is_null()) {
+                    resource.relationships = serde_json::from_value(saved).ok();
+                    let valid = resource.relationships.as_mut().is_some_and(|g| {
+                        g.validate(
+                            &result.beginning.as_ref().unwrap().configuration,
+                            &resource.observations,
+                        )
+                    });
+                    if !valid {
+                        result
+                            .diagnostics
+                            .push("invalid-recorded-relationships".into());
+                        resource.relationships = None;
+                    } else {
+                        let relationships = resource.relationships.as_mut().unwrap();
+                        result.declared_impact = if relationships.complete() {
+                            "recorded-declared-relationships"
+                        } else {
+                            "partial-recorded-declared-relationships"
+                        }
+                        .into();
+                        if !relationships.complete() {
+                            result
+                                .diagnostics
+                                .push("declared-relationship-coverage-incomplete".into());
+                        }
+                        if relationships.observed_to < relationships.observed_from
+                            || relationships.observed_from < relationships.config_observed_at
+                        {
+                            result
+                                .diagnostics
+                                .push("relationship-observation-wall-clock-moved-backwards".into());
+                        }
+                    }
+                } else {
+                    result
+                        .diagnostics
+                        .push("missing-recorded-relationships".into());
                 }
                 result.resources = Some(resource);
             }
@@ -298,7 +354,14 @@ pub(super) fn parse(id: String, bytes: &[u8]) -> Evidence {
 
 fn valid_begin(begin: &Beginning, id: &str) -> bool {
     let capture = &begin.capture;
-    encoded_size(&capture.identity) <= 64 * 1024
+    (capture.schema_version != 2 || {
+        let mut names = std::collections::BTreeSet::new();
+        begin.configuration.services.iter().all(|s| {
+            s.name.len() <= 4096
+                && names.insert(&s.name)
+                && s.dependencies.iter().all(|d| d.service.len() <= 4096)
+        })
+    }) && encoded_size(&capture.identity) <= 64 * 1024
         && encoded_size(&capture.prior) <= 256 * 1024 + 1024
         && encoded_size(&begin.configuration) <= 128 * 1024 + 1024
         && capture.id == id

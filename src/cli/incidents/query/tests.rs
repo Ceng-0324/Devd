@@ -241,3 +241,114 @@ fn test_incident_wall_clock_regression_preserves_sequence_evidence() {
         .iter()
         .any(|s| s.contains("wall-clock")));
 }
+
+fn records_v2() -> (String, Vec<Value>) {
+    use super::super::{evidence, relationships};
+    use crate::{
+        config::ConfigLoader,
+        core::resource_impact::{self, Field, Selector},
+    };
+    let root = tempfile::tempdir().unwrap();
+    std::fs::write(root.path().join("data"), "SECRET").unwrap();
+    let config = ConfigLoader::from_str("version: '1'\nservices:\n  api: {command: SECRET, requires: [{type: file, path: data}]}\n  web: {command: SECRET, depends-on: [api]}\n", root.path().join("devd.yml")).unwrap();
+    let (id, mut records) = records();
+    let now = serde_json::from_value(records[0]["data"]["capture"]["observed_at"].clone()).unwrap();
+    let mut configuration = evidence::configuration(&config);
+    configuration.observed_at = Some(now);
+    let observations = vec![evidence::Resource {
+        target: resource_impact::select(
+            &config,
+            root.path(),
+            Selector {
+                service: "api".into(),
+                field: Field::Requires { index: 0 },
+            },
+        )
+        .unwrap(),
+        requirement_type: Some(crate::config::PathRequirementType::File),
+        declared_cleanup: None,
+    }];
+    let graph = relationships::capture(&config, root.path(), &observations, now, || false);
+    records[0]["data"]["capture"]["schema_version"] = json!(2);
+    records[0]["data"]["configuration"] = serde_json::to_value(configuration).unwrap();
+    records[1]["data"]["observations"] = serde_json::to_value(observations).unwrap();
+    records[1]["data"]["relationships"] = serde_json::to_value(graph).unwrap();
+    (id, records)
+}
+
+#[test]
+fn test_incident_schema_two_relationships_are_historical_and_schema_one_stays_unknown() {
+    let (id, mut records) = records_v2();
+    let decoded = model::parse(id.clone(), &bytes(&records));
+    assert!(decoded.complete, "{:?}", decoded.diagnostics);
+    assert_eq!(decoded.declared_impact, "recorded-declared-relationships");
+    let graph = decoded.resources.unwrap().relationships.unwrap();
+    assert_eq!(graph.impacts[0].view.downstream[0].service, "web");
+    records[0]["data"]["capture"]["schema_version"] = json!(1);
+    let old = model::parse(id, &bytes(&records));
+    assert!(old.complete);
+    assert_eq!(old.declared_impact, "unknown-not-recorded-by-schema-1");
+    assert!(old.resources.unwrap().relationships.is_none());
+}
+
+#[test]
+fn test_incident_relationship_damage_preserves_resource_and_end_prefix() {
+    let (id, records) = records_v2();
+    for (path, value) in [
+        ("/data/relationships/impacts/0/observation_index", json!(9)),
+        (
+            "/data/relationships/impacts/0/view/matches/0/selector/service",
+            json!("unknown"),
+        ),
+        (
+            "/data/relationships/impacts/0/view/matches/0/selector/index",
+            json!(999),
+        ),
+        (
+            "/data/relationships/dependencies/0/dependency",
+            json!("unknown"),
+        ),
+        ("/data/relationships/omitted_dependencies", json!(1)),
+        (
+            "/data/relationships/impacts/0/view/matches/0/basis",
+            json!("unknown"),
+        ),
+        ("/data/relationships/impacts", json!("malformed")),
+    ] {
+        let mut bad = records.clone();
+        *bad[1].pointer_mut(path).unwrap() = value;
+        let decoded = model::parse(id.clone(), &bytes(&bad));
+        assert!(!decoded.complete, "{path}");
+        assert!(
+            decoded.beginning.is_some() && decoded.resources.is_some() && decoded.end.is_some(),
+            "{path}"
+        );
+        assert!(decoded.resources.unwrap().relationships.is_none());
+        assert!(decoded.declared_impact.starts_with("unknown"));
+    }
+    let mut missing = records;
+    missing[1]["data"]
+        .as_object_mut()
+        .unwrap()
+        .remove("relationships");
+    let decoded = model::parse(id, &bytes(&missing));
+    assert!(!decoded.complete && decoded.end.is_some());
+    assert!(decoded
+        .diagnostics
+        .iter()
+        .any(|d| d == "missing-recorded-relationships"));
+}
+
+#[test]
+fn test_incident_relationship_clock_regression_keeps_graph_but_reports_gap() {
+    let (id, mut records) = records_v2();
+    records[1]["data"]["relationships"]["observed_to"] = json!("2000-01-01T00:00:00Z");
+    let decoded = model::parse(id, &bytes(&records));
+    assert!(!decoded.complete);
+    assert!(decoded.resources.unwrap().relationships.is_some());
+    assert!(decoded.end.is_some());
+    assert!(decoded
+        .diagnostics
+        .iter()
+        .any(|d| d == "relationship-observation-wall-clock-moved-backwards"));
+}

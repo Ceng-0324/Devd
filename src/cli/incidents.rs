@@ -1,6 +1,7 @@
 //! Opt-in evidence collection. Never sends service controls or drains application output.
 pub(super) mod evidence;
 pub(super) mod query;
+mod relationships;
 mod storage;
 
 use super::{export::SafeServiceState, instances::Identity};
@@ -195,7 +196,7 @@ pub(super) async fn run(storage: Storage, source: Source) -> Result<Statistics> 
                                 drop(snapshot);
                                 statistics.admitted = statistics.admitted.saturating_add(1);
                                 let capture = evidence::Begin {
-                                    schema_version: 1, id: id.clone(), identity: source.identity.clone(),
+                                    schema_version: 2, id: id.clone(), identity: source.identity.clone(),
                                     trigger: (*event).clone(), observed_at, observed_generation, state,
                                     prior: prior.events(), prior_omitted: prior.omitted,
                                     statistics: statistics.clone(),

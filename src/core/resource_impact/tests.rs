@@ -101,11 +101,14 @@ fn test_binding_direct_recipients_and_required_alias_keep_distinct_declaration_s
         .iter()
         .find(|c| c.service == "api")
         .unwrap();
-    assert!(api.reasons.iter().any(|r| r.relation == "requires"));
     assert!(api
         .reasons
         .iter()
-        .any(|r| r.relation == "binding-recipient"));
+        .any(|r| r.relation == ConsumerRelation::Requires));
+    assert!(api
+        .reasons
+        .iter()
+        .any(|r| r.relation == ConsumerRelation::BindingRecipient));
     assert_eq!(view.downstream[0].via_services, ["api", "web"]);
 }
 

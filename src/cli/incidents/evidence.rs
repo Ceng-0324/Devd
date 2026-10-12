@@ -46,6 +46,8 @@ pub(in crate::cli) struct End {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(in crate::cli) struct Configuration {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(in crate::cli) observed_at: Option<DateTime<Utc>>,
     pub(in crate::cli) source: String,
     pub(in crate::cli) atomic: bool,
     pub(in crate::cli) trigger_time_equivalence: String,
@@ -76,6 +78,7 @@ pub(in crate::cli) struct Limits {
 
 pub(in crate::cli) fn configuration(config: &DevdConfig) -> Configuration {
     let mut summary = Configuration {
+        observed_at: None,
         source: "effective-runtime-config-observed-after-trigger".into(),
         atomic: false,
         trigger_time_equivalence: "not-guaranteed".into(),
@@ -143,6 +146,8 @@ pub(in crate::cli) struct Resources {
     pub(in crate::cli) observed_to: DateTime<Utc>,
     pub(in crate::cli) atomic: bool,
     pub(in crate::cli) trigger_time_equivalence: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relationships: Option<super::relationships::Graph>,
     pub observations: Vec<Resource>,
     pub omitted: usize,
     pub interrupted: bool,
@@ -172,16 +177,34 @@ pub(in crate::cli) fn resources(
         observed_to: Utc::now(),
         atomic: false,
         trigger_time_equivalence: "not-guaranteed".into(),
+        relationships: None,
         observations: vec![],
         omitted: 0,
         interrupted: false,
         unavailable: 0,
     };
     let Some(name) = capture.trigger.service.as_ref() else {
+        report.unavailable = 1;
+        report.relationships = Some(super::relationships::capture(
+            config,
+            state,
+            &[],
+            capture.observed_at,
+            || true,
+        ));
+        report.observed_to = Utc::now();
         return report;
     };
     let Some(service) = config.services.get(name) else {
         report.unavailable = 1;
+        report.relationships = Some(super::relationships::capture(
+            config,
+            state,
+            &[],
+            capture.observed_at,
+            || true,
+        ));
+        report.observed_to = Utc::now();
         return report;
     };
     let mut fields = vec![];
@@ -243,6 +266,17 @@ pub(in crate::cli) fn resources(
         report.interrupted = true;
     }
     report.omitted = total.saturating_sub(report.observations.len() + report.unavailable);
+    report.relationships = Some(super::relationships::capture(
+        config,
+        state,
+        &report.observations,
+        capture.observed_at,
+        || {
+            Instant::now() >= deadline
+                || finished.load(Ordering::Acquire)
+                || cancelled.load(Ordering::Acquire)
+        },
+    ));
     report.observed_to = Utc::now();
     report
 }

@@ -29,11 +29,18 @@ impl DependencyGraph {
     /// Configuration fields and readiness probes are checked by `DevdConfig::validate`.
     /// Cycles are reported by `validate_acyclic`, `topological_order`, and `startup_layers`.
     pub fn from_config(config: &DevdConfig) -> Result<Self, DependencyError> {
-        let mut dependencies: BTreeMap<_, _> = config
+        let dependencies: BTreeMap<_, _> = config
             .services
             .iter()
             .map(|(name, service)| (name.clone(), service.depends_on.clone()))
             .collect();
+        Self::from_dependencies(dependencies)
+    }
+
+    /// Construct an observation-only graph without synthesizing executable configuration.
+    pub(crate) fn from_dependencies(
+        mut dependencies: BTreeMap<String, Vec<Dependency>>,
+    ) -> Result<Self, DependencyError> {
         for edges in dependencies.values_mut() {
             edges.sort_unstable_by(|left, right| left.service.cmp(&right.service));
         }

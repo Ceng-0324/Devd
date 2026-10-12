@@ -360,18 +360,30 @@ Stop, reload and generation replacement end existing windows early with their
 reason; a later failure may start its own capture. Control events and outcomes
 are included only if observed within the window, never inferred from a request.
 
-Files live in the selected instance/profile's `incidents/` directory. Schema 1
+Files live in the selected instance/profile's `incidents/` directory. Schema 2
 JSONL records contain a durable `begin`, a `resources` observation and an `end`.
 The beginning preserves instance/run identity, trigger generation, prior events,
 allowlisted state and an effective-runtime configuration summary observed after
 the trigger. That state/configuration may already belong to a later generation
 or reload: observation time and generation are explicit, and trigger-time
 equivalence is not guaranteed. Fresh post-trigger inspections reuse the bounded
-path/link resolver for at most eight declarations of the triggering service;
-they never substitute for the historical path-condition event or prove causation.
-Configuration summaries cap at 256 services, 64 dependencies per service and
-128 KiB. Missing services, skipped declarations and interrupted inspections remain
-explicit. No filesystem snapshot or restorable session is promised.
+path/link resolver for at most eight declarations of the triggering service.
+
+Schema 2 also retains the effective declared dependency graph and the recorded
+resource-match basis used to derive direct consumers and downstream services.
+`incidents show` presents that DAG as a readable tree; a `[ref]` marks a shared
+service already expanded elsewhere, while JSON preserves all recorded edges. The
+view is a declaration-based impact hypothesis, not access tracing or a causal
+claim. The configuration summary retains at most 256 services, 64 dependencies
+per service and 128 KiB. The relationship section is capped at 512 KiB with at
+most 1,024 edges; resource projections share a batch of at most 256 distinct path
+inspections, examine at most 256 declarations per selected resource and retain
+at most 64 matches per resource. Tree output is capped at 128 KiB plus coverage
+notes. Omissions, uncertain aliases, and interrupted work remain explicit;
+an incomplete service graph cannot produce a complete resource projection.
+After the target is repaired or YAML is removed, readers use only these retained
+facts. Schema-1 artifacts remain readable with declared impact explicitly
+`unknown-not-recorded-by-schema-1`; devd never rebuilds them from current files.
 
 Each artifact is limited to 2 MiB, and at most 20 are retained, including partial
 files. Existing artifacts are ordered by modification time/name at startup;

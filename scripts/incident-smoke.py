@@ -123,7 +123,12 @@ def exercise(binary):
                 assert recorded["resources"]["atomic"] is False
                 assert recorded["resources"]["source"] == "fresh-post-trigger-metadata-and-link-inspection"
                 assert recorded["resources"]["observations"][0]["inspection"]["failure"] == "dangling-symlink"
-                assert recorded["declared_impact"] == "unknown-not-recorded-by-schema-1"
+                assert recorded["artifact_schema_version"] == 2
+                assert "recorded-declared-relationships" in recorded["declared_impact"]
+                relationships = recorded["resources"]["relationships"]
+                assert relationships["atomic"] is False
+                assert relationships["config_observed_at"] == recorded["beginning"]["capture"]["observed_at"]
+                assert relationships["impacts"][0]["view"]["downstream"] == broken["current"]["downstream"]
                 private_free(recorded)
                 after = read("status")
                 for name in services:

@@ -401,7 +401,7 @@ fn render_view(text: &mut String, label: &str, view: &View) {
                 .map(|reason| (
                     &reason.declaration.service,
                     &reason.declaration.field,
-                    reason.relation
+                    reason.relation.as_str()
                 ))
                 .collect::<Vec<_>>()
         )

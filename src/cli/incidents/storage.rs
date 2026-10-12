@@ -173,9 +173,11 @@ impl Storage {
                         bytes: 0,
                         _permit: permit,
                     };
+                    let mut configuration = evidence::configuration(&config);
+                    configuration.observed_at = Some(capture.observed_at);
                     artifact.append(&Record::Begin {
                         capture: &capture,
-                        configuration: evidence::configuration(&config),
+                        configuration,
                         limitations: evidence::LIMITATIONS,
                         retention_evicted_this_recorder: self.evicted,
                     })?;

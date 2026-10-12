@@ -93,10 +93,15 @@ state isolation, separate log attachments, no-clobber output, malformed/partial
 files, unsupported schemas, hard links, symlinks and oversized records. Reader
 unit tests cover schema/identity/order checks, privacy filtering, scan limits,
 replacement during reads, state/writer lease retention, cancellation and output
-backpressure. The end-to-end deletion walkthrough is in both READMEs.
+backpressure. Relationship tests cover shared-node tree references, complete DAG
+edges, historical reprojection without files, service/edge capacity gaps, bounded
+shared inspections, cycle rejection, schema-1 compatibility and damaged optional
+graphs that preserve valid resource/end records. The end-to-end deletion
+walkthrough is in both READMEs.
 `scripts/incident-smoke.py` executes that workflow against a selected native
-binary, including declared direct/downstream impact, unchanged PIDs, independent
-recording permissions, offline export after configuration deletion and target
+binary, including schema-2 retained dependency/resource relationships,
+unchanged PIDs, independent recording permissions, offline export after
+configuration deletion and target
 repair, privacy, no-clobber output and abrupt-death incomplete evidence. It owns
 isolated temporary fixtures and releases its Unix workers after a supervisor kill;
 Windows uses Job teardown. CI runs it on all three platforms, and release archive

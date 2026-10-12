@@ -441,6 +441,20 @@ fn render(report: &Report) -> String {
             evidence.declared_impact
         )
         .unwrap();
+        if let Some(graph) = evidence
+            .resources
+            .as_ref()
+            .and_then(|r| r.relationships.as_ref())
+        {
+            let trigger = evidence
+                .beginning
+                .as_ref()
+                .and_then(|b| b.capture.trigger.service.as_deref())
+                .unwrap_or("");
+            text.push_str(
+                &graph.render(trigger, &evidence.resources.as_ref().unwrap().observations),
+            );
+        }
         // JSON escaping keeps untrusted paths/control bytes safe in terminals.
         text.push_str(&serde_json::to_string_pretty(evidence).expect("typed evidence"));
     }

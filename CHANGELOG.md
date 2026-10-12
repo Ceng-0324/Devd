@@ -3,6 +3,14 @@
 Release assets, source revisions and validation evidence are on
 [GitHub Releases](https://github.com/Ceng-0324/Devd/releases).
 
+## v0.9.0-alpha.1 — Unreleased
+
+- Retain bounded capture-time declared dependency/resource relationships in
+  schema-2 incident artifacts. `incidents show` projects the preserved DAG as a
+  readable tree with shared-node references; JSON keeps the typed graph, match
+  basis, explicit limits and coverage gaps. Historical readers never reload YAML
+  or inspect repaired paths, while schema-1 artifacts remain explicitly unknown.
+
 ## v0.8.0-alpha.1 — 2026-10-12
 
 - Validate archived native binaries with an end-to-end dangling-resource incident

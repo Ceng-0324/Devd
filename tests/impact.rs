@@ -171,7 +171,9 @@ fn test_impact_profile_alias_and_no_process_side_effects() {
     assert!(!root.path().join(".devd").exists());
     let text = invoke(root.path(), &["impact", "db", "--path", "DATA"]);
     assert!(text.status.success());
-    assert!(String::from_utf8_lossy(&text.stdout).contains("binding-recipient"));
+    let output = String::from_utf8_lossy(&text.stdout);
+    assert!(output.contains("\"binding-recipient\""));
+    assert!(!output.contains("\\\"binding-recipient\\\""));
 }
 
 #[test]

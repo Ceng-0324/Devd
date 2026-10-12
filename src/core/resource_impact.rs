@@ -42,14 +42,14 @@ pub struct Target {
     pub risk_hints: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum MatchBasis {
     SameRequestedPath,
     SameObservedTarget,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Match {
     pub selector: Selector,
     pub declared_path: PathBuf,
@@ -62,27 +62,45 @@ pub struct Match {
     pub conflicts_with_selection: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConsumerRelation {
+    Requires,
+    BindingProvider,
+    BindingRecipient,
+}
+
+impl ConsumerRelation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Requires => "requires",
+            Self::BindingProvider => "binding-provider",
+            Self::BindingRecipient => "binding-recipient",
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct ConsumerReason {
     pub declaration: Selector,
     /// `requires`, `binding-provider`, or `binding-recipient`.
-    pub relation: &'static str,
+    pub relation: ConsumerRelation,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Consumer {
     pub service: String,
     pub reasons: Vec<ConsumerReason>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct Downstream {
     pub service: String,
     /// First element is a direct declared user; subsequent edges are service dependencies.
     pub via_services: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct View {
     pub complete: bool,
     pub omitted_declarations: usize,
@@ -158,6 +176,19 @@ pub fn select(config: &DevdConfig, state_dir: &Path, selector: Selector) -> Resu
 /// Assess one effective on-disk configuration. For peer instances the caller
 /// must label this a candidate: a live identity does not prove YAML matches memory.
 pub fn analyze(config: &DevdConfig, state_dir: &Path, target: &Target) -> Result<View> {
+    analyze_with(config, state_dir, target, |path| {
+        Some(resource_inspection::inspect(path))
+    })
+}
+
+/// The caller can bound/cancel inspections and reuse one observation batch.
+/// None means unobserved, never a negative alias match.
+pub(crate) fn analyze_with(
+    config: &DevdConfig,
+    state_dir: &Path,
+    target: &Target,
+    mut inspect: impl FnMut(&Path) -> Option<resource_inspection::Inspection>,
+) -> Result<View> {
     let service_nodes = config.services.len();
     let dependency_edges = config
         .services
@@ -181,7 +212,6 @@ pub fn analyze(config: &DevdConfig, state_dir: &Path, target: &Target) -> Result
         direct_consumers: vec![],
         downstream: vec![],
     };
-    let mut direct: BTreeMap<String, BTreeSet<(Selector, &'static str)>> = BTreeMap::new();
     let mut examined = 0;
     for service in graph.service_names() {
         let definition = &config.services[service];
@@ -222,12 +252,18 @@ pub fn analyze(config: &DevdConfig, state_dir: &Path, target: &Target) -> Result
                 view.complete = false;
                 continue;
             };
-            if requested_path.as_os_str().len() > resource_inspection::MAX_PATH_BYTES {
+            if declared_path.as_os_str().len() > resource_inspection::MAX_PATH_BYTES
+                || requested_path.as_os_str().len() > resource_inspection::MAX_PATH_BYTES
+            {
                 view.uncertain_aliases += 1;
                 view.complete = false;
                 continue;
             }
-            let observation = resource_inspection::inspect(&requested_path);
+            let Some(observation) = inspect(&requested_path) else {
+                view.uncertain_aliases += 1;
+                view.complete = false;
+                continue;
+            };
             let same_request = requested_path == target.requested_path;
             let same_target = target.inspection.complete
                 && target.inspection.failure.is_none()
@@ -273,31 +309,43 @@ pub fn analyze(config: &DevdConfig, state_dir: &Path, target: &Target) -> Result
                 observed_target: observation.resolved,
                 inspection_complete: observation.complete,
             };
-            let reason = match_entry.selector.clone();
-            match &match_entry.selector.field {
-                Field::Requires { .. } => {
-                    direct
-                        .entry(service.to_owned())
-                        .or_default()
-                        .insert((reason, "requires"));
-                }
-                Field::Paths { .. } => {
-                    direct
-                        .entry(service.to_owned())
-                        .or_default()
-                        .insert((reason.clone(), "binding-provider"));
-                    for recipient in graph.dependents(service).expect("graph service exists") {
-                        direct
-                            .entry(recipient.clone())
-                            .or_default()
-                            .insert((reason.clone(), "binding-recipient"));
-                    }
-                }
-            }
             if !match_entry.inspection_complete || match_entry.conflicts_with_selection {
                 view.complete = false;
             }
             view.matches.push(match_entry);
+        }
+    }
+    project(&mut view, &graph);
+    Ok(view)
+}
+
+/// Derive reachability solely from retained matches and declared service edges.
+pub(crate) fn project(view: &mut View, graph: &DependencyGraph) {
+    view.direct_consumers.clear();
+    view.downstream.clear();
+    let mut direct: BTreeMap<String, BTreeSet<(Selector, ConsumerRelation)>> = BTreeMap::new();
+    for entry in &view.matches {
+        let service = &entry.selector.service;
+        let reason = entry.selector.clone();
+        match &reason.field {
+            Field::Requires { .. } => {
+                direct
+                    .entry(service.clone())
+                    .or_default()
+                    .insert((reason, ConsumerRelation::Requires));
+            }
+            Field::Paths { .. } => {
+                direct
+                    .entry(service.clone())
+                    .or_default()
+                    .insert((reason.clone(), ConsumerRelation::BindingProvider));
+                for recipient in graph.dependents(service).expect("graph service exists") {
+                    direct
+                        .entry(recipient.clone())
+                        .or_default()
+                        .insert((reason.clone(), ConsumerRelation::BindingRecipient));
+                }
+            }
         }
     }
     let mut direct_set = BTreeSet::new();
@@ -336,7 +384,6 @@ pub fn analyze(config: &DevdConfig, state_dir: &Path, target: &Target) -> Result
     }
     view.downstream
         .sort_by(|left, right| left.service.cmp(&right.service));
-    Ok(view)
 }
 
 #[cfg(test)]
