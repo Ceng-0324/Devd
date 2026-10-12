@@ -124,6 +124,8 @@ enum Command {
     Events(events::Args),
     /// Save bounded live, retained-run or incident evidence to a new JSON file.
     Export(export::Args),
+    /// Diagnose a transferred JSON report without a project or supervisor.
+    Diagnose(export::diagnose::Args),
     /// List or inspect bounded recorded incident evidence.
     Incidents(incidents::query::Args),
     /// Explain the latest deterministic cause for one service.
@@ -199,6 +201,15 @@ enum SnapshotAction {
 
 impl Cli {
     pub async fn run(self) -> Result<()> {
+        if let Command::Diagnose(args) = self.command {
+            if self.profile.is_some()
+                || self.state_dir.is_some()
+                || self.config != Path::new("devd.yml")
+            {
+                bail!("diagnose reads only its report; --config, --profile and --state-dir are not supported");
+            }
+            return export::diagnose::run(args).await;
+        }
         if let Command::Instances { json } = self.command {
             if self.profile.is_some()
                 || self.state_dir.is_some()
@@ -346,6 +357,7 @@ impl Cli {
             Command::Wait(args) => wait::run(args, &socket).await?,
             Command::Identity { json } => instances::show(&socket, json).await?,
             Command::Instances { .. } => unreachable!("handled before configuration resolution"),
+            Command::Diagnose(_) => unreachable!("handled before configuration resolution"),
             Command::Explain(args) => explain::run(args, &socket, &state_dir).await?,
             Command::Reload(args) => reload::run(args, &socket, &config_path).await?,
             Command::Clean(args) => {

@@ -321,7 +321,7 @@ impl Graph {
 
     /// A bounded tree projection: one expansion per node, shared/cyclic edges
     /// become references. Stored edges always retain every recorded parent.
-    pub(super) fn render(&self, trigger: &str, observations: &[Resource]) -> String {
+    pub(in crate::cli) fn render(&self, trigger: &str, observations: &[Resource]) -> String {
         let Some(graph) = self.dependency_graph() else {
             return "Declared relationships unavailable.\n".into();
         };

@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -57,7 +58,7 @@ def exercise(binary):
 
         def cli(*arguments, required=True):
             result = subprocess.run([binary, *arguments, "--color", "never"], cwd=root,
-                                    capture_output=True, text=True, timeout=15)
+                                    capture_output=True, text=True, encoding="utf-8", timeout=15)
             if required and result.returncode:
                 raise AssertionError(f"devd {arguments}: {result.stderr}")
             return result
@@ -94,6 +95,50 @@ def exercise(binary):
             text = json.dumps(value)
             assert SECRET not in text, "default evidence leaked private content"
             assert "--worker" not in text, "default evidence leaked command"
+
+        def transferred(report, expected):
+            # Only the report reaches the recipient. Hide the source state and
+            # resource names as well, so accidental source access cannot pass.
+            with tempfile.TemporaryDirectory(prefix="di-recipient-") as destination:
+                recipient = Path(destination)
+                shutil.copyfile(report, recipient / "evidence.json")
+                hidden = []
+                for source in (root / ".devd", root / "resource", target):
+                    if source.exists() or source.is_symlink():
+                        moved = source.with_name(source.name + ".hidden")
+                        source.rename(moved)
+                        hidden.append((source, moved))
+                try:
+                    def diagnose(*args, required=True):
+                        result = subprocess.run([binary, "diagnose", "evidence.json", *args],
+                                                cwd=recipient, capture_output=True, text=True, encoding="utf-8", timeout=15)
+                        if required:
+                            assert result.returncode == 0, result.stderr
+                        return result
+
+                    value = json.loads(diagnose("--json").stdout)
+                    assert value["source"] == "imported-report"
+                    assert value["current_health"] == "not-inspected-historical-evidence-only"
+                    assert value["incident"] == expected
+                    assert all(e["run_id"] == expected["beginning"]["capture"]["identity"]["run_id"]
+                               for e in value["timeline"]["entries"])
+                    text = diagnose().stdout
+                    assert "not proven causation" in text or expected["resources"].get("relationships") is None
+                    assert "Timeline" in text and "Deterministic explanations" in text
+                    private_free(value)
+                    assert list(recipient.iterdir()) == [recipient / "evidence.json"]
+                    # A broken optional graph must preserve valid path/end facts.
+                    damaged = json.loads((recipient / "evidence.json").read_text(encoding="utf-8"))
+                    damaged["incident"]["recorded"]["incident"]["resources"]["relationships"] = {"schema_version": 999}
+                    (recipient / "evidence.json").write_text(json.dumps(damaged), encoding="utf-8")
+                    partial = json.loads(diagnose("--json").stdout)["incident"]
+                    assert partial["resources"]["observations"] == expected["resources"]["observations"]
+                    assert partial["end"] == expected["end"]
+                    assert partial["resources"].get("relationships") is None and partial["complete"] is False
+                    assert "invalid-recorded-relationships" in partial["diagnostics"]
+                finally:
+                    for source, moved in reversed(hidden):
+                        moved.rename(source)
 
         child = None
         with (root / "supervisor.stderr").open("w", encoding="utf-8") as errors:
@@ -155,6 +200,7 @@ def exercise(binary):
                 assert output.read_bytes() == original, "existing export was overwritten"
                 assert not (root / ".devd/devd.yml/logs").exists()
                 assert not (root / ".devd/devd.yml/events").exists()
+                transferred(output, recorded)
 
                 for name in services:
                     (root / f"{name}.done").unlink(missing_ok=True)
@@ -191,6 +237,8 @@ def exercise(binary):
                 assert incomplete["complete"] is False and incomplete["end"] is None
                 assert "missing-end-open-or-interrupted-capture" in incomplete["diagnostics"]
                 private_free(incomplete)
+                cli("export", "--stored", "--incident", partial["id"], "--output", "incomplete.json")
+                transferred(root / "incomplete.json", incomplete)
             except BaseException:
                 errors.flush()
                 print((root / "supervisor.stderr").read_text(encoding="utf-8"), file=sys.stderr)
@@ -204,7 +252,7 @@ def exercise(binary):
                     except (AssertionError, subprocess.SubprocessError):
                         child.kill()
                         child.wait(timeout=10)
-        print("Native incident smoke passed: declared impact, dangling link, privacy, offline export, abrupt boundary")
+        print("Native incident smoke passed: declared impact, dangling link, privacy, transferred diagnosis, abrupt boundary")
 
 
 def main():

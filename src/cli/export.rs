@@ -1,4 +1,5 @@
 //! Bounded diagnostic reports from live or explicitly selected retained sources.
+pub(super) mod diagnose;
 mod incident;
 pub(super) mod output;
 mod stored;

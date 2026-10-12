@@ -276,6 +276,26 @@ devd start --record-incidents
 
 终端 B 进入该目录，先执行 `devd wait --timeout 30s`，再执行 `rm ./target.txt`。监测事件产生后，`devd incidents list` 给出 UUID，`devd incidents show UUID` 展示当时保存的悬空链接链。窗口在 5 秒后结束，停止/重载/换代也可能提前结束。执行 `devd stop` 后即可使用上面的 `--stored` 命令；后来补回 `target.txt`，也不会改写已有事故证据。
 
+### 换台机器继续诊断
+
+现场可以消失，证据不用跟着报废。把导出的 JSON 单独复制到装有 devd 的另一台机器或空目录：
+
+```bash
+devd diagnose incident.json
+devd diagnose incident.json --json
+# 普通在线报告、历史运行报告也能读：
+devd diagnose diagnostic.json --json
+devd diagnose retained.json
+```
+
+`diagnose` 支持导出 schema 1（在线）、2（历史运行）、3（事故），兼容没有 `source` 的旧在线报告。不需要原 YAML、状态目录、注册索引或 supervisor，`--config`、`--profile`、`--state-dir` 在这里不作实例选择。它只读传入的报告，不访问嵌入路径/URL，不连接原端点，也不执行报告里的内容或控制进程。
+
+文本与 JSON 使用同一份历史事实：采集区间、历史身份和陈旧状态、按事件序号排列的时间线、缺口、重新计算的解释，以及事故中已记录的资源观察与声明影响。文本将保存的 DAG 投影为树，共享节点显示引用；缺失关系仍然未知。事故解释固定触发代次，其他报告解释保留事件中的最新代次，采集时状态另列。报告自带的解释不会直接采信，旧代故障不会扣到已恢复的新代上。这些结果都不代表当前健康，连线也不证明因果；结构校验不等于验证报告真伪。
+
+机器输出为诊断 schema 1，`source: imported-report`。报告有效但证据不完整、内部事故版本不支持时，命令仍可成功返回诊断，需检查其中的缺口；未知导出版本、JSON 损坏/截断、事件身份或顺序矛盾、超限输入则报错。事故缺少 end 或可选关系区损坏时，保留合法证据并标明未知。无法从剩余记录重验的原读取器诊断标为 `imported-reader-reported`。原始日志不展示、不参与解释，只单列附件数量和运行归属。路径与标识仍可能敏感。
+
+输入必须是至多 16 MiB 的普通单硬链接文件；拒绝软链接、重解析点和特殊文件，检测到读取时替换则失败。最多 1,000 条事件、256 个服务名、129 条缺口记录，每份日志附件最多 200 条，嵌入事故仍受原有 2 MiB 限额约束。准备限时 30 秒、输出限时 5 秒，Ctrl+C 可取消；终端字段转义。命令只向 stdout 输出，不创建运行状态或修复文件。
+
 ### 显式配置实例端口与路径
 
 两个 worktree 不该一边抢同一个 API 端口，一边往同一个临时目录里写东西。把应用需要的地址和路径集中声明：
@@ -479,6 +499,7 @@ devd reload --apply --plan 'sha256:<64位十六进制摘要>' --candidate devd.n
 | `devd identity [--json]` | 查看所选活 supervisor 的实例与运行身份 |
 | `devd instances [--json]` | 发现当前仓库及其 worktree 中已登记的实例 |
 | `devd incidents list/show [UUID] [--stored] [--json]` | 查询当前运行或离线保留的事故证据 |
+| `devd diagnose REPORT.json [--json]` | 无需原项目，直接诊断移交报告 |
 | `devd export --incident UUID [--stored] --output FILE [--include-logs]` | 导出单事故报告 |
 | `devd export --output FILE [--include-logs]` | 导出有界的活实例诊断报告到新 JSON 文件 |
 | `devd export --stored --run UUID/latest --output FILE [--include-logs]` | 停止后导出指定历史运行 |

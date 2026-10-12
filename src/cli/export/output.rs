@@ -74,7 +74,7 @@ impl Drop for CancelOnDrop {
     }
 }
 
-struct BoundedBytes(Vec<u8>);
+pub(in crate::cli) struct BoundedBytes(pub(in crate::cli) Vec<u8>);
 impl Write for BoundedBytes {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         if bytes.len() > MAX_REPORT_BYTES.saturating_sub(self.0.len()) {
@@ -88,6 +88,12 @@ impl Write for BoundedBytes {
     }
 }
 
+pub(in crate::cli) fn encode(report: &impl serde::Serialize) -> Result<Vec<u8>> {
+    let mut bytes = BoundedBytes(Vec::new());
+    serde_json::to_writer_pretty(&mut bytes, report).context("cannot encode diagnostic report")?;
+    Ok(bytes.0)
+}
+
 pub(in crate::cli) fn publish_report(
     path: &Path,
     report: &impl serde::Serialize,
@@ -96,12 +102,11 @@ pub(in crate::cli) fn publish_report(
     control.check()?;
     #[cfg(windows)]
     super::super::snapshot::validate_windows_filename(path)?;
-    let mut bytes = BoundedBytes(Vec::new());
-    serde_json::to_writer_pretty(&mut bytes, report).context("cannot encode diagnostic report")?;
+    let bytes = encode(report)?;
     control.check()?;
     let directory = path.parent().context("destination has no parent")?;
     let mut temporary = tempfile::NamedTempFile::new_in(directory)?;
-    for chunk in bytes.0.chunks(64 * 1024) {
+    for chunk in bytes.chunks(64 * 1024) {
         control.check()?;
         temporary.write_all(chunk)?;
     }

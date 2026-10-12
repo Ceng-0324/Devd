@@ -491,6 +491,53 @@ closes after five seconds unless stop/reload/replacement ends it earlier.
 Run `devd stop`, then use the `--stored` commands above. Restoring `target.txt`
 later does not rewrite the saved observation.
 
+### Diagnose a report on another machine
+
+The project can disappear while the evidence stays useful. Copy just the exported
+JSON file to another directory or machine with devd installed:
+
+```bash
+devd diagnose incident.json
+devd diagnose incident.json --json
+# Live and retained-run reports work too:
+devd diagnose diagnostic.json --json
+devd diagnose retained.json
+```
+
+`diagnose` reads export schemas 1 (live), 2 (retained run) and 3 (incident),
+including older live reports without `source`. It needs no YAML, state directory,
+registry or running supervisor. `--config`, `--profile` and `--state-dir` are not
+selection options here. It never follows embedded paths or URLs, executes report
+content, contacts the original endpoint or controls a process.
+
+Text and JSON use the same historical facts: capture interval, recorded identity
+and stale state, sequence-ordered timeline, gaps, recomputed explanations and,
+for incidents, retained resource observations and declared impact. Text projects
+the recorded DAG as a tree with shared-node references. Missing relationships
+remain unknown. Incident explanations stay on the trigger's generation; other
+reports explain the latest retained event generation, with captured state shown
+separately. Imported explanations are ignored. Recovered services are not blamed
+for an earlier generation's failure. No result establishes current health or
+proves causation; schema validation does not authenticate a report.
+
+JSON output is diagnosis schema 1 with `source: imported-report`. A valid report
+can return success while containing incomplete evidence or an unsupported nested
+incident schema; inspect its diagnostics. Unknown export schemas, malformed or
+truncated JSON, inconsistent event identities/order and exceeded limits fail.
+Missing incident end records and damaged optional relationship sections preserve
+valid recorded evidence and explicit gaps. Diagnostics that cannot be rechecked
+from the surviving records are labelled `imported-reader-reported`. Raw logs are not displayed or used in
+explanations; attachment counts and run attribution stay separate. Paths and
+identifiers can still be sensitive.
+
+Input must be a regular single-link file, at most 16 MiB; symlinks, reparse points,
+special files and detected replacement during reading are rejected. Limits keep
+at most 1,000 events, 256 service names, 129 gap records, and 200 entries per log
+attachment; embedded incidents retain their original 2 MiB limit. Preparation
+expires after 30 seconds and output after five; Ctrl+C cancels either phase.
+Terminal fields are escaped. The command writes only to stdout and does not
+create a state directory or repair files.
+
 ### Explicit instance ports and paths
 
 Two worktrees should not silently fight over the same API port or write into the
@@ -780,6 +827,7 @@ Choose exactly one of `--dry-run` or `--apply`. Preview validates YAML, quoting,
 | `devd identity [--json]` | Show the selected live supervisor's instance and run identity |
 | `devd instances [--json]` | Discover registered instances in the current repository and its worktrees |
 | `devd incidents list/show [UUID] [--stored] [--json]` | Query recorded incidents in the current run or offline |
+| `devd diagnose REPORT.json [--json]` | Diagnose a transferred report without the original project |
 | `devd export --incident UUID [--stored] --output FILE [--include-logs]` | Export one recorded incident |
 | `devd export --output FILE [--include-logs]` | Save bounded live diagnostics to a new JSON file |
 | `devd export --stored --run UUID/latest --output FILE [--include-logs]` | Export one retained run after shutdown |

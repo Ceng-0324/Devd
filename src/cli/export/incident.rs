@@ -53,56 +53,7 @@ pub(super) async fn capture(
         .incident
         .as_ref()
         .context("missing incident evidence")?;
-    let mut events = EventBatch {
-        schema_version: 1,
-        source: EventSource::Stored,
-        persistence: None,
-        context: None,
-        first_available: None,
-        cursor: None,
-        gaps: vec![],
-        omitted_gaps: 0,
-        entries: vec![],
-    };
-    let mut explanations = BTreeMap::new();
-    if let Some(begin) = &evidence.beginning {
-        let b = &begin.capture;
-        events.context = Some(EventContext {
-            run_id: b.identity.run_id.clone(),
-            state_path: b.identity.state_dir.join("services.json"),
-            profile: b.identity.profile.clone(),
-        });
-        events.entries.extend(b.prior.iter().cloned());
-        events.entries.push(b.trigger.clone());
-        if let Some(end) = &evidence.end {
-            events.entries.extend(end.following.iter().cloned());
-        }
-        events.first_available = events.entries.first().map(|e| e.sequence);
-        events.cursor = events
-            .entries
-            .last()
-            .and_then(|e| e.sequence.checked_add(1))
-            .map(|next_sequence| EventCursor {
-                run_id: b.identity.run_id.clone(),
-                next_sequence,
-            });
-        // A bounded incident window never certifies a complete run's history.
-        events.gaps.push(EventGap::IncompleteRun {
-            run_id: b.identity.run_id.clone(),
-        });
-        let mut generation = events.clone();
-        generation
-            .entries
-            .retain(|e| e.service == b.trigger.service && e.generation == b.trigger.generation);
-        if let Some(name) = &b.trigger.service {
-            let mut explanation = crate::core::diagnostics::explain(name, None, &generation);
-            explanation.complete = false;
-            explanation
-                .details
-                .push("历史事故窗口中的记录；不代表当前健康，不推断未记录的资源影响或根因".into());
-            explanations.insert(name.clone(), explanation);
-        }
-    }
+    let (events, explanations) = describe(evidence);
     let (unassigned_stored_logs, current_run_logs) = if !include_logs {
         (None, None)
     } else if stored {
@@ -179,4 +130,64 @@ pub(super) async fn capture(
                 .collect(),
         }),
     })
+}
+
+/// Pure historical projection shared by export and transferred-report diagnosis.
+pub(super) fn describe(
+    evidence: &query::Evidence,
+) -> (
+    EventBatch,
+    BTreeMap<String, crate::core::diagnostics::ExplainReport>,
+) {
+    let mut events = EventBatch {
+        schema_version: 1,
+        source: EventSource::Stored,
+        persistence: None,
+        context: None,
+        first_available: None,
+        cursor: None,
+        gaps: vec![],
+        omitted_gaps: 0,
+        entries: vec![],
+    };
+    let mut explanations = BTreeMap::new();
+    if let Some(begin) = &evidence.beginning {
+        let b = &begin.capture;
+        events.context = Some(EventContext {
+            run_id: b.identity.run_id.clone(),
+            state_path: b.identity.state_dir.join("services.json"),
+            profile: b.identity.profile.clone(),
+        });
+        events.entries.extend(b.prior.iter().cloned());
+        events.entries.push(b.trigger.clone());
+        if let Some(end) = &evidence.end {
+            events.entries.extend(end.following.iter().cloned());
+        }
+        events.first_available = events.entries.first().map(|e| e.sequence);
+        events.cursor = events
+            .entries
+            .last()
+            .and_then(|e| e.sequence.checked_add(1))
+            .map(|next_sequence| EventCursor {
+                run_id: b.identity.run_id.clone(),
+                next_sequence,
+            });
+        // A bounded incident window never certifies a complete run's history.
+        events.gaps.push(EventGap::IncompleteRun {
+            run_id: b.identity.run_id.clone(),
+        });
+        let mut generation = events.clone();
+        generation
+            .entries
+            .retain(|e| e.service == b.trigger.service && e.generation == b.trigger.generation);
+        if let Some(name) = &b.trigger.service {
+            let mut explanation = crate::core::diagnostics::explain(name, None, &generation);
+            explanation.complete = false;
+            explanation
+                .details
+                .push("历史事故窗口中的记录；不代表当前健康，不推断未记录的资源影响或根因".into());
+            explanations.insert(name.clone(), explanation);
+        }
+    }
+    (events, explanations)
 }

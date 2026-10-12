@@ -32,6 +32,49 @@ fn bytes(records: &[Value]) -> Vec<u8> {
 }
 
 #[test]
+fn test_import_preserves_legacy_prefix_reader_gaps_and_unknown_schema() {
+    let (id, records) = records();
+    let complete = model::parse(id.clone(), &bytes(&records));
+    let imported = import(&serde_json::to_value(&complete).unwrap()).unwrap();
+    assert!(imported.complete);
+    assert_eq!(imported.declared_impact, "unknown-not-recorded-by-schema-1");
+    let mut unfinished = bytes(&records[..2]);
+    unfinished.extend_from_slice(b"{\"record\":");
+    let partial = model::parse(id.clone(), &unfinished);
+    let imported = import(&serde_json::to_value(&partial).unwrap()).unwrap();
+    assert!(!imported.complete);
+    assert!(imported.resources.is_some());
+    assert!(imported.end.is_none());
+    assert!(imported
+        .diagnostics
+        .iter()
+        .any(|d| d == "imported-reader-reported: unfinished-jsonl-tail"));
+
+    let mut extra = bytes(&records);
+    extra.extend_from_slice(b"{}\n");
+    let imported =
+        import(&serde_json::to_value(model::parse(id.clone(), &extra)).unwrap()).unwrap();
+    assert!(!imported.complete);
+    assert!(imported.end.is_some());
+    assert!(imported
+        .diagnostics
+        .iter()
+        .any(|d| d.contains("extra-records-after-end")));
+
+    let mut unsupported = records;
+    unsupported[0]["data"]["capture"]["schema_version"] = json!(999);
+    let imported =
+        import(&serde_json::to_value(model::parse(id, &bytes(&unsupported))).unwrap()).unwrap();
+    assert_eq!(imported.collection_status, "unsupported-schema");
+    assert_eq!(imported.artifact_schema_version, Some(999));
+    assert_eq!(
+        imported.declared_impact,
+        "unknown-unsupported-incident-schema"
+    );
+    assert!(imported.beginning.is_none());
+}
+
+#[test]
 fn test_incident_decoder_preserves_prefix_schema_order_identity_and_privacy() {
     let (id, mut records) = records();
     assert!(model::parse(id.clone(), &bytes(&records)).complete);

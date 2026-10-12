@@ -64,6 +64,81 @@ pub(in crate::cli) struct Report {
     pub incident: Option<Evidence>,
 }
 
+/// Revalidate transferred evidence through the same prefix parser as retained
+/// artifacts. Derived summaries and coverage claims in the report are ignored.
+pub(in crate::cli) fn import(value: &serde_json::Value) -> Result<Evidence> {
+    let id = value
+        .get("id")
+        .and_then(|v| v.as_str())
+        .context("missing incident ID")?;
+    let id = parse_id(id).map_err(anyhow::Error::msg)?;
+    if let Some(version) = value
+        .get("artifact_schema_version")
+        .and_then(|v| v.as_u64())
+    {
+        if !matches!(version, 1 | 2) {
+            let mut evidence = Evidence::empty(id, "unsupported-incident-schema-upgrade-devd");
+            evidence.artifact_schema_version = Some(version);
+            evidence.collection_status = "unsupported-schema".into();
+            evidence.declared_impact = "unknown-unsupported-incident-schema".into();
+            return Ok(evidence);
+        }
+    }
+    let mut bytes = Vec::new();
+    for (field, record) in [
+        ("beginning", "begin"),
+        ("resources", "resources"),
+        ("end", "end"),
+    ] {
+        if let Some(data) = value.get(field).filter(|v| !v.is_null()) {
+            serde_json::to_writer(
+                &mut bytes,
+                &serde_json::json!({"record":record, "data":data}),
+            )?;
+            bytes.push(b'\n');
+        }
+    }
+    // Escaping a transferred JSON object back to the artifact representation
+    // must still respect the recorder's original bound.
+    if bytes.len() > storage::MAX_BYTES {
+        bail!("incident evidence exceeds 2 MiB");
+    }
+    let mut evidence = model::parse(id, &bytes);
+    // Reader-only failures (e.g. a discarded JSONL tail) cannot be reproduced
+    // from the surviving records. Preserve them with explicit attribution.
+    if let Some(reported) = value.get("diagnostics") {
+        let reported = reported
+            .as_array()
+            .context("invalid incident diagnostics")?;
+        if reported.len() > 64 {
+            bail!("incident diagnostic count exceeds limit");
+        }
+        for diagnostic in reported {
+            let diagnostic = diagnostic.as_str().context("invalid incident diagnostic")?;
+            if diagnostic.len() > 256 {
+                bail!("incident diagnostic exceeds size limit");
+            }
+            if !evidence.diagnostics.iter().any(|d| d == diagnostic) {
+                evidence
+                    .diagnostics
+                    .push(format!("imported-reader-reported: {diagnostic}"));
+            }
+        }
+        if !reported.is_empty() {
+            evidence.complete = false;
+        }
+    }
+    // A previous reader may have discarded a damaged suffix/optional graph.
+    // Do not turn that loss of evidence into a newly complete collection.
+    if value.get("complete").and_then(|v| v.as_bool()) != Some(true) && evidence.complete {
+        evidence.complete = false;
+        evidence
+            .diagnostics
+            .push("imported-collection-reported-incomplete".into());
+    }
+    Ok(evidence)
+}
+
 #[derive(Clone)]
 pub(in crate::cli) struct Reader {
     directory: Arc<Dir>,

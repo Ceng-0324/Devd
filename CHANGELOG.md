@@ -5,6 +5,13 @@ Release assets, source revisions and validation evidence are on
 
 ## v0.9.0-alpha.1 — Unreleased
 
+- Add `diagnose REPORT.json [--json]` for transferred live, retained-run and
+  incident exports. Recompute historical explanations, show sequence timelines
+  and retained declared impact without the original project or endpoint. Bound
+  untrusted input/output, escape terminal fields, preserve partial evidence and
+  keep log metadata separate. Extend native CI exercises to copy reports into
+  an empty recipient directory with original state/resources unavailable.
+
 - Retain bounded capture-time declared dependency/resource relationships in
   schema-2 incident artifacts. `incidents show` projects the preserved DAG as a
   readable tree with shared-node references; JSON keeps the typed graph, match

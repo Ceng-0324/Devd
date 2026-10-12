@@ -98,6 +98,7 @@ pub(super) fn parse(id: String, bytes: &[u8]) -> Evidence {
                 if !matches!(result.artifact_schema_version, Some(1 | 2)) {
                     result.diagnostics = vec!["unsupported-incident-schema-upgrade-devd".into()];
                     result.collection_status = "unsupported-schema".into();
+                    result.declared_impact = "unknown-unsupported-incident-schema".into();
                     return result;
                 }
                 let Ok(mut beginning) = serde_json::from_value::<Beginning>(data) else {
@@ -399,6 +400,8 @@ fn valid_events(
     let mut previous = lower;
     for event in events {
         if event.run_id != run
+            || event.service.as_ref().is_some_and(|name| name.len() > 4096)
+            || encoded_size(event) > crate::core::events::MAX_EVENT_BYTES
             || previous.is_some_and(|n| n >= event.sequence)
             || upper.is_some_and(|n| event.sequence >= n)
             || event.generation.is_some_and(|n| n > event.sequence)

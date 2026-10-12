@@ -48,6 +48,67 @@ fn invoke(root: &Path, args: &[&str]) -> Output {
     }
 }
 
+fn transferred_report(root: &Path, filename: &str) -> Value {
+    let recipient = temporary();
+    fs::copy(root.join(filename), recipient.path().join("evidence.json")).unwrap();
+    let output = invoke(recipient.path(), &["diagnose", "evidence.json", "--json"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_dir(recipient.path()).unwrap().count(),
+        1,
+        "diagnosis created state"
+    );
+    let diagnosis: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(diagnosis["source"], "imported-report");
+    assert_eq!(
+        diagnosis["current_health"],
+        "not-inspected-historical-evidence-only"
+    );
+    diagnosis
+}
+
+#[test]
+fn test_diagnose_cli_rejects_bad_reports_and_instance_options_without_state() {
+    let root = temporary();
+    let path = root.path().join("report.json");
+    for content in [
+        r#"{"schema_version":999}"#.to_owned(),
+        r#"{"schema_version":1"#.to_owned(),
+        format!("{}0{}", "[".repeat(150), "]".repeat(150)),
+    ] {
+        fs::write(&path, content).unwrap();
+        let out = invoke(root.path(), &["diagnose", "report.json", "--json"]);
+        assert!(!out.status.success());
+        assert!(out.stdout.is_empty());
+        assert!(!out.stderr.contains(&0x1b));
+    }
+    for (option, value) in [
+        ("--config", "missing.yml"),
+        ("--profile", "dev"),
+        ("--state-dir", "missing-state"),
+    ] {
+        let out = invoke(root.path(), &[option, value, "diagnose", "report.json"]);
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("diagnose reads only its report"));
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&path, root.path().join("linked.json")).unwrap();
+        let out = invoke(root.path(), &["diagnose", "linked.json"]);
+        assert!(!out.status.success());
+        fs::remove_file(root.path().join("linked.json")).unwrap();
+        nix::unistd::mkfifo(&root.path().join("pipe"), nix::sys::stat::Mode::S_IRUSR).unwrap();
+        let out = invoke(root.path(), &["diagnose", "pipe"]);
+        assert!(!out.status.success());
+        fs::remove_file(root.path().join("pipe")).unwrap();
+    }
+    assert_eq!(fs::read_dir(root.path()).unwrap().count(), 1);
+}
+
 struct Supervisor(Child);
 impl Drop for Supervisor {
     fn drop(&mut self) {
@@ -256,6 +317,13 @@ fn test_export_and_explain_follow_recovered_generation() {
             .unwrap();
     assert_eq!(live["conclusion"], "running");
     assert_eq!(live["generation"], explanation["generation"]);
+    let diagnosis = transferred_report(root.path(), "recovered.json");
+    assert_eq!(diagnosis["input_schema_version"], 1);
+    assert_eq!(diagnosis["explanations"]["worker"]["conclusion"], "running");
+    assert_eq!(
+        diagnosis["explanations"]["worker"]["generation"],
+        explanation["generation"]
+    );
     assert!(invoke(root.path(), &["stop"]).status.success());
     let deadline = Instant::now() + Duration::from_secs(15);
     while supervisor.0.try_wait().unwrap().is_none() {
@@ -374,6 +442,14 @@ fn test_offline_export_explicit_runs_missing_yaml_historical_state_and_unassigne
     assert_eq!(old["stored"]["live_state"], "unavailable-offline");
     assert_eq!(old["stored"]["selection"]["profile"], "dev");
     assert!(old["stored"]["unassigned_logs"].is_null());
+    let diagnosis = transferred_report(root.path(), "old.json");
+    assert_eq!(diagnosis["input_schema_version"], 2);
+    assert_eq!(diagnosis["timeline"]["context"]["run_id"], runs[0]);
+    assert!(diagnosis["recorded_state"].as_object().unwrap().is_empty());
+    assert_eq!(
+        diagnosis["stored_run_coverage"]["state_availability"],
+        "different-run"
+    );
     assert!(!old.to_string().contains("SECRET-LOG-VALUE"));
     assert!(!old.to_string().contains("SECRET-ENV"));
     assert_success(export("latest", "latest.json", true));
@@ -396,6 +472,17 @@ fn test_offline_export_explicit_runs_missing_yaml_historical_state_and_unassigne
         latest["explanations"]["worker"]["conclusion"],
         "manually-stopped"
     );
+    let diagnosis = transferred_report(root.path(), "latest.json");
+    assert_eq!(
+        diagnosis["explanations"]["worker"]["conclusion"],
+        "manually-stopped"
+    );
+    assert_eq!(diagnosis["log_attachments"][0]["entries"], 200);
+    assert_eq!(
+        diagnosis["recorded_state"]["worker"],
+        latest["stored"]["historical_state"]["state"]["worker"]
+    );
+    assert!(!diagnosis.to_string().contains("SECRET-LOG-VALUE"));
     assert!(!export("latest", "latest.json", true).status.success());
     assert_eq!(latest, read_report(root.path(), "latest.json"));
     assert!(
@@ -530,6 +617,12 @@ fn test_offline_export_incomplete_tails_and_unsafe_files() {
         .iter()
         .any(|g| g["reason"] == "incomplete-run"));
     assert!(report["explanations"]["api"]["status"].is_null());
+    let diagnosis = transferred_report(root.path(), "incomplete.json");
+    assert_eq!(
+        diagnosis["stored_run_coverage"]["end_reported_retained"],
+        false
+    );
+    assert_eq!(diagnosis["explanations"]["api"]["complete"], false);
     fs::remove_file(&current).unwrap();
     let target = root.path().join("private-events");
     fs::write(&target, &content).unwrap();
