@@ -160,14 +160,19 @@ fn test_diagnose_input_limits_and_cancellation() {
     let root = tempfile::tempdir().unwrap();
     let file = root.path().join("report.json");
     std::fs::write(&file, serde_json::to_vec(&v).unwrap()).unwrap();
-    assert!(read(&file, &Control::new()).is_ok());
+    assert!(output::read_regular(&file, &Control::new(), MAX_REPORT_BYTES).is_ok());
     let extra = root.path().join("hardlink");
     std::fs::hard_link(&file, &extra).unwrap();
-    assert!(read(&file, &Control::new()).is_err());
+    assert!(output::read_regular(&file, &Control::new(), MAX_REPORT_BYTES).is_err());
     std::fs::remove_file(extra).unwrap();
     let f = std::fs::OpenOptions::new().write(true).open(file).unwrap();
     f.set_len(MAX_REPORT_BYTES as u64 + 1).unwrap();
-    assert!(read(root.path().join("report.json").as_path(), &Control::new()).is_err());
+    assert!(output::read_regular(
+        root.path().join("report.json").as_path(),
+        &Control::new(),
+        MAX_REPORT_BYTES
+    )
+    .is_err());
 }
 
 #[tokio::test]

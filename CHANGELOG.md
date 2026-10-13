@@ -5,6 +5,12 @@ Release assets, source revisions and validation evidence are on
 
 ## v0.9.0-alpha.1 — Unreleased
 
+- Add explicit `baseline capture/check` for selected resource chains and metadata.
+  Keep accepted baselines immutable, compare through current disk declarations
+  and local provenance, distinguish observed changes from unknown evidence, and
+  show current declared consumers/downstream impact. Never read resource bodies,
+  execute programs or authorize recovery; add native drift and privacy coverage.
+
 - Add `mcp --stdio` with run-bound diagnostic and individually granted control
   tools, plus isolated `--report FILE` diagnosis. Reuse the JSON-lines Agent's
   authorization and control use cases; add retained incident reads to both

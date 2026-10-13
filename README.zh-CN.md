@@ -328,6 +328,27 @@ profiles:
 
 `check` 拒绝地址声明冲突和实例独占路径重叠；`doctor` 对 `ports` 与 `listen` 地址实际尝试绑定后立即释放。**检查空闲不等于预约成功。** 启动前仍可能被其他进程抢占，应用绑定失败继续通过日志、退出和健康事件呈现；devd 不自动分配端口，也不凭退出状态猜测失败原因。
 
+### 检查环境漂移（v0.9 开发中）
+
+链接没断，不代表它还指着你原来选的目录。就绪检查能发现坏掉的前置条件；显式基线则用来回答：配置没动，这些关键资源的解析关系和元数据变了吗？
+
+```bash
+devd baseline capture --service api --resource requires:0 --resource cwd --output baseline.json
+devd baseline check baseline.json --json
+# 看过变化后，再显式保存新文件，接受新的基线。
+devd baseline capture --service api --resource requires:0 --resource cwd --output accepted-baseline.json
+```
+
+`--resource` 可重复选择 `requires:索引`、`paths:名称`、`cwd`、`program`、`env-file`。program 只取命令第一个 token 的显式路径：`./bin/api` 可以，`api` 不行；不搜索 PATH，也不猜 shell 中真正执行的解释器或脚本。相对路径沿用配置目录／服务 cwd 的规则，instance 映射沿用所选状态目录。capture 不检查资源可读性、不执行程序、不读资源正文、不创建映射目录，也不连接 supervisor；它只保存新基线，并在 `<所选状态目录>/baseline-origin.id` 留一个本地来源标记。
+
+check 比较的是当前所选的**磁盘有效配置**，沿用 `--profile` 和 `--state-dir`，不冒充 supervisor 内存配置。导入的资源选择器必须经过当前配置解析，基线中记录的路径不会变成任意文件读取指令。JSON schema 1 同时保留旧观察、当前观察、各自采集区间、比较原因，以及当前声明使用者和下游影响。这是独立的基线比较报告，暂不能交给 diagnose 或 MCP 的报告适配入口。
+
+结果区分 `no-observed-change`（未观察到变化）、`changed`（已观察到变化）、`unknown`（无法比较）；有变化或未知时，打印报告后返回非零退出码。允许记录缺失路径，所以能观察缺失后恢复；接受基线不代表资源健康。声明变更、选择器消失、来源不匹配、不支持的解析链和检查中变化都标未知。检查不修复文件、不重启服务，也不改变 ready。
+
+本地来源结合随机标记、标记文件身份、平台、主机提示及 config/profile/state 路径；check 不会补建缺失标记。只复制基线到另一处通常会无法比较，文件身份不能作为跨机器稳定 ID；连来源标记和上下文一起克隆也不构成机器认证。旧基线保留，接受变化须重新 capture 到新文件，已有目标绝不覆盖。
+
+这些是非原子的元数据和链接目标观察，**不证明正文相同，也不证明故障因果**。祖先目录内增删其他文件不算资源替换；Unix 记录本地文件身份，Windows 记录属性和创建时间，文件身份明确不可用（`comparison.complete: false`）。路径和目标仍可能敏感。最多选择 32 项资源，基线输入／输出各限 2 MiB，配置输入限 1 MiB，比较输出限 16 MiB；解析沿用 128 节点／40 链接限制，影响图限 256 服务／1,024 条边，并共享有界观察缓存，别名覆盖不足须显示。准备工作限时 30 秒且可取消，输出限时 5 秒，不能打断单次 OS 文件调用。发布接受前取消可防止后台迟到生成基线；已接受的发布可能完成，来源标记也可能已建立。运行期监测和恢复仍须另行设计、授权。
+
 ### 清理可丢弃的实例数据
 
 项目就是从一次误删事故开始的，删除权限当然不能靠猜。单独声明 `scope: instance` 不允许删除。确实可以丢弃的缓存，给它一个专用目录，再显式开启：
@@ -546,6 +567,8 @@ devd reload --apply --plan 'sha256:<64位十六进制摘要>' --candidate devd.n
 | `devd top` | 在交互式终端查看运行中的服务和实时日志 |
 | `devd events [service] [--type TYPE] [--since DURATION] [--tail N] [--cursor RUN_UUID:NEXT_SEQUENCE] [--json] [--follow \| --stored]` | 查询生命周期经过、游标与历史缺口 |
 | `devd explain <service> [--json] [--stored]` | 基于确定性事件证据解释一个服务最近的故障或状态 |
+| `devd baseline capture --service NAME --resource SELECTOR --output FILE` | 显式选资源并接受为新基线 |
+| `devd baseline check FILE [--json]` | 按磁盘配置比较资源，变化／未知返回非零 |
 | `devd doctor [--json]` | 检查服务启动前置条件，不启动服务 |
 | `devd impact SERVICE --require INDEX/--path NAME [--scope project/worktrees] [--json]` | 查看声明资源的使用者和潜在下游影响 |
 | `devd logs [service] [--tail N] [--level info|warn|error] [--since DURATION] [--grep TEXT] [--follow \| --stored]` | 查询内存或离线磁盘日志，跟随实时输出 |

@@ -235,3 +235,21 @@ fn test_directory_permission_denial_is_not_missing() {
     fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).unwrap();
     assert_eq!(report.failure, Some(Failure::AccessDenied));
 }
+
+#[test]
+fn test_baseline_metadata_is_from_traversal_and_races_remain_unknown() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("resource");
+    fs::write(&path, "secret").unwrap();
+    let evidence = inspect_evidence_with(&path, || {
+        fs::rename(&path, root.path().join("old")).unwrap();
+        fs::write(&path, "replacement").unwrap();
+    });
+    assert!(evidence.inspection.change_detected);
+    assert!(!evidence.inspection.complete);
+    assert_eq!(evidence.metadata.len(), evidence.inspection.nodes.len());
+    assert_eq!(
+        evidence.metadata.last().unwrap().as_ref().unwrap().size,
+        Some(6)
+    );
+}

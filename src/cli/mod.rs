@@ -1,4 +1,5 @@
 mod agent;
+mod baseline;
 mod clean;
 mod control_session;
 mod doctor;
@@ -71,6 +72,8 @@ enum Color {
 enum Command {
     /// Serve a versioned JSON-lines Agent interface; read-only unless allowed.
     Agent(agent::Args),
+    /// Explicitly capture or compare selected resource metadata; never recover automatically.
+    Baseline(baseline::Args),
     /// Serve the standard Model Context Protocol over local stdio.
     Mcp(mcp::Args),
     /// Start all services in the foreground; Ctrl+C stops the stack.
@@ -273,6 +276,9 @@ impl Cli {
             },
         };
         match self.command {
+            Command::Baseline(args) => {
+                baseline::run(args, &config_path, &state_dir, self.profile.as_deref()).await?
+            }
             Command::Agent(args) => {
                 agent::run(
                     args,

@@ -127,6 +127,14 @@ flowchart LR
 
 依赖联动由 `core::dependency_recovery` 比较依赖进程代次：actor 在通过启动就绪检查的同一个快照读锁内记录直接依赖的 PID、started_at、restart_count。运行期间只在代次变化且所有依赖满足各自条件时停止旧进程组，复用自动重启的退避、预算、依赖等待和日志排空。基线随下一次就绪检查更新，不依赖 watch 保留每次中间事件；单纯健康波动不会触发。每个服务独立恢复，非全图原子操作。监听其他服务状态时保留在途健康探测 future，防止频繁快照更新取消探测。开启联动要求存在依赖且自动策略不是 never；次数耗尽沿用 Failed 与全栈清理语义。
 
+### 按需环境漂移基线
+
+`cli::baseline` 从有界普通配置文件读取所选 profile 的磁盘有效声明；capture 显式选择 requires、paths、cwd、程序显式路径或 dotenv 路径，保存不覆盖的 schema-1 制品。`resource_inspection::inspect_evidence` 从同一组件遍历保留解析链和节点元数据，原 doctor/事故观察仍保持既有输出。`core::environment_baseline` 只比较传入证据，不执行 I/O 或控制。声明／本地来源不匹配、观察中变化或不支持的链标未知；元数据差异不等于内容差异或故障因果。
+
+来源标记由 capture 在所选状态目录显式创建，check 只读；随机标记、标记文件身份、平台／主机提示和 config/profile/state 约束本地可比范围，不构成机器认证。目录子条目活动不参与元数据比较；Unix 本地身份及 Windows 属性／创建时间分别保留可用性。check 输出原始基线证据和当前观察区间，资源影响复用 `resource_impact::analyze_with` 与有界缓存；cwd/program/env-file 只沿所属服务和当前声明下游投影。没有 supervisor 连接、运行期监听或恢复权。
+
+准备工作在单个 blocking worker 中驱动，检查间隙核对取消和 30 秒期限；基线发布复用 export 的取消／接受排序与同目录不覆盖发布。安全有界普通文件读取由 export output 共用，导入路径不成为 I/O 来源。资源、图、字节和别名覆盖保持显式上限；输出使用平台可取消 stdout 与 5 秒期限。基线比较是独立 schema，不接入既有 diagnose/MCP 报告格式。
+
 ### 文件前置条件与监测
 
 `core::path_requirements` 复用同一个只读 evaluator 为启动前的 `service.requires` 和 `doctor` 检查文件、目录及软链接条件。相对路径按有效服务 cwd 解析；启动时在进程依赖就绪后、spawn 前检查。失败拒绝启动并沿用全栈清理。Unix 打开文件带 O_NONBLOCK 并复查句柄类型，避免路径在 metadata 与 open 之间被替换成 FIFO 后阻塞。

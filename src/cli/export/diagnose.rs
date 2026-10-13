@@ -9,15 +9,10 @@ use crate::{
     core::{diagnostics::ExplainReport, events::query::EventBatch},
 };
 use anyhow::{bail, Context, Result};
-#[cfg(windows)]
-use cap_fs_ext::MetadataExt;
-#[cfg(unix)]
-use cap_std::fs::MetadataExt;
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use std::{
     collections::BTreeMap,
-    io::Read,
     path::{Path, PathBuf},
 };
 
@@ -69,7 +64,7 @@ pub(in crate::cli) async fn run(args: Args) -> Result<()> {
     let _cancel = CancelOnDrop(control.clone());
     let c = control.clone();
     let work = tokio::task::spawn_blocking(move || {
-        let bytes = read(&args.report, &c)?;
+        let bytes = output::read_regular(&args.report, &c, MAX_REPORT_BYTES)?.bytes;
         let diagnosis = validation::parse(&bytes, &c)?;
         c.check()?;
         let text = if args.json {
@@ -100,7 +95,7 @@ pub(in crate::cli) async fn load_json(path: &Path) -> Result<serde_json::Value> 
         let path = path.to_owned();
         let control = control.clone();
         move || {
-            let bytes = read(&path, &control)?;
+            let bytes = output::read_regular(&path, &control, MAX_REPORT_BYTES)?.bytes;
             let diagnosis = validation::parse(&bytes, &control)?;
             let bytes = output::encode(&diagnosis)?;
             control.check()?;
@@ -114,47 +109,6 @@ pub(in crate::cli) async fn load_json(path: &Path) -> Result<serde_json::Value> 
         .await
         .context("diagnosis exceeded 30s")?
         .context("diagnostic reader failed")?
-}
-
-fn read(path: &Path, control: &Control) -> Result<Vec<u8>> {
-    control.check()?;
-    let mut file = cap_std::fs::File::from_std(
-        crate::platform::files::open_regular(path, false, true)
-            .context("report must be a regular, single-link file")?,
-    );
-    let before = file.metadata()?;
-    if before.len() > MAX_REPORT_BYTES as u64 {
-        bail!("report exceeds 16 MiB")
-    }
-    let mut bytes = Vec::new();
-    let mut chunk = [0u8; 64 * 1024];
-    loop {
-        control.check()?;
-        let n = file.read(&mut chunk)?;
-        if n == 0 {
-            break;
-        }
-        if bytes.len() + n > MAX_REPORT_BYTES {
-            bail!("report exceeds 16 MiB")
-        }
-        bytes.extend_from_slice(&chunk[..n]);
-    }
-    control.check()?;
-    let same = |m: &cap_std::fs::Metadata| {
-        (m.dev(), m.ino(), m.len(), m.modified().ok())
-            == (
-                before.dev(),
-                before.ino(),
-                before.len(),
-                before.modified().ok(),
-            )
-    };
-    let reopened =
-        cap_std::fs::File::from_std(crate::platform::files::open_regular(path, false, true)?);
-    if !same(&file.metadata()?) || !same(&reopened.metadata()?) {
-        bail!("report changed during read; retry with a stable copy")
-    }
-    Ok(bytes)
 }
 
 async fn write(

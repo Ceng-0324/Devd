@@ -42,6 +42,18 @@ behavior while preserving exit-status and process-group cleanup assertions.
 
 ## Coverage
 
+`baseline.rs` runs native CLI/file observations on all three platforms: valid-link
+retargeting, missing/recovered targets, metadata replacement, directory activity,
+explicit program/cwd/env-file/instance selectors, privacy, no-clobber capture,
+current alias consumers/downstream impact, profile/custom-state isolation and
+foreign/missing provenance. It rejects linked/special/oversized baseline inputs,
+unknown schemas, malformed shapes, duplicates and excess selections; forged
+recorded paths never drive IO. A full stdout pipe must time out (or cancel on Unix
+SIGINT) without hanging the process. Unit tests cover uncertainty, unavailable metadata,
+traversal-time replacement, strict program selection, marker replacement and
+cancelled publication. Windows requires symlink privileges; unavailable file
+identity is reported separately from supported attribute observations.
+
 `top.rs` uses Unix PTYs to exercise the actual terminal: log/event switching,
 instance/run identity, generation and cause fields, restart evidence, paging,
 cancelled/confirmed stop, quit, Ctrl+C, SIGTERM, disconnect and alternate-screen

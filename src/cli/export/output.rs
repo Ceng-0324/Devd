@@ -1,5 +1,10 @@
 //! Shared live/offline export cancellation, bounded encoding and no-clobber publication.
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
+#[cfg(windows)]
+use cap_fs_ext::MetadataExt;
+#[cfg(unix)]
+use cap_std::fs::MetadataExt;
+use std::io::Read;
 use std::{
     io::{self, Write},
     path::Path,
@@ -120,4 +125,58 @@ pub(in crate::cli) fn publish_report(
         }
     })?;
     Ok(())
+}
+
+pub(in crate::cli) struct ReadFile {
+    pub bytes: Vec<u8>,
+    /// Identity of the same open file whose bytes were read and revalidated.
+    pub identity: [u64; 2],
+}
+
+pub(in crate::cli) fn read_regular(
+    path: &Path,
+    control: &Control,
+    limit: usize,
+) -> Result<ReadFile> {
+    control.check()?;
+    let mut file = cap_std::fs::File::from_std(
+        crate::platform::files::open_regular(path, false, true)
+            .context("input must be a regular, single-link file")?,
+    );
+    let before = file.metadata()?;
+    if before.len() > limit as u64 {
+        bail!("input exceeds {limit} byte limit")
+    }
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 64 * 1024];
+    loop {
+        control.check()?;
+        let n = file.read(&mut chunk)?;
+        if n == 0 {
+            break;
+        }
+        if bytes.len() + n > limit {
+            bail!("input exceeds {limit} byte limit")
+        }
+        bytes.extend_from_slice(&chunk[..n]);
+    }
+    control.check()?;
+    let same = |m: &cap_std::fs::Metadata| {
+        (m.dev(), m.ino(), m.len(), m.modified().ok())
+            == (
+                before.dev(),
+                before.ino(),
+                before.len(),
+                before.modified().ok(),
+            )
+    };
+    let reopened =
+        cap_std::fs::File::from_std(crate::platform::files::open_regular(path, false, true)?);
+    if !same(&file.metadata()?) || !same(&reopened.metadata()?) {
+        bail!("input changed during read; retry with a stable copy")
+    }
+    Ok(ReadFile {
+        bytes,
+        identity: [before.dev(), before.ino()],
+    })
 }

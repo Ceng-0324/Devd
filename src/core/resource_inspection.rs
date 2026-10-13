@@ -74,10 +74,78 @@ struct Observed {
 /// Inspect metadata/link targets only. Synchronous OS calls belong on a bounded
 /// blocking worker; no retry can turn this observation into an atomic snapshot.
 pub fn inspect(path: &Path) -> Inspection {
-    inspect_with(path, || {})
+    observe_with(path, || {}).0
 }
 
+/// Metadata comes from the same traversal as the chain, not a second ambient lookup.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Evidence {
+    pub inspection: Inspection,
+    pub metadata: Vec<Option<NodeMetadata>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct NodeMetadata {
+    /// Local filesystem identity; only comparable within verified local provenance.
+    pub identity: Option<String>,
+    pub size: Option<u64>,
+    pub modified: Option<chrono::DateTime<chrono::Utc>>,
+    pub created: Option<chrono::DateTime<chrono::Utc>>,
+    pub permissions: u64,
+}
+
+impl NodeMetadata {
+    fn from_metadata(m: &Metadata) -> Self {
+        #[cfg(unix)]
+        let (identity, permissions) = {
+            use std::os::unix::fs::MetadataExt;
+            (
+                Some(format!("{}:{}", m.dev(), m.ino())),
+                u64::from(m.mode()),
+            )
+        };
+        #[cfg(windows)]
+        let (identity, permissions) = {
+            use std::os::windows::fs::MetadataExt;
+            (None, u64::from(m.file_attributes()))
+        };
+        Self {
+            identity,
+            size: (!m.is_dir()).then_some(m.len()),
+            modified: (!m.is_dir())
+                .then(|| m.modified().ok().map(Into::into))
+                .flatten(),
+            created: m.created().ok().map(Into::into),
+            permissions,
+        }
+    }
+}
+
+pub fn inspect_evidence(path: &Path) -> Evidence {
+    inspect_evidence_with(path, || {})
+}
+
+#[cfg(test)]
 fn inspect_with(path: &Path, before_recheck: impl FnOnce()) -> Inspection {
+    observe_with(path, before_recheck).0
+}
+
+fn inspect_evidence_with(path: &Path, before_recheck: impl FnOnce()) -> Evidence {
+    let (inspection, observed) = observe_with(path, before_recheck);
+    let metadata = observed
+        .iter()
+        .take(inspection.nodes.len())
+        .map(|o| o.metadata.as_ref().map(NodeMetadata::from_metadata))
+        .collect();
+    Evidence {
+        inspection,
+        metadata,
+    }
+}
+
+fn observe_with(path: &Path, before_recheck: impl FnOnce()) -> (Inspection, Vec<Observed>) {
     let mut report = Inspection {
         nodes: vec![],
         resolved: None,
@@ -97,15 +165,15 @@ fn inspect_with(path: &Path, before_recheck: impl FnOnce()) -> Inspection {
         );
     }
     before_recheck();
-    for observation in observed {
+    for observation in &observed {
         let changed = match (
-            observation.metadata,
+            observation.metadata.as_ref(),
             fs::symlink_metadata(&observation.path),
         ) {
             (Some(before), Ok(after)) => {
-                !same_metadata(&before, &after)
-                    || observation.target.is_some_and(|target| {
-                        fs::read_link(&observation.path).ok().as_ref() != Some(&target)
+                !same_metadata(before, &after)
+                    || observation.target.as_ref().is_some_and(|target| {
+                        fs::read_link(&observation.path).ok().as_ref() != Some(target)
                     })
             }
             (None, Err(error)) => observation.error != Some(error.kind()),
@@ -116,7 +184,7 @@ fn inspect_with(path: &Path, before_recheck: impl FnOnce()) -> Inspection {
             report.complete = false;
         }
     }
-    report
+    (report, observed)
 }
 
 fn walk(path: &Path, report: &mut Inspection, observed: &mut Vec<Observed>) -> Result<(), Failure> {

@@ -595,6 +595,64 @@ releases them. **That does not reserve a port.** Another process can take it
 before startup; application bind errors still appear in its logs and exit/health
 evidence. devd does not automatically allocate ports or infer failure causes.
 
+### Detect environment drift (v0.9 development)
+
+A link can still be valid after it starts pointing at the wrong directory. Readiness
+checks catch broken prerequisites; an explicit baseline lets you compare the
+resources you chose before and after the environment changed.
+
+```bash
+devd baseline capture --service api --resource requires:0 --resource cwd --output baseline.json
+devd baseline check baseline.json --json
+# After reviewing a change, explicitly capture a new file to accept a new baseline.
+devd baseline capture --service api --resource requires:0 --resource cwd --output accepted-baseline.json
+```
+
+Repeat `--resource` for `requires:INDEX`, `paths:NAME`, `cwd`, `program` or
+`env-file`. `program` inspects only an explicit path in the first command token:
+`./bin/api` works, `api` does not. It neither searches PATH nor guesses a shell's
+interpreter or scripts. All relative paths use the normal config/service cwd
+rules; instance bindings use the selected state directory. Capture does not
+check readability, execute programs, read resource contents, create mapped
+directories, or contact a supervisor. It writes a new baseline and a small local
+origin marker at `<selected-state-dir>/baseline-origin.id`.
+
+`check` uses the selected **on-disk effective configuration**, including
+`--profile` and `--state-dir`, not a supervisor's in-memory configuration. It
+resolves imported selectors through that configuration; recorded paths never
+become arbitrary file-read directives. JSON schema 1 contains both recorded and
+current observations, capture intervals, comparison reasons and current declared
+consumers/downstream impact. This JSON is a baseline comparison, not an input
+format for `diagnose` or the MCP report adapter.
+
+Results distinguish `no-observed-change`, `changed` and `unknown`. Changes or
+unknown comparisons return a nonzero exit code after printing the report. Missing
+paths can be captured, so loss/recovery is observable; accepting a baseline does
+not assert that its resources are healthy. Declaration changes, missing selectors,
+foreign context, unsupported chains and observations that changed during inspection
+remain unknown. Nothing repairs a file, restarts a process or changes readiness.
+
+Local provenance uses the origin token, marker file identity, platform, host hint
+and config/profile/state paths. Checking never creates a missing origin. Moving
+or copying a baseline into another context normally makes it incomparable; file
+identities are not portable, and cloning the origin/context does not authenticate
+a machine. Keep the original baseline; accepting changes requires a new explicit
+capture, and existing destinations are never overwritten.
+
+Observations are non-atomic metadata and link targets, **not content equality or
+fault causality**. Ancestor directory child activity is ignored; Unix records local
+file identity, while Windows records attributes/creation time with file identity
+explicitly unavailable (`comparison.complete: false`). Paths and targets may still
+be sensitive. Selection is limited to 32 resources, baseline input/output to 2 MiB,
+configuration input to 1 MiB, and comparison output to 16 MiB. Path traversal uses
+the existing 128-node/40-link limits; impact uses 256 services/1,024 edges and a
+shared bounded observation cache, showing incomplete alias coverage. Preparation
+has a 30-second cancellable deadline and output a 5-second deadline; a single OS
+filesystem call cannot be interrupted. Cancellation before baseline publication
+prevents a late baseline file; already accepted publication may complete, and the
+origin marker may already exist. Runtime monitoring and recovery remain separate
+features.
+
 ### Clean disposable instance data
 
 The accident that started this project is a good reason to make deletion explicit.
@@ -901,6 +959,8 @@ Choose exactly one of `--dry-run` or `--apply`. Preview validates YAML, quoting,
 | `devd top` | Inspect a running stack and its live logs in an interactive terminal |
 | `devd events [service] [--type TYPE] [--since DURATION] [--tail N] [--cursor RUN_UUID:NEXT_SEQUENCE] [--json] [--follow \| --stored]` | Query lifecycle facts, cursors and history gaps |
 | `devd explain <service> [--json] [--stored]` | Explain the latest deterministic failure evidence for one service |
+| `devd baseline capture --service NAME --resource SELECTOR --output FILE` | Explicitly accept selected resource metadata in a new baseline |
+| `devd baseline check FILE [--json]` | Compare current disk resources; changes/unknown return nonzero |
 | `devd doctor [--json]` | Check configured service prerequisites without starting them |
 | `devd impact SERVICE --require INDEX/--path NAME [--scope project/worktrees] [--json]` | Show declared resource users and potential downstream impact |
 | `devd logs [service] [--tail N] [--level info|warn|error] [--since DURATION] [--grep TEXT] [--follow \| --stored]` | Query live memory or offline disk logs; follow live output |
