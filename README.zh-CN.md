@@ -349,6 +349,44 @@ check 比较的是当前所选的**磁盘有效配置**，沿用 `--profile` 和
 
 这些是非原子的元数据和链接目标观察，**不证明正文相同，也不证明故障因果**。祖先目录内增删其他文件不算资源替换；Unix 记录本地文件身份，Windows 记录属性和创建时间，文件身份明确不可用（`comparison.complete: false`）。路径和目标仍可能敏感。最多选择 32 项资源，基线输入／输出各限 2 MiB，配置输入限 1 MiB，比较输出限 16 MiB；解析沿用 128 节点／40 链接限制，影响图限 256 服务／1,024 条边，并共享有界观察缓存，别名覆盖不足须显示。准备工作限时 30 秒且可取消，输出限时 5 秒，不能打断单次 OS 文件调用。发布接受前取消可防止后台迟到生成基线；已接受的发布可能完成，来源标记也可能已建立。运行期监测和恢复仍须另行设计、授权。
 
+### 执行审阅过的恢复配方（v0.9 开发中）
+
+查清楚生成缓存丢失以后，先停止**全栈**，等前台 supervisor 成功退出。监测、基线和 `cleanup: true` 都不会替你运行修复命令；恢复是另一项显式操作。首版只允许当前仍声明 `scope: instance, cleanup: true`、且确实由 devd 创建登记的目录，共享或未登记路径拒绝接管。
+
+新建独立 `recipe.yml`，把下面的程序和脚本路径换成你审阅过的生成器：
+
+```yaml
+version: 1
+service: api
+resources: [API_CACHE]
+steps:
+  - id: generate-cache
+    resource: API_CACHE
+    command: ["/absolute/path/python", "/absolute/path/rebuild-cache.py"]
+    timeout: 30s
+    requires: []
+    ensures: [{type: file, path: generated.json}]
+```
+
+```bash
+devd stop
+devd recover --recipe recipe.yml --dry-run --json
+devd recover --recipe recipe.yml --apply --plan PLAN_ID --json
+# 核对结果后，再显式启动、验证就绪：
+devd start  # 在另一个终端前台运行
+devd wait --timeout 30s
+```
+
+沿用相同 config/profile/state。预览不写文件、不执行命令；`sha256:...:TIMESTAMP` 计划有效期 5 分钟，绑定配置／配方字节及文件身份、登记／运行身份、目录清单和程序元数据。应用及每个新动作前重验输入、期限和资源。观察非原子，也不证明文件正文相同；恢复期间请停下其它写入者。
+
+仅重建丢失的**已登记叶目录**并写入新归属标记，父目录须仍然完整；原有受管目录内容保留。替换目录、链接／reparse point、硬链接、特殊文件、未完成清理及共享映射重叠均拒绝。配方不提供内建删除动作。命令 cwd 固定为该步骤选择的资源目录；相对程序路径按服务有效 cwd 解析，配方文件路径按发起终端解析。程序必须是显式路径，Windows 可用 `C:/...`，不搜索 PATH、没有隐式 shell。`requires`／`ensures` 只接受资源内普通相对文件／目录条件，不允许越界、链接或 devd 标记，不读资源正文。
+
+**命令拥有你的系统权限，这不是沙箱。** 用户仍可显式声明 shell；devd 不能约束任意程序只写选定目录。命令继承发起终端环境，不加载服务 dotenv/env 覆盖；stdin 关闭、stdout/stderr 丢弃，预览和记录不回显参数正文或应用输出，路径仍可能敏感。整个执行和进程树清理期间持有实例状态锁，新 supervisor 不能抢跑。Ctrl+C 停止当前命令树并取消后续步骤；超时或失败也停止后续步骤，不承诺回滚，不自动启动服务。
+
+schema 1 结果和每步 accepted／completed／failed／cancelled／timed-out／unknown 证据同步保存在 `<state-dir>/recovery-receipts.json`。退出成功还须通过声明的后置条件；这不证明服务就绪或根因已修复。重复应用旧计划只返回留存记录，`already_attempted: true` 不代表重新检查了今天的文件。同一配方摘要在同 run 只尝试一次；已知失败应先核对现场，再明确修改配方或完成一次新的正常运行，重新预览。强杀或无法确认进程树清理会把实例保留为不安全，拒绝 start／clean／recover；保留证据并人工核实，不要改归属记录绕过拒绝。devd 不向历史 PID 发信号，不删除事故、不自动接受漂移基线；本模块也不向 Agent／MCP 开放恢复权限。
+
+最多 16 个资源、32 个步骤、每命令 128 个参数（各 8 KiB）、每步 32 项前置和 1–32 项后置条件、每命令超时不超过 5 分钟。配方须普通单硬链接文件，限 256 KiB；配置限 1 MiB。最多留存 64 次记录、总文件 1 MiB，不自动淘汰，满额须显式归档／核实。每次文件准备限时 30 秒、stdout 限时 5 秒；单次 OS 调用不能被强行打断，在途 worker 持锁直到退出。
+
 ### 清理可丢弃的实例数据
 
 项目就是从一次误删事故开始的，删除权限当然不能靠猜。单独声明 `scope: instance` 不允许删除。确实可以丢弃的缓存，给它一个专用目录，再显式开启：
@@ -569,6 +607,8 @@ devd reload --apply --plan 'sha256:<64位十六进制摘要>' --candidate devd.n
 | `devd explain <service> [--json] [--stored]` | 基于确定性事件证据解释一个服务最近的故障或状态 |
 | `devd baseline capture --service NAME --resource SELECTOR --output FILE` | 显式选资源并接受为新基线 |
 | `devd baseline check FILE [--json]` | 按磁盘配置比较资源，变化／未知返回非零 |
+| `devd recover --recipe FILE --dry-run [--json]` | 正常停栈后预览已登记资源的恢复配方 |
+| `devd recover --recipe FILE --apply --plan ID [--json]` | 显式执行当前计划，留存结果并拒绝未知结果重放 |
 | `devd doctor [--json]` | 检查服务启动前置条件，不启动服务 |
 | `devd impact SERVICE --require INDEX/--path NAME [--scope project/worktrees] [--json]` | 查看声明资源的使用者和潜在下游影响 |
 | `devd logs [service] [--tail N] [--level info|warn|error] [--since DURATION] [--grep TEXT] [--follow \| --stored]` | 查询内存或离线磁盘日志，跟随实时输出 |

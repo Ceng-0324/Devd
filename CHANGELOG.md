@@ -5,6 +5,13 @@ Release assets, source revisions and validation evidence are on
 
 ## v0.9.0-alpha.1 — Unreleased
 
+- Add explicit stopped-instance `recover --recipe --dry-run/--apply --plan`
+  workflows for registered disposable resources, bounded commands and file
+  postconditions. Hold the instance lease, reject stale/expired plans and unsafe
+  replacements, retain per-step receipts and refuse automatic replay after
+  interruption. Keep commands, recovery permission and service readiness separate;
+  exercise failure, timeout, cancellation, crash and output stalls natively.
+
 - Add explicit `baseline capture/check` for selected resource chains and metadata.
   Keep accepted baselines immutable, compare through current disk declarations
   and local provenance, distinguish observed changes from unknown evidence, and

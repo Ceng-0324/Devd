@@ -12,6 +12,7 @@ mod incidents;
 mod instances;
 mod mcp;
 mod protocol;
+mod recover;
 mod reload;
 mod server;
 mod snapshot;
@@ -108,6 +109,8 @@ enum Command {
     Reload(reload::Args),
     /// Preview or explicitly remove disposable directories of a stopped instance.
     Clean(clean::Args),
+    /// Preview or explicitly execute a recovery recipe after normal whole-stack shutdown.
+    Recover(recover::Args),
     /// Wait for selected services (or the whole stack) to become ready.
     Wait(wait::Args),
     /// Query live service states and PIDs.
@@ -276,6 +279,9 @@ impl Cli {
             },
         };
         match self.command {
+            Command::Recover(args) => {
+                recover::run(args, &config_path, &state_dir, self.profile.as_deref()).await?
+            }
             Command::Baseline(args) => {
                 baseline::run(args, &config_path, &state_dir, self.profile.as_deref()).await?
             }

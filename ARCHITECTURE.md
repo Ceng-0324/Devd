@@ -135,6 +135,14 @@ flowchart LR
 
 准备工作在单个 blocking worker 中驱动，检查间隙核对取消和 30 秒期限；基线发布复用 export 的取消／接受排序与同目录不覆盖发布。安全有界普通文件读取由 export output 共用，导入路径不成为 I/O 来源。资源、图、字节和别名覆盖保持显式上限；输出使用平台可取消 stdout 与 5 秒期限。基线比较是独立 schema，不接入既有 diagnose/MCP 报告格式。
 
+### 停栈后的受控恢复配方
+
+`core::recovery` 定义严格、有界的独立配方及 schema-1 结果，`cli::recover` 驱动预览、命令和可取消输出。`owned_paths::recovery` 复用目录能力句柄、归属登记及正常停栈凭据，全程独占已有实例状态锁；读取与副作用在顺序 blocking worker 中执行，lease 留在 worker 所有的 session 内。仅当前授权且已登记的 instance 叶目录可重建；现有内容保留，链接／替换／共享重叠拒绝，不引入删除动作。
+
+计划五分钟有效，摘要绑定配置／配方内容及句柄身份、run、登记、锁和目录／程序观察；动作前重验，程序基线不随命令输出更新。预览不持久化计划。文件条件相对步骤资源，通过能力目录逐层拒绝链接和越界。命令直接使用 argv，复用 ManagedProcess 的 Unix 进程组／Windows Job 所有权，继承终端环境、关闭 stdin 并丢弃输出，不接管服务生命周期。命令范围是用户审阅契约，不是 OS 沙箱。
+
+执行先同步 accepted receipt，再把归属记录置为非 quiescent，才允许重建或 spawn。每步记录接受、完成或失败／取消／超时；中断留下 unknown，不自动重放。同一 run／配方摘要只接受一次，重复旧计划只返回留存记录。已知清理完成后同步终态证据，再恢复正常停栈标记；未知进程树结果维持禁止 start/clean 的边界。最多 64 次记录、1 MiB，不自动淘汰。恢复不自动 start、修改基线或删除事故，Agent/MCP 暂不增加 recover grant。
+
 ### 文件前置条件与监测
 
 `core::path_requirements` 复用同一个只读 evaluator 为启动前的 `service.requires` 和 `doctor` 检查文件、目录及软链接条件。相对路径按有效服务 cwd 解析；启动时在进程依赖就绪后、spawn 前检查。失败拒绝启动并沿用全栈清理。Unix 打开文件带 O_NONBLOCK 并复查句柄类型，避免路径在 metadata 与 open 之间被替换成 FIFO 后阻塞。

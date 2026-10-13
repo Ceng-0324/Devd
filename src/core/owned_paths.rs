@@ -1,4 +1,5 @@
 //! Explicitly disposable directories. Paths alone never establish ownership.
+pub(crate) mod recovery;
 use std::{
     collections::BTreeMap,
     io::{Read, Write},

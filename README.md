@@ -653,6 +653,87 @@ prevents a late baseline file; already accepted publication may complete, and th
 origin marker may already exist. Runtime monitoring and recovery remain separate
 features.
 
+### Run a reviewed recovery recipe (v0.9 in development)
+
+After diagnosing a lost generated cache, stop the **whole stack** and wait for
+the foreground supervisor to exit successfully. Recovery is a separate explicit
+action; monitoring, baselines and `cleanup: true` do not run repair commands.
+Only current `scope: instance, cleanup: true` paths previously created and
+registered by devd are eligible. Shared or unregistered paths are refused.
+
+Create a standalone `recipe.yml`, replacing the program/script paths below with
+your own reviewed generator:
+
+```yaml
+version: 1
+service: api
+resources: [API_CACHE]
+steps:
+  - id: generate-cache
+    resource: API_CACHE
+    command: ["/absolute/path/python", "/absolute/path/rebuild-cache.py"]
+    timeout: 30s
+    requires: []
+    ensures: [{type: file, path: generated.json}]
+```
+
+```bash
+devd stop
+devd recover --recipe recipe.yml --dry-run --json
+devd recover --recipe recipe.yml --apply --plan PLAN_ID --json
+# After reviewing a completed result, explicitly restart and verify readiness:
+devd start  # foreground, in another terminal
+devd wait --timeout 30s
+```
+
+Use the same config/profile/state options throughout. A preview writes nothing
+and runs nothing. Its five-minute `sha256:...:TIMESTAMP` plan binds configuration
+and recipe bytes/file identities, ownership/run records, directory inventory and
+program metadata. Apply rechecks those inputs and, before each new operation,
+checks the plan deadline and resources again. These observations are not atomic
+and do not prove identical file bodies. Keep other writers stopped.
+
+Missing **registered leaf directories** are recreated with a new ownership
+marker; their existing parents must remain intact. Existing owned contents are
+retained. Replaced directories, links/reparse points, hard links, special files,
+interrupted cleanup and overlaps with shared mappings are refused. No built-in
+delete action exists. Each command runs in its selected resource directory;
+relative program paths resolve from the service's effective cwd, while recipe
+file paths resolve from the invoking terminal. Programs must be explicit paths,
+including `C:/...` on Windows; PATH lookup and implicit shell expansion are absent.
+`requires` and `ensures` accept plain relative file/directory paths within that
+resource, reject traversal and links, and never access resource bodies.
+
+**Commands run with your OS permissions, not in a sandbox.** An explicit shell
+can still be declared. The command inherits the launcher environment, not the
+service's dotenv/env overrides. stdin is closed and stdout/stderr discarded;
+previews and receipts omit argument bodies and application output. Paths remain
+potentially sensitive. devd holds the instance state lock through execution and
+process-tree cleanup, so a new supervisor cannot race recovery. Ctrl+C cancels
+remaining steps and stops the owned command tree; timeout or failure also stops
+later steps. There is no rollback or automatic service start.
+
+Schema-1 results and per-step accepted/completed/failed/cancelled/timed-out/unknown
+evidence are synced to `<state-dir>/recovery-receipts.json`. A successful command
+also needs its declared postconditions; that proves neither service readiness
+nor a repaired root cause. Reapplying an attempted plan returns its retained
+receipt with `already_attempted: true`, without re-executing or certifying today's
+files. A recipe digest may be attempted only once per run. For a known failure,
+inspect effects and explicitly revise the recipe or complete a new normal run
+before making another plan. Forced termination or uncertain cleanup leaves the
+instance unsafe for start/clean/recovery: preserve evidence and manually reconcile;
+do not edit ownership records to bypass it. Historical PIDs are never signalled.
+Recovery does not erase incidents or accept a new drift baseline. Agent/MCP grants
+do not expose recovery in this module.
+
+Limits: 16 resources, 32 steps, 128 arguments per command (8 KiB each), 32
+preconditions and 1–32 postconditions per step, and 5 minutes per command. Recipe
+input is a regular single-link file capped at 256 KiB; configuration is 1 MiB.
+At most 64 receipts (1 MiB total) are retained without automatic eviction; reaching
+the limit requires explicit archival/reconciliation. File preparation is bounded
+to 30 seconds per operation and stdout to 5 seconds; a stalled OS call cannot be
+forcibly interrupted and its worker retains the state lease until it exits.
+
 ### Clean disposable instance data
 
 The accident that started this project is a good reason to make deletion explicit.
@@ -961,6 +1042,8 @@ Choose exactly one of `--dry-run` or `--apply`. Preview validates YAML, quoting,
 | `devd explain <service> [--json] [--stored]` | Explain the latest deterministic failure evidence for one service |
 | `devd baseline capture --service NAME --resource SELECTOR --output FILE` | Explicitly accept selected resource metadata in a new baseline |
 | `devd baseline check FILE [--json]` | Compare current disk resources; changes/unknown return nonzero |
+| `devd recover --recipe FILE --dry-run [--json]` | Preview a normally stopped instance's explicit recovery recipe |
+| `devd recover --recipe FILE --apply --plan ID [--json]` | Execute once with retained results and file postconditions |
 | `devd doctor [--json]` | Check configured service prerequisites without starting them |
 | `devd impact SERVICE --require INDEX/--path NAME [--scope project/worktrees] [--json]` | Show declared resource users and potential downstream impact |
 | `devd logs [service] [--tail N] [--level info|warn|error] [--since DURATION] [--grep TEXT] [--follow \| --stored]` | Query live memory or offline disk logs; follow live output |

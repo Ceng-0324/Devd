@@ -125,6 +125,26 @@ impl ManagedProcess {
         Self::spawn_with_output("healthcheck".into(), config, false).await
     }
 
+    /// Explicit argument vectors share process-tree ownership with services,
+    /// but discard output and do not load a dotenv file.
+    pub(crate) async fn spawn_recovery(
+        arguments: &[String],
+        cwd: PathBuf,
+    ) -> Result<Self, ProcessError> {
+        let mut config: ServiceConfig = serde_yaml::from_str("command: recovery")
+            .expect("internal static service defaults are valid");
+        config.cwd = Some(cwd);
+        let service = "recovery".to_owned();
+        let (child, group) = spawn_arguments(&service, &config, false, arguments).await?;
+        Ok(Self {
+            service,
+            config,
+            child,
+            group: Some(group),
+            capture_output: false,
+        })
+    }
+
     async fn spawn_with_output(
         service: String,
         config: &ServiceConfig,
@@ -340,6 +360,20 @@ async fn spawn_child(
     capture_output: bool,
 ) -> Result<(Child, ProcessGroup), ProcessError> {
     let arguments = parse_command(service, &config.command)?;
+    spawn_arguments(service, config, capture_output, &arguments).await
+}
+
+async fn spawn_arguments(
+    service: &str,
+    config: &ServiceConfig,
+    capture_output: bool,
+    arguments: &[String],
+) -> Result<(Child, ProcessGroup), ProcessError> {
+    if arguments.first().is_none_or(|program| program.is_empty()) {
+        return Err(ProcessError::EmptyCommand {
+            service: service.to_owned(),
+        });
+    }
     let mut command = Command::new(&arguments[0]);
     command
         .args(&arguments[1..])

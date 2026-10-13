@@ -9,6 +9,7 @@ mod path_monitor;
 pub mod path_requirements;
 pub mod process_manager;
 pub(crate) mod readiness;
+pub(crate) mod recovery;
 pub mod reload;
 pub mod resource_impact;
 pub mod resource_inspection;

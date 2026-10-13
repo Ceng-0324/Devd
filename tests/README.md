@@ -42,6 +42,16 @@ behavior while preserving exit-status and process-group cleanup assertions.
 
 ## Coverage
 
+`recover.rs` runs native stopped-instance recipe workflows: missing registered
+directory reconstruction, multistep conditions, literal argv/privacy, profile/custom
+state isolation, preserved shared/history data, configuration/program/tree/run
+changes, expired plans, resource replacement/link/hard-link refusal, partial failure,
+preconditions/postconditions, timeout, state-lock contention and abrupt interruption
+without replay. A full stdout pipe exits within its deadline; Unix SIGINT verifies
+command cleanup and retained cancellation evidence. Two ignored executable Rust
+fixtures are invoked by parent tests. Contract unit tests reject unknown fields,
+unsafe selectors, invalid timeouts, duplicates and excess inputs.
+
 `baseline.rs` runs native CLI/file observations on all three platforms: valid-link
 retargeting, missing/recovered targets, metadata replacement, directory activity,
 explicit program/cwd/env-file/instance selectors, privacy, no-clobber capture,
