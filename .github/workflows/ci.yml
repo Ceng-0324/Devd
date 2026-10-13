@@ -84,3 +84,9 @@ jobs:
         run: python examples/local-stack/smoke.py --duration 5 --restarts 2
       - name: Exercise resource failure and retained incident evidence
         run: python scripts/incident-smoke.py
+      - name: Install Node for MCP interoperability
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Exercise official MCP Inspector interoperability
+        run: python scripts/mcp-smoke.py

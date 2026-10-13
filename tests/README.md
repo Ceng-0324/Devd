@@ -286,3 +286,29 @@ profiles and custom state directories. It verifies discovery, mapped environment
 Agent restart/reload/export, cross-instance control rejection, and stop/cleanup
 without changing the other instance's PID, generation or shared data. An old
 Agent session must reject a replacement run at the same endpoint.
+
+
+## MCP interface (v0.9)
+
+`tests/agent.rs` shares supervisor/worker fixtures between the JSON-lines and MCP
+adapters. MCP cases cover version negotiation, discovery, strict arguments, denied
+controls, wrong instance/old run, stale reload plans, normal-stop cleanup, isolated
+report diagnosis after deleting YAML, repeated wait cancellation, EOF, oversized
+input and duplicate outstanding IDs. Unix signals are exercised with idle stdin
+for both adapters. Transport unit tests bound admission, cancellation/ID reuse,
+output size and stalled writes/lock acquisition.
+
+Run a real protocol client against the built binary:
+
+```bash
+cargo build --locked
+# Node >=22.19 plus npm/npx; downloads the pinned official client on first use.
+python3 scripts/mcp-smoke.py
+```
+
+The script pins `@modelcontextprotocol/inspector@2.10.1`, checks tool discovery,
+live identity/status/events/incidents, denied stop, explicitly granted restart,
+export and offline diagnosis with the original YAML removed. It uses temporary
+files and cleans up its supervisor. Native Linux/macOS/Windows CI runs this same
+exercise with Node 24. This proves Inspector protocol interoperability; it does
+not claim a model-driven Codex or Claude conversation was accepted.

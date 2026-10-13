@@ -2,9 +2,11 @@
 
 ## 控制与实例接口
 
-### Agent 适配
+### Agent 与 MCP 适配
 
-`cli::agent` 提供 schema 1 JSON-lines stdio adapter。启动时读取活 Identity，并核对所选 config/profile/规范化 state 与实例摘要，固定整个会话的 instance/run。授权仅从启动参数 `--allow` 获取，默认空；四类控制在任何 I/O 前验证 grant 与请求 target。在线操作包装成 `Request::Scoped`，supervisor 在分派前验证 instance/run，拒绝嵌套 scope；原有 CLI 请求保留兼容。adapter 不另建控制器，继续调用现有 restart/stop/reload/wait/诊断用例。离线 clean 复用 CLI 的 typed execute，core 在状态锁内、完成回执前再次比较 expected_run。status/restart 复用导出状态白名单，wait 复用严格就绪解码器，export 直接返回结构不写文件。stdin 使用独立线程与有界 channel，避免不可取消的标准输入占据 Tokio blocking pool；串行分派、16 KiB 行／4096 字节内部请求／8 MiB 回复／5 秒输出超时。EOF 排空输入，信号只取消 adapter；已受理控制不回滚。机器回复的 ok 表示报告可用，具体成功由 outcome 决定，id 不保证控制去重。describe 身份标注为会话建立时观测，不冒充持续在线状态。该授权约束 adapter，不构成同用户进程沙箱、多用户 RBAC 或 MCP 服务。
+`cli::agent` 提供 schema 1 JSON-lines stdio adapter；`cli::mcp` 使用官方 rmcp SDK 提供本地 MCP stdio。两者共用 `cli::control_session` 的实例附着、逐项授权与控制用例。启动时读取活 Identity，并核对所选 config/profile/规范化 state 与实例摘要，固定整个会话的 instance/run。授权仅从启动参数 `--allow` 获取，默认空；四类控制在任何 I/O 前验证 grant 与请求 target。在线操作包装成 `Request::Scoped`，supervisor 在分派前验证 instance/run，拒绝嵌套 scope；原有 CLI 请求保留兼容。adapter 不另建控制器，继续调用现有 restart/stop/reload/wait/诊断用例。离线 clean 复用 CLI 的 typed execute，core 在状态锁内、完成回执前再次比较 expected_run。status/restart 复用导出状态白名单，wait 复用严格就绪解码器，export 直接返回结构不写文件。stdin 使用独立线程与有界 channel，避免不可取消的标准输入占据 Tokio blocking pool；JSON-lines 串行分派、16 KiB 行／4096 字节内部请求／8 MiB 回复／5 秒输出超时。EOF 排空输入，信号只取消 adapter；已受理控制不回滚。机器回复的 ok 表示报告可用，具体成功由 outcome 决定，id 不保证控制去重。describe 身份标注为会话建立时观测，不冒充持续在线状态。该授权约束 adapter，不构成同用户进程沙箱、多用户 RBAC。
+
+MCP 固定协商 2025-06-18／2025-11-25，在线提供 14 个工具；离线 `--report` 先于项目解析，只用 diagnose 的有界读取与验证器加载启动者指定文件，开放一个历史诊断工具。MCP transport 在 SDK 调度前限 8 个请求，控制处理器限 1；请求 ID 映射为单调内部 ID，取消后等待处理器结束再释放名额，避免迟到回复命中新复用 ID。初始化／普通工具 30 秒期限，wait 最长一小时；输出锁、写入和 flush 共限 5 秒。不相关通知在 transport 丢弃。EOF／信号取消 adapter，已经受理的控制不回滚；MCP 错误与报告 outcome 分开表达。固定版本 Inspector 验收复用真实 supervisor，见 tests/README.md。
 
 ### 实例目录所有权与清理
 
@@ -45,7 +47,7 @@
 
 `incidents::storage` 持有 supervisor lease、独立 `.lock` 和 cap-std 目录能力，通过 no-follow 新建 UUID JSONL 制品，不覆盖已有文件。schema 2 为 begin/resources/end；schema 1 仍可读取但没有关系证据。缺少结束、尾部截断、提前结束、检查省略与未知取消计数各自可见。单制品 2 MiB、最多 20 个（包括部分制品），已受理活跃文件不参与淘汰；目录枚举最多 256 项，拒绝链接、重解析点、多硬链接和特殊文件。启动失败阻止服务启动，运行失败由 server 限时写 stderr 并停用本次记录器，服务继续运行。`incidents::query` 共用该目录能力、安全打开和持有的 writer/state lease；在线最多两个 blocking 读取任务，与写入通过独立 mutex 串行，取消后名额与 lease 保留至阻塞任务返回。离线按状态锁→事故锁顺序取得已有文件的共享 lease，不创建源文件。每次文件读取核对前后 handle/path 身份、大小及修改时间；单文件 2 MiB、目录 256 项、列表 20 制品，超限/损坏/版本未知给出有界诊断。
 
-`incidents list/show` 默认经 scoped 协议固定当前 instance/run，`--stored` 列出同实例保留运行。类型化解析保留有效 JSONL 前缀，核对 ID/run/代次和顺序，再施加隐私白名单；事故状态/配置/路径始终属于留存证据，不调用当前探测、YAML 或状态文件补全。schema 2 只从保存的有界声明图和资源匹配中重新投影直接/下游影响，不读取当前 YAML 或路径；文本以树展示并以 `[ref]` 表示共享节点，JSON 保留所有边。schema 1 未记录的完整声明影响图标为未知。`export --incident` 输出 schema 3，复用既有 event/explanation 模型与取消/不覆盖发布机制；解释固定触发代次。在线显式日志附件是当前 run 的最新尾部，离线日志归属未知，均不参与事故解释。普通 live export/Agent schema 1 和历史 run export schema 2 不变，Agent 暂不新增事故入口。
+`incidents list/show` 默认经 scoped 协议固定当前 instance/run，`--stored` 列出同实例保留运行。类型化解析保留有效 JSONL 前缀，核对 ID/run/代次和顺序，再施加隐私白名单；事故状态/配置/路径始终属于留存证据，不调用当前探测、YAML 或状态文件补全。schema 2 只从保存的有界声明图和资源匹配中重新投影直接/下游影响，不读取当前 YAML 或路径；文本以树展示并以 `[ref]` 表示共享节点，JSON 保留所有边。schema 1 未记录的完整声明影响图标为未知。`export --incident` 输出 schema 3，复用既有 event/explanation 模型与取消/不覆盖发布机制；解释固定触发代次。在线显式日志附件是当前 run 的最新尾部，离线日志归属未知，均不参与事故解释。普通 live export/Agent schema 1 和历史 run export schema 2 不变，Agent 与 MCP 的事故读取复用 scoped `Request::Incidents`，不重查事故路径。
 
 ### 就绪等待
 

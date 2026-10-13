@@ -653,6 +653,68 @@ contents; they are not content hashes or protection against a malicious process
 running as the same user. Parent directories and ownership records remain so
 that retries and subsequent starts can check what happened.
 
+### Connect an MCP client (v0.9 development)
+
+Give your client a view of the running stack, then grant only the controls it
+needs. `devd mcp --stdio` uses MCP JSON-RPC; the JSON-lines `agent` interface below
+remains available. Start the supervisor first. For clients that use `mcpServers`,
+a read-only configuration looks like this (replace both absolute paths):
+
+```json
+{
+  "mcpServers": {
+    "devd": {
+      "command": "/absolute/path/to/devd",
+      "args": ["mcp", "--stdio", "--config", "/absolute/project/devd.yml"]
+    }
+  }
+}
+```
+
+Add the supervisor's `--profile` / `--state-dir` selectors when needed. To grant
+controls, append `"--allow", "restart,stop,reload,clean"` to `args`, selecting only
+the required permissions. The session binds to one instance and run. Get both
+IDs from `devd_identity`; each control takes
+`"target": {"instance_id": "…", "run_id": "…"}`. A replacement supervisor requires
+a new session. Client confirmations and tool annotations do not grant permission.
+
+| Tool | Arguments / behavior |
+| --- | --- |
+| `devd_identity`, `devd_status` | No arguments; bound live identity and service states |
+| `devd_events` | Optional `tail` (1–1000, default 100), `service`; retains explicit gaps |
+| `devd_explain` | Required `service` |
+| `devd_wait` | Optional `services` (default all), `timeout_ms` (1–3600000, default 30000) |
+| `devd_export` | Optional `include_logs` (default false); returns JSON, never writes a file |
+| `devd_incidents_list`, `devd_incidents_show` | List this run's retained incidents; show requires incident UUID `id` |
+| `devd_restart`, `devd_stop` | Required `target`; restart also requires `service`; corresponding grant required |
+| `devd_reload_preview`, `devd_reload_apply` | Optional `candidate`; apply also requires `target`, fresh `plan_id`, and `reload` grant |
+| `devd_clean_preview`, `devd_clean_apply` | Same session after normal stop; apply requires `target`, fresh `plan_id`, and `clean` grant |
+
+Tool results contain JSON in one text content block. Check `isError`, then the
+report's `outcome`: receiving a report does not prove a wait/reload/cleanup
+succeeded. Events and incident evidence retain their provenance and gaps; paths
+and diagnostic messages may be sensitive. Explicit logs contain at most 200
+recent entries. Relative candidates resolve from the adapter's working directory.
+
+For a transferred report, replace the client arguments with
+`["mcp", "--stdio", "--report", "/absolute/path/report.json"]`. This exposes only
+`devd_diagnose`, with no arguments. It uses the same validator as `devd diagnose`,
+loads only the launcher's chosen report, and labels all evidence as historical.
+It needs neither the project nor a supervisor and rejects live selectors/control
+grants. It cannot read another path supplied by a tool call.
+
+MCP versions `2025-06-18` and `2025-11-25` are supported. Frames are limited to
+16 KiB input and 8 MiB output; supervisor requests still have a 4096-byte limit.
+At most eight requests and one control handler may be active. Oversized input,
+duplicate outstanding IDs or excess concurrency close the adapter; oversized
+output returns a correlated error. Initialization and ordinary calls have a
+30-second deadline; wait follows its requested timeout. Output stalls time out
+in five seconds. Cancellation, EOF and Ctrl+C end adapter work without stopping
+the stack. Accepted controls may continue, so inspect status/events before retrying;
+request IDs do not deduplicate actions. This is an adapter capability boundary,
+not a same-user sandbox. The fixed-version official Inspector check is documented
+in [tests/README.md](tests/README.md); it does not claim model-driven client acceptance.
+
 ### A scoped interface for Agents
 
 An Agent can inspect a stack without being handed its stop button. Start the
@@ -671,7 +733,7 @@ after stopping the stack to preview/apply cleanup. A new session needs a live
 supervisor; standalone offline cleanup remains available through `devd clean`.
 Ordinary CLI commands keep their existing permissions. These grants constrain
 this adapter, not other programs running as the same OS user. No network daemon,
-multi-user RBAC, automatic start, or MCP adapter is added.
+multi-user RBAC or automatic start is added.
 
 Send one UTF-8 JSON object per line on stdin. stdout contains only JSON replies;
 startup/I/O failures go to stderr and exit nonzero. A request looks like:
@@ -697,6 +759,7 @@ and cleanup. A timed-out wait or partial cleanup is not successful work.
 | `explain` | `service` | Read |
 | `wait` | `timeout_ms` (1–3600000), optional `services` (default all); one final readiness report | Read |
 | `export` | Optional `include_logs` (default false); returns the report without writing a file | Read |
+| `incidents` | Optional incident UUID `id`; omitted lists this run’s retained incidents | Read |
 | `reload-preview` | Optional `candidate` (default original configuration) | Read |
 | `clean-preview` | None; requires the same run to have stopped successfully | Read |
 | `restart` | `target`, `service`; uses normal restart/dependency behavior | `restart` |
@@ -833,6 +896,7 @@ Choose exactly one of `--dry-run` or `--apply`. Preview validates YAML, quoting,
 | `devd export --stored --run UUID/latest --output FILE [--include-logs]` | Export one retained run after shutdown |
 | `devd clean --dry-run [--json]` | Preview registered, explicitly disposable directories after successful shutdown |
 | `devd clean --apply --plan ID [--json]` | Apply a current cleanup plan; preserve shared and unregistered data |
+| `devd mcp --stdio [--allow restart,stop,reload,clean] [--report FILE]` | Serve MCP tools for one live run or an isolated historical report |
 | `devd agent --stdio [--allow restart,stop,reload,clean]` | Serve a run-bound JSON interface with explicit control grants |
 | `devd top` | Inspect a running stack and its live logs in an interactive terminal |
 | `devd events [service] [--type TYPE] [--since DURATION] [--tail N] [--cursor RUN_UUID:NEXT_SEQUENCE] [--json] [--follow \| --stored]` | Query lifecycle facts, cursors and history gaps |

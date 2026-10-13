@@ -434,17 +434,23 @@ fn test_agent_session_cannot_follow_a_new_run_online_or_during_cleanup() {
 
 #[cfg(unix)]
 #[test]
-fn test_agent_signal_exits_with_idle_stdin_and_leaves_supervisor_running() {
+fn test_adapters_signal_exits_with_idle_stdin_and_leaves_supervisor_running() {
     let project = Project::new(false);
     let before = project.cli(&["status", "--json"]);
-    let mut agent = project.agent(Some("stop"));
-    data(agent.request(json!({"method": "describe"})));
-    nix::sys::signal::kill(
-        nix::unistd::Pid::from_raw(agent.child.id() as i32),
-        nix::sys::signal::Signal::SIGTERM,
-    )
-    .unwrap();
-    assert!(agent.finish());
+    for adapter in ["agent", "mcp"] {
+        let mut process = project.spawn(&[adapter, "--stdio", "--allow", "stop"]);
+        if adapter == "mcp" {
+            process.initialize("2025-11-25");
+        } else {
+            data(process.request(json!({"method":"describe"})));
+        }
+        nix::sys::signal::kill(
+            nix::unistd::Pid::from_raw(process.child.id() as i32),
+            nix::sys::signal::Signal::SIGTERM,
+        )
+        .unwrap();
+        assert!(process.finish());
+    }
     assert_eq!(
         project.cli(&["status", "--json"])["services"]["worker"]["pid"],
         before["services"]["worker"]["pid"]
@@ -671,4 +677,289 @@ fn test_two_worktrees_keep_agent_controls_reports_and_cleanup_isolated() {
     );
     a.stop();
     b.stop();
+}
+
+// Both adapters deliberately use this same real-supervisor fixture.
+impl Process {
+    fn rpc(&mut self, method: &str, params: Value) -> Value {
+        let id = format!("rpc-{}", self.lines);
+        let mut bytes =
+            serde_json::to_vec(&json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
+                .unwrap();
+        bytes.push(b'\n');
+        let reply = self.raw(&bytes);
+        assert_eq!(reply["id"], id, "{reply}");
+        reply
+    }
+    fn notify(&mut self, method: &str, params: Value) {
+        writeln!(
+            self.child.stdin.as_mut().unwrap(),
+            "{}",
+            json!({"jsonrpc":"2.0","method":method,"params":params})
+        )
+        .unwrap();
+    }
+    fn initialize(&mut self, version: &str) -> Value {
+        let reply = self.rpc("initialize", json!({"protocolVersion":version,"capabilities":{},"clientInfo":{"name":"devd-native-tests","version":"1"}}));
+        assert!(
+            reply["result"]["capabilities"]["tools"].is_object(),
+            "{reply}"
+        );
+        self.notify("notifications/initialized", json!({}));
+        reply
+    }
+    fn tool(&mut self, name: &str, args: Value) -> Value {
+        self.rpc("tools/call", json!({"name":name,"arguments":args}))
+    }
+}
+fn mcp_data(reply: Value) -> Value {
+    assert!(reply.get("error").is_none(), "{reply}");
+    assert_ne!(reply["result"]["isError"], true, "{reply}");
+    serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+}
+fn mcp_denied(reply: Value, code: &str) {
+    assert_eq!(reply["result"]["isError"], true, "{reply}");
+    let data: Value =
+        serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+    assert_eq!(data["code"], code, "{data}");
+}
+
+#[test]
+fn test_mcp_discovery_readonly_strict_arguments_and_protocol_errors() {
+    let project = Project::new(true);
+    let before = project.cli(&["status", "--json"]);
+    let mut mcp = project.spawn(&["mcp", "--stdio"]);
+    assert_eq!(
+        mcp.initialize("2099-01-01")["result"]["protocolVersion"],
+        "2025-11-25"
+    );
+    let catalog = mcp.rpc("tools/list", json!({}));
+    assert_eq!(catalog["result"]["tools"].as_array().unwrap().len(), 14);
+    let identity = mcp_data(mcp.tool("devd_identity", json!({})));
+    assert_eq!(identity["profile"], "dev");
+    for (name, args) in [
+        ("devd_status", json!({})),
+        ("devd_events", json!({"tail":10})),
+        ("devd_explain", json!({"service":"worker"})),
+        (
+            "devd_wait",
+            json!({"services":["worker"],"timeout_ms":2000}),
+        ),
+        ("devd_export", json!({})),
+    ] {
+        assert!(mcp_data(mcp.tool(name, args)).is_object());
+    }
+    mcp_denied(
+        mcp.tool("devd_incidents_list", json!({})),
+        "operation-failed",
+    );
+    for (name, args) in [
+        (
+            "devd_restart",
+            json!({"target":target(&identity),"service":"worker"}),
+        ),
+        ("devd_stop", json!({"target":target(&identity)})),
+        (
+            "devd_reload_apply",
+            json!({"target":target(&identity),"plan_id":"bad"}),
+        ),
+        (
+            "devd_clean_apply",
+            json!({"target":target(&identity),"plan_id":"bad"}),
+        ),
+    ] {
+        mcp_denied(mcp.tool(name, args), "permission-denied");
+    }
+    for (name, args) in [
+        ("devd_status", json!({"allow":["stop"]})),
+        ("devd_stop", json!({})),
+        ("devd_wait", json!({"services":42})),
+        ("devd_export", json!({"include_logs":"true"})),
+        ("devd_events", json!({"tail":1001})),
+        ("devd_incidents_show", json!({"id":"invalid"})),
+        ("devd_status", json!({"method":"stop"})),
+        ("devd_diagnose", json!({"path":"/etc/passwd"})),
+    ] {
+        assert_eq!(mcp.tool(name, args)["error"]["code"], -32602);
+    }
+    assert_eq!(mcp.raw(b"not-json\n")["error"]["code"], -32700);
+    assert_eq!(mcp.rpc("unknown", json!({}))["error"]["code"], -32601);
+    assert_eq!(
+        project.cli(&["status", "--json"])["services"]["worker"]["pid"],
+        before["services"]["worker"]["pid"]
+    );
+    drop(mcp.child.stdin.take());
+    assert!(mcp.finish());
+}
+
+#[test]
+fn test_mcp_grants_stale_targets_reload_plans_and_stopped_clean() {
+    let mut project = Project::new(false);
+    let mut mcp = project.spawn(&["mcp", "--stdio", "--allow", "restart,stop,reload,clean"]);
+    assert_eq!(
+        mcp.initialize("2025-06-18")["result"]["protocolVersion"],
+        "2025-06-18"
+    );
+    let identity = mcp_data(mcp.tool("devd_identity", json!({})));
+    let mut wrong = target(&identity);
+    wrong["run_id"] = "old".into();
+    mcp_denied(
+        mcp.tool("devd_restart", json!({"target":wrong,"service":"worker"})),
+        "stale-run",
+    );
+    let mut wrong = target(&identity);
+    wrong["instance_id"] = "other".into();
+    mcp_denied(
+        mcp.tool("devd_stop", json!({"target":wrong})),
+        "wrong-instance",
+    );
+    let plan = mcp_data(mcp.tool("devd_reload_preview", json!({})));
+    let before = project.cli(&["status", "--json"])["services"]["worker"]["pid"].clone();
+    mcp_data(mcp.tool(
+        "devd_restart",
+        json!({"target":target(&identity),"service":"worker"}),
+    ));
+    project.cli(&["wait", "--timeout", "5s", "--json"]);
+    assert_ne!(
+        project.cli(&["status", "--json"])["services"]["worker"]["pid"],
+        before
+    );
+    let stale = mcp.tool(
+        "devd_reload_apply",
+        json!({"target":target(&identity),"plan_id":plan["plan_id"]}),
+    );
+    assert!(
+        serde_json::from_str::<Value>(stale["result"]["content"][0]["text"].as_str().unwrap())
+            .unwrap()["message"]
+            .as_str()
+            .unwrap()
+            .contains("stale")
+    );
+    mcp_denied(stale, "operation-failed");
+    let plan = mcp_data(mcp.tool("devd_reload_preview", json!({})));
+    mcp_data(mcp.tool(
+        "devd_reload_apply",
+        json!({"target":target(&identity),"plan_id":plan["plan_id"]}),
+    ));
+    mcp_data(mcp.tool("devd_stop", json!({"target":target(&identity)})));
+    assert!(project.supervisor.as_mut().unwrap().finish());
+    project.supervisor = None;
+    let plan = mcp_data(mcp.tool("devd_clean_preview", json!({})));
+    mcp_data(mcp.tool(
+        "devd_clean_apply",
+        json!({"target":target(&identity),"plan_id":plan["plan_id"]}),
+    ));
+    assert!(!project.root.path().join("cache").exists());
+    project.start();
+    mcp_denied(mcp.tool("devd_status", json!({})), "stale-run");
+    mcp_denied(
+        mcp.tool(
+            "devd_restart",
+            json!({"target":target(&identity),"service":"worker"}),
+        ),
+        "stale-run",
+    );
+    drop(mcp.child.stdin.take());
+    assert!(mcp.finish());
+}
+
+#[test]
+fn test_mcp_offline_report_is_isolated_and_rejects_control_grants() {
+    let mut project = Project::new(false);
+    let report = project.root.path().join("report.json");
+    let mut export = project.spawn(&["export", "--output", report.to_str().unwrap()]);
+    assert!(export.finish());
+    project.stop();
+    fs::remove_file(project.root.path().join("devd.yml")).unwrap();
+    let mut mcp = Process::spawn(
+        project.root.path(),
+        &[
+            "mcp".into(),
+            "--stdio".into(),
+            "--report".into(),
+            report.to_str().unwrap().into(),
+        ],
+    );
+    mcp.initialize("2025-11-25");
+    assert_eq!(
+        mcp.rpc("tools/list", json!({}))["result"]["tools"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let diagnosis = mcp_data(mcp.tool("devd_diagnose", json!({})));
+    assert_eq!(diagnosis["source"], "imported-report");
+    assert_eq!(
+        mcp.tool("devd_diagnose", json!({"path":"/etc/passwd"}))["error"]["code"],
+        -32602
+    );
+    assert_eq!(mcp.tool("devd_stop", json!({}))["error"]["code"], -32602);
+    drop(mcp.child.stdin.take());
+    assert!(mcp.finish());
+    let mut denied = Process::spawn(
+        project.root.path(),
+        &[
+            "mcp".into(),
+            "--stdio".into(),
+            "--report".into(),
+            report.to_str().unwrap().into(),
+            "--allow".into(),
+            "stop".into(),
+        ],
+    );
+    assert!(!denied.finish());
+}
+
+#[test]
+fn test_mcp_wait_cancellation_eof_and_input_admission_do_not_stop_services() {
+    let mut project = Project::prepare(temporary(), false);
+    let path = project.root.path().join("devd.yml");
+    let mut yaml: Value = serde_yaml::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    drop(listener);
+    yaml["services"]["worker"]["healthcheck"] =
+        json!({"type":"tcp","port":port,"interval":"100ms","timeout":"50ms","retries":1});
+    fs::write(&path, serde_yaml::to_string(&yaml).unwrap()).unwrap();
+    project.supervisor = Some(project.spawn(&["start"]));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let mut identity = project.spawn(&["identity", "--json"]);
+        if identity.finish() {
+            break;
+        }
+        assert!(Instant::now() < deadline);
+    }
+    let mut mcp = project.spawn(&["mcp", "--stdio"]);
+    mcp.initialize("2025-11-25");
+    // More cancellations than the outstanding request limit must retire their
+    // slots; ping must remain responsive while wait is in progress.
+    for n in 0..12 {
+        let id = format!("waiting-{n}");
+        writeln!(mcp.child.stdin.as_mut().unwrap(), "{}", json!({"jsonrpc":"2.0","id":id,"method":"tools/call","params":{"name":"devd_wait","arguments":{"timeout_ms":60000}}})).unwrap();
+        assert!(mcp.rpc("ping", json!({}))["result"].is_object());
+        mcp.notify("notifications/cancelled", json!({"requestId":id}));
+        assert!(mcp.rpc("ping", json!({}))["result"].is_object());
+    }
+    writeln!(mcp.child.stdin.as_mut().unwrap(), "{}", json!({"jsonrpc":"2.0","id":"eof-wait","method":"tools/call","params":{"name":"devd_wait","arguments":{"timeout_ms":60000}}})).unwrap();
+    drop(mcp.child.stdin.take());
+    assert!(mcp.finish());
+    assert!(project.cli(&["identity", "--json"])["run_id"].is_string());
+    let mut large = project.spawn(&["mcp", "--stdio"]);
+    large.initialize("2025-11-25");
+    large
+        .child
+        .stdin
+        .as_mut()
+        .unwrap()
+        .write_all(&vec![b'x'; 16 * 1024 + 1])
+        .unwrap();
+    assert!(large.finish());
+    let mut duplicate = project.spawn(&["mcp", "--stdio"]);
+    duplicate.initialize("2025-11-25");
+    let line = json!({"jsonrpc":"2.0","id":"same","method":"tools/call","params":{"name":"devd_wait","arguments":{"timeout_ms":60000}}});
+    writeln!(duplicate.child.stdin.as_mut().unwrap(), "{line}\n{line}").unwrap();
+    assert!(duplicate.finish());
+    assert!(project.cli(&["identity", "--json"])["run_id"].is_string());
 }

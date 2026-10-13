@@ -90,6 +90,32 @@ pub(in crate::cli) async fn run(args: Args) -> Result<()> {
     write(&mut out, &bytes, signals.recv()).await
 }
 
+/// Load one transferred report for adapters that need structured tool output.
+/// The same bounded reader and validator as the CLI is used; no project paths
+/// or supervisor state are consulted.
+pub(in crate::cli) async fn load_json(path: &Path) -> Result<serde_json::Value> {
+    let control = Control::new();
+    let _cancel = CancelOnDrop(control.clone());
+    let work = tokio::task::spawn_blocking({
+        let path = path.to_owned();
+        let control = control.clone();
+        move || {
+            let bytes = read(&path, &control)?;
+            let diagnosis = validation::parse(&bytes, &control)?;
+            let bytes = output::encode(&diagnosis)?;
+            control.check()?;
+            let value =
+                serde_json::from_slice(&bytes).context("diagnostic encoding was not JSON")?;
+            control.check()?;
+            Ok::<_, anyhow::Error>(value)
+        }
+    });
+    tokio::time::timeout(DEADLINE, work)
+        .await
+        .context("diagnosis exceeded 30s")?
+        .context("diagnostic reader failed")?
+}
+
 fn read(path: &Path, control: &Control) -> Result<Vec<u8>> {
     control.check()?;
     let mut file = cap_std::fs::File::from_std(

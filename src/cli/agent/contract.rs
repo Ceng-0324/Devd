@@ -1,80 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::path::PathBuf;
 
+use super::super::control_session::{Failure, Operation};
 use super::super::instances::Identity;
-use crate::core::events::query::EventQuery;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, clap::ValueEnum)]
-#[serde(rename_all = "kebab-case")]
-pub(super) enum Grant {
-    Restart,
-    Stop,
-    Reload,
-    Clean,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct Target {
-    pub instance_id: String,
-    pub run_id: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(tag = "method", rename_all = "kebab-case", deny_unknown_fields)]
-pub(super) enum Operation {
-    Describe {},
-    Identity {},
-    Status {},
-    Events {
-        query: EventQuery,
-    },
-    Explain {
-        service: String,
-    },
-    Wait {
-        #[serde(default)]
-        services: Vec<String>,
-        timeout_ms: u64,
-    },
-    Export {
-        #[serde(default)]
-        include_logs: bool,
-    },
-    ReloadPreview {
-        candidate: Option<PathBuf>,
-    },
-    CleanPreview {},
-    Restart {
-        target: Target,
-        service: String,
-    },
-    Stop {
-        target: Target,
-    },
-    ReloadApply {
-        target: Target,
-        candidate: Option<PathBuf>,
-        plan_id: String,
-    },
-    CleanApply {
-        target: Target,
-        plan_id: String,
-    },
-}
-
-impl Operation {
-    pub(super) fn control(&self) -> Option<(Grant, &Target)> {
-        match self {
-            Self::Restart { target, .. } => Some((Grant::Restart, target)),
-            Self::Stop { target } => Some((Grant::Stop, target)),
-            Self::ReloadApply { target, .. } => Some((Grant::Reload, target)),
-            Self::CleanApply { target, .. } => Some((Grant::Clean, target)),
-            _ => None,
-        }
-    }
-}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -104,32 +32,6 @@ impl Envelope {
             ));
         }
         Ok(request)
-    }
-}
-
-#[derive(Debug, Serialize)]
-pub(super) struct Failure {
-    pub code: String,
-    pub message: String,
-}
-
-impl Failure {
-    pub(super) fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self {
-            code: code.into(),
-            message: message.into(),
-        }
-    }
-    pub(super) fn operation(error: anyhow::Error) -> Self {
-        Self::new(
-            "operation-failed",
-            format!(
-                "{error:#}; accepted controls may continue: inspect status/events before retrying"
-            ),
-        )
-    }
-    pub(super) fn internal(error: serde_json::Error) -> Self {
-        Self::new("invalid-response", error.to_string())
     }
 }
 

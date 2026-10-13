@@ -1,5 +1,6 @@
 mod agent;
 mod clean;
+mod control_session;
 mod doctor;
 mod events;
 mod explain;
@@ -8,6 +9,7 @@ mod graph;
 mod impact;
 mod incidents;
 mod instances;
+mod mcp;
 mod protocol;
 mod reload;
 mod server;
@@ -69,6 +71,8 @@ enum Color {
 enum Command {
     /// Serve a versioned JSON-lines Agent interface; read-only unless allowed.
     Agent(agent::Args),
+    /// Serve the standard Model Context Protocol over local stdio.
+    Mcp(mcp::Args),
     /// Start all services in the foreground; Ctrl+C stops the stack.
     Start {
         /// Persist JSONL logs in the instance's state directory.
@@ -210,6 +214,17 @@ impl Cli {
             }
             return export::diagnose::run(args).await;
         }
+        if let Command::Mcp(args) = &self.command {
+            if let Some(report) = &args.report {
+                if self.profile.is_some()
+                    || self.state_dir.is_some()
+                    || self.config != Path::new("devd.yml")
+                {
+                    bail!("offline MCP reads only its report; --config, --profile and --state-dir are not supported");
+                }
+                return mcp::run_offline(report.clone()).await;
+            }
+        }
         if let Command::Instances { json } = self.command {
             if self.profile.is_some()
                 || self.state_dir.is_some()
@@ -260,6 +275,16 @@ impl Cli {
         match self.command {
             Command::Agent(args) => {
                 agent::run(
+                    args,
+                    &socket,
+                    &config_path,
+                    &state_dir,
+                    self.profile.as_deref(),
+                )
+                .await?;
+            }
+            Command::Mcp(args) => {
+                mcp::run(
                     args,
                     &socket,
                     &config_path,

@@ -5,6 +5,13 @@ Release assets, source revisions and validation evidence are on
 
 ## v0.9.0-alpha.1 — Unreleased
 
+- Add `mcp --stdio` with run-bound diagnostic and individually granted control
+  tools, plus isolated `--report FILE` diagnosis. Reuse the JSON-lines Agent's
+  authorization and control use cases; add retained incident reads to both
+  adapters. Bound framing, concurrency, cancellation and output stalls; preserve
+  fresh-plan and old-run guards. Verify interoperability using the pinned official
+  MCP Inspector in native CI.
+
 - Add `diagnose REPORT.json [--json]` for transferred live, retained-run and
   incident exports. Recompute historical explanations, show sequence timelines
   and retained declared impact without the original project or endpoint. Bound

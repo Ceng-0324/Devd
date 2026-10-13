@@ -358,6 +358,41 @@ devd clean --apply --plan sha256:... --json  # 使用预览返回的 plan_id
 
 清理期间也应停止外部写入者。链接／reparse point、硬链接、特殊文件、跨文件系统目录、嵌套 devd 归属或状态标记、非 UTF-8 文件名都会拒绝；最多登记 128 个根目录，每根最多 10,000 个条目、64 层嵌套目录。清单检查文件元数据，不读取应用文件内容，因此不构成内容哈希，也不抵御同用户恶意进程任意篡改文件系统。父目录和归属记录保留，供重试和后续启动核对。
 
+### 接入 MCP 客户端（v0.9 开发中）
+
+让客户端先看清现场，再按需交出控制权。`devd mcp --stdio` 使用 MCP JSON-RPC；下面的 JSON-lines `agent` 接口继续保留。先启动 supervisor，再为采用 `mcpServers` 的客户端配置只读连接（替换两个绝对路径）：
+
+```json
+{
+  "mcpServers": {
+    "devd": {
+      "command": "/absolute/path/to/devd",
+      "args": ["mcp", "--stdio", "--config", "/absolute/project/devd.yml"]
+    }
+  }
+}
+```
+
+有 profile 或自定义状态目录时，加上与 supervisor 一致的 `--profile` / `--state-dir`。需要控制时，在 `args` 中追加 `"--allow", "restart,stop,reload,clean"`，只保留愿意授予的项。会话固定绑定一个 instance/run；从 `devd_identity` 取得两个 ID，每个控制传入 `"target": {"instance_id": "…", "run_id": "…"}`。supervisor 换代后必须重新建会话，客户端确认和工具描述不能代替服务端授权。
+
+| 工具 | 参数与行为 |
+| --- | --- |
+| `devd_identity`、`devd_status` | 无参数，读取绑定的活身份和服务状态 |
+| `devd_events` | 可选 `tail`（1–1000，默认 100）、`service`，保留历史缺口 |
+| `devd_explain` | 必填 `service` |
+| `devd_wait` | 可选 `services`（默认全栈）、`timeout_ms`（1–3600000，默认 30000） |
+| `devd_export` | 可选 `include_logs`（默认 false），返回 JSON，不写文件 |
+| `devd_incidents_list`、`devd_incidents_show` | 列出本次运行留存事故；show 必填事故 UUID `id` |
+| `devd_restart`、`devd_stop` | 必填 `target`，restart 还需 `service`；须分别授权 |
+| `devd_reload_preview`、`devd_reload_apply` | 可选 `candidate`；apply 还需 `target`、新鲜 `plan_id` 和 `reload` 授权 |
+| `devd_clean_preview`、`devd_clean_apply` | 沿用同一会话，正常停栈后使用；apply 还需 `target`、新鲜 `plan_id` 和 `clean` 授权 |
+
+工具在一个文本内容块中返回 JSON。先检查 `isError`，再检查报告的 `outcome`，拿到报告不代表等待、重载或清理成功。事件和事故证据保留来源与缺口；路径、诊断消息仍可能敏感，显式日志最多附带最近 200 条。相对 candidate 按 adapter 的工作目录解析。
+
+拿到移交报告时，把客户端参数改为 `["mcp", "--stdio", "--report", "/absolute/path/report.json"]`。此时只开放无参数的 `devd_diagnose`，复用 `devd diagnose` 的验证器，只加载启动者指定的报告，所有证据标为历史。无需原项目或 supervisor，拒绝在线选择参数和控制授权，也不能通过工具参数读取另一条路径。
+
+支持 MCP `2025-06-18` 与 `2025-11-25`。输入每行 16 KiB、输出 8 MiB，内部 supervisor 请求仍限 4096 字节；最多八个未完成请求、一个控制处理器。输入超限、未完成请求 ID 重复或并发超限会关闭 adapter，输出超限返回对应请求的错误。初始化和普通调用限 30 秒，wait 沿用所选期限；输出阻塞限 5 秒。取消、EOF、Ctrl+C 只结束 adapter 工作，不停止服务；已受理控制可能继续，重试前查状态和事件，ID 不负责动作去重。这是接口能力限制，不是同用户沙箱。固定版本官方 Inspector 验证见 [tests/README.md](tests/README.md)，不冒充模型驱动的客户端对话验收。
+
 ### 给 Agent 的实例接口
 
 让 Agent 看状态，不代表顺手把停机按钮也递过去。先启动服务，再用相同的实例参数启动逐行 JSON 接口：
@@ -368,7 +403,7 @@ devd agent --stdio --allow restart,stop               # 只开放指定控制
 devd agent --stdio --allow restart,stop,reload,clean   # 开放四种控制
 ```
 
-权限由启动者一次确定，请求不能自行增加权限或改变 config/profile/state。每个会话绑定一个**活实例及其本次运行**，supervisor 换代后会拒绝，不能悄悄跟过去。停止全栈后保持这个会话打开，即可预览／执行清理；新会话需要活 supervisor，独立离线清理仍用 `devd clean`。普通 CLI 保持原有权限。这是接口能力限制，不是同用户进程沙箱；不新增远程守护进程、多用户 RBAC、自动启动或 MCP adapter。
+权限由启动者一次确定，请求不能自行增加权限或改变 config/profile/state。每个会话绑定一个**活实例及其本次运行**，supervisor 换代后会拒绝，不能悄悄跟过去。停止全栈后保持这个会话打开，即可预览／执行清理；新会话需要活 supervisor，独立离线清理仍用 `devd clean`。普通 CLI 保持原有权限。这是接口能力限制，不是同用户进程沙箱；不新增远程守护进程、多用户 RBAC 或自动启动。
 
 stdin 每行一个 UTF-8 JSON 对象，stdout 只输出 JSON 回复；启动或 I/O 失败写 stderr 并非零退出：
 
@@ -387,6 +422,7 @@ stdin 每行一个 UTF-8 JSON 对象，stdout 只输出 JSON 回复；启动或 
 | `explain` | `service` | 读取 |
 | `wait` | `timeout_ms`（1–3600000）、可选 `services`（默认全栈）；只返回最终就绪报告 | 读取 |
 | `export` | 可选 `include_logs`（默认 false）；直接返回报告，不写文件 | 读取 |
+| `incidents` | 可选事故 UUID `id`；省略则列出本次运行的留存事故 | 读取 |
 | `reload-preview` | 可选 `candidate`，默认原配置路径 | 读取 |
 | `clean-preview` | 无；要求同一运行已成功停止 | 读取 |
 | `restart` | `target`、`service`；沿用重启及依赖联动语义 | `restart` |
@@ -505,6 +541,7 @@ devd reload --apply --plan 'sha256:<64位十六进制摘要>' --candidate devd.n
 | `devd export --stored --run UUID/latest --output FILE [--include-logs]` | 停止后导出指定历史运行 |
 | `devd clean --dry-run [--json]` | 在成功停止后预览已登记、明确授权丢弃的目录 |
 | `devd clean --apply --plan ID [--json]` | 应用当前清理计划，保留共享和未登记数据 |
+| `devd mcp --stdio [--allow restart,stop,reload,clean] [--report FILE]` | 为一个活运行或隔离历史报告提供 MCP 工具 |
 | `devd agent --stdio [--allow restart,stop,reload,clean]` | 提供绑定本次运行、控制须显式授权的 JSON 接口 |
 | `devd top` | 在交互式终端查看运行中的服务和实时日志 |
 | `devd events [service] [--type TYPE] [--since DURATION] [--tail N] [--cursor RUN_UUID:NEXT_SEQUENCE] [--json] [--follow \| --stored]` | 查询生命周期经过、游标与历史缺口 |
