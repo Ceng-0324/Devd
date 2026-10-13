@@ -106,7 +106,12 @@ impl Project {
         if self.options.is_empty() {
             self.path().join(".devd/devd.yml")
         } else {
-            self.path().join("custom/profiles/dev")
+            // Windows encodes profile bytes to avoid reserved/case-folded names.
+            #[cfg(windows)]
+            let profile = "p-646576";
+            #[cfg(unix)]
+            let profile = "dev";
+            self.path().join("custom/profiles").join(profile)
         }
     }
     fn cache(&self) -> PathBuf {
