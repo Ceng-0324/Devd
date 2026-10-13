@@ -22,7 +22,7 @@ def exercise(binary):
         script = Path(__file__).resolve()
         command = " ".join(shlex.quote(s) for s in (Path(sys.executable).as_posix(), script.as_posix(), "--worker", root.as_posix()))
         config = root / "devd.yml"
-        config.write_text(json.dumps({"version": "1", "services": {"worker": {"command": command, "restart": {"policy": "never"}}}}), encoding="utf-8")
+        config.write_text(json.dumps({"version": "1", "services": {"worker": {"command": command, "restart": {"policy": "always"}}}}), encoding="utf-8")
         client_config = root / "client.json"
 
         def configure(*extra):
@@ -75,9 +75,24 @@ def exercise(binary):
                 denied = payload(inspector("tools/call", "devd_stop", {"target":target}, allow_error=True))
                 assert denied["isError"] is True
                 assert json.loads(denied["content"][0]["text"])["code"] == "permission-denied"
+                (root / "crash-worker").touch()
+                deadline = time.monotonic() + 15
+                while True:
+                    incidents = json.loads(cli("incidents", "list", "--json").stdout)["entries"]
+                    if incidents:
+                        break
+                    assert child.poll() is None and time.monotonic() < deadline, "crash incident was not recorded"
+                    time.sleep(0.05)
+                listed = data(inspector("tools/call", "devd_incidents_list"))
+                incident_id = listed["entries"][0]["id"]
+                evidence = data(inspector("tools/call", "devd_incidents_show", {"id":incident_id}))
+                assert evidence["incident"]["id"] == incident_id
+                assert evidence["selected_run"] == identity["run_id"]
+                cli("wait", "--timeout", "5s")
+                before_restart = data(inspector("tools/call", "devd_status"))["services"]["worker"]["pid"]
                 configure("--config", str(config), "--allow", "restart")
                 data(inspector("tools/call", "devd_restart", {"target":target,"service":"worker"}))
-                assert data(inspector("tools/call", "devd_status"))["services"]["worker"]["pid"] != status["services"]["worker"]["pid"]
+                assert data(inspector("tools/call", "devd_status"))["services"]["worker"]["pid"] != before_restart
                 report = root / "report.json"
                 report.write_text(json.dumps(data(inspector("tools/call", "devd_export"))), encoding="utf-8")
                 cli("stop")
@@ -88,7 +103,7 @@ def exercise(binary):
                 diagnosis = data(inspector("tools/call", "devd_diagnose"))
                 assert diagnosis["source"] == "imported-report"
                 assert diagnosis["current_health"] == "not-inspected-historical-evidence-only"
-                print(f"{INSPECTOR}: discovery, live reads, denied stop, granted restart, export and isolated offline diagnosis passed")
+                print(f"{INSPECTOR}: discovery, live reads and incident evidence, denied stop, granted restart, export and isolated offline diagnosis passed")
             finally:
                 (root / "finish-workers").touch()
                 if child.poll() is None:
@@ -108,6 +123,9 @@ if __name__ == "__main__":
     if args.worker:
         deadline = time.monotonic() + 600
         while args.worker.exists() and not (args.worker / "finish-workers").exists() and time.monotonic() < deadline:
+            if (args.worker / "crash-worker").exists():
+                (args.worker / "crash-worker").unlink()
+                sys.exit(2)
             time.sleep(0.05)
     else:
         exercise(str(args.binary.resolve(strict=True)))

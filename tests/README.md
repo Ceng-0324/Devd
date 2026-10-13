@@ -307,7 +307,8 @@ python3 scripts/mcp-smoke.py
 ```
 
 The script pins `@modelcontextprotocol/inspector@2.10.1`, checks tool discovery,
-live identity/status/events/incidents, denied stop, explicitly granted restart,
+live identity/status/events, incident list/show after an actual worker crash,
+denied stop, explicitly granted restart,
 export and offline diagnosis with the original YAML removed. It uses temporary
 files and cleans up its supervisor. Native Linux/macOS/Windows CI runs this same
 exercise with Node 24. This proves Inspector protocol interoperability; it does
