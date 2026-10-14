@@ -3,7 +3,10 @@
 Release assets, source revisions and validation evidence are on
 [GitHub Releases](https://github.com/Ceng-0324/Devd/releases).
 
-## v0.9.0-alpha.1 — Unreleased
+## v0.9.0-alpha.1 — 2026-10-14
+
+- Move detailed command, usage and permission notes out of both READMEs into
+  linked bilingual guides under `docs/`, included in release archives and the public Cargo package.
 
 - Add a complete native drift/recovery/evidence-handoff scenario to CI and
   extracted release-binary checks. Include generated third-party license texts

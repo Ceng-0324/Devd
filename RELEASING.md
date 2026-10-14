@@ -55,12 +55,12 @@ action after the source revision, checks, and artifacts have been reviewed.
    binary, checks its version against Cargo.toml, writes archives/checksums under
    `target/release-artifacts/`, then verifies the archive and runs the stack, incident and reviewed-recovery
    smokes using its extracted binary. Python 3.11 or newer is required.
-   It never publishes them. The seven-file allowlist excludes local-only design
+   It never publishes them. The eleven-file allowlist excludes local-only design
    and agent documents.
 5. Download the Linux x86_64 and macOS arm64 `.tar.gz` artifacts and Windows
    x86_64 MSVC `.zip`. Verify each archive with `shasum -a 256 -c <file>.sha256`
    (or compare PowerShell `Get-FileHash -Algorithm SHA256` against its checksum).
-   Inspect the contents: binary (`devd.exe` on Windows), license, both READMEs,
+   Inspect the contents: binary (`devd.exe` on Windows), license, both READMEs, bilingual command guides and usage notes under `docs/`,
    `THIRD_PARTY_LICENSES.md`, `VERSION`, and `REVISION`; confirm the latter two match the intended release.
    Local macOS testing does not replace validation of the other artifacts.
    Automate these checks for downloaded archives with:

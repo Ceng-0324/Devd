@@ -1,0 +1,176 @@
+# 使用须知
+
+[English](USAGE_NOTES.md) · **简体中文** · [返回 README](../README.zh-CN.md)
+
+先跑起来很容易，真正需要说清楚的是之后：重启会动谁，日志能留多久，哪些动作需要你明确开启。这里把这些边界放在一起；具体命令用法见[命令指南](COMMANDS.zh-CN.md)。
+
+**前台运行，项目内通信。** devd 使用 Tokio 管理服务任务，其他终端通过 Unix socket 或仅允许当前用户访问的 Windows 本地命名管道连接实例。默认运行目录是配置目录下的 `.devd/<配置文件名>/`，建议把 `.devd/` 加进项目的 `.gitignore`。Unix socket 路径过长时，可以用较短的 `--state-dir`；同一实例的命令要使用相同参数。
+
+**Windows 有自己的进程收尾方式。** 支持 Windows 10/11、Windows Server 2016+；每代服务在开始执行前就归入独立 Job Object，后代一起受管。停止时先向服务自己的控制台进程组发送 Ctrl+Break，宽限期结束后终止整个 Job；无控制台服务直接终止。应用需要处理 Ctrl+Break 才能优雅退出。devd 被关闭或强杀时，Job 也会关闭并清理后代。TCP、HTTP、脚本探测、`top`、profile、快照、资源控制和磁盘日志使用相同命令；Windows 下 `check`、`start` 会拒绝 Unix socket 探测，请换成 TCP 或脚本。TUI 需要交互式控制台。
+
+Windows 命令也使用 shell 风格引号。YAML 路径优先写 `/`，有空格的程序路径需要加引号，例如 `command: "'C:/Program Files/Python/python.exe' app.py"`。需要脚本解释器时显式调用 `powershell.exe -NoProfile -File script.ps1` 或 `cmd.exe /C ...`。Windows 快速体验只需 `devd init`，然后一个终端运行 `devd start`，另一个终端执行 `devd status`、`devd top` 或 `devd stop`。
+
+**健康检查可以用自己的命令扩展。** 端口能连、HTTP 返回正常，还不足以证明业务就绪时，用 `type: script` 执行自定义检查。任意语言的脚本或可执行程序都可以，退出码 `0` 表示健康。假设应用已提供 `scripts/check_ready.py`：
+
+```yaml
+services:
+  api:
+    command: python3 app.py
+    cwd: backend
+    env-file: .env
+    healthcheck:
+      type: script
+      command: python3 scripts/check_ready.py
+      interval: 5s
+      timeout: 2s
+      retries: 3
+  web:
+    command: npm run dev
+    cwd: frontend
+    depends-on:
+      - service: api
+        condition: script-ready
+```
+
+声明脚本探测即允许它以 devd 当前用户身份执行。它继承服务的工作目录与环境，优先级为显式 `env` 高于 `env-file`，再高于继承环境；每次探测都会重新读取环境文件。命令使用与服务相同的参数引用规则，不隐式经过 shell；需要管道或 shell 展开时显式写 `sh -c '...'`。标准输入关闭，标准输出和错误输出丢弃；退出状态决定健康，失败原因显示在 `status` 中。
+
+首次立即探测，后续串行执行。默认 `interval: 10s`、`timeout: 2s`、`retries: 3`。非零退出、信号退出、执行失败或超时均计为一次失败，成功清零；达到失败阈值后沿用服务的重启策略。`script-ready` 等待第一次成功，前置服务必须配置脚本探测。超时涵盖环境加载、执行及正常结束时的进程树清理。探测超时、取消、服务重启或关闭时，会终止探测的 Unix 进程组或 Windows Job；Unix 探测子进程应保留在该组内。正常结束也会清理后台后代。`check` 和 `graph` 只校验，不执行探测；profile 仍整体替换健康检查。
+
+**重启有明确边界。** 手动重启以指定服务为目标，使用当前有效配置，包括已经提交的重载；成功表示目标的新进程已启动，健康检查和已开启的依赖联动可能还在进行。手动操作可以绕过 `never` 和自动重试上限，但累计重启次数不会重置。启动失败或自动重试耗尽等终止性错误会触发全栈清理。
+
+**依赖回来了，服务也可以跟着重启。** 对已经声明 `depends-on` 的服务，加上：
+
+```yaml
+restart-on-dep-recovery: true
+restart:
+  policy: on-failure
+  initial-delay: 1s
+  max-attempts: 3
+```
+
+默认关闭。开启后，直接依赖换了进程，且所有依赖重新满足各自的就绪条件，才会重启当前正在运行的服务。依赖的手动重启和自动恢复都适用；同一进程从不健康变健康不触发。依赖不可用期间，当前服务继续运行。首次启动不补一次重启，已经正常结束的服务也不会被重新拉起。沿依赖链传播时，每一层都需要自行开启。
+
+联动复用服务的退避设置，与其他重启共用累计 `max-attempts` 预算；耗尽后清理全栈。与 `policy: never` 同时启用、或未声明依赖，会在配置检查时明确报错。下一次启动就绪检查完成前观察到的多次恢复合并为一次重启；之后依赖再次变化，仍可能再触发一次，各服务独立恢复，不是整张依赖图的原子重启。停止可打断等待，手动重启当前服务可接管待执行的联动退避。
+
+**出事之后，至少要知道发生了什么。** `devd events` 记录启动、退出、依赖、健康、资源和重启决策，带运行 ID、进程代次与因果引用。
+
+```bash
+devd events api --type restart-decision --since 10m --tail 20
+devd events --json --follow
+devd start --persist-events --event-max-size 10 --event-keep 3
+# 停止后查询：
+devd events --stored --json
+```
+
+全栈内存保留 1024 条事件，单条序列化上限 16 KiB。`--tail` 默认 100，范围 1–1000，先筛选再取尾部。`--type` 可重复指定，命中任意一个类型即保留；服务名精确匹配，`--since` 在命令开始时固定包含边界的 UTC 阈值。顺序以序号为准，不受系统时间回拨影响。在线查询不读取 YAML；日志和事件共用最多 16 个跟随连接，Ctrl+C 只退出查询。
+
+`--json` 返回带 schema 版本的批次，包含 `source`、`context`、`entries`、`gaps`、`first_available`、`cursor` 和在线磁盘状态 `persistence`（`disabled`／`recording`／`failed`）。跟随模式每行一个 JSON 批次，只更新水位或磁盘状态时事件列表可以为空。`--cursor RUN_UUID:NEXT_SEQUENCE` 从指定序号开始，包含该序号；返回游标指向下一个待检查位置，即使筛选没有命中也会前进。首批历史与订阅原子衔接，后续跟随批次的 `first_available` 为空。历史淘汰、运行变更、尾部截取都显式报告缺口；超前游标报错。慢订阅者报告缺口后以错误退出，可用最后游标重连，恢复仍在内存中的记录。拿旧运行游标查询新运行时，会返回新运行并标出运行变更。
+
+事件写盘需要单独开启 `--persist-events`，放在实例/profile 的 `events/` 目录，与 `logs/` 独立，共用文件锁、安全访问和轮转规则。默认每文件 10 MiB、3 份归档，共 40 MiB；`--event-max-size` 支持 1–1024 MiB，`--event-keep` 支持 1–100，均要求显式开启。启动时无法打开存储则不启动服务。**运行中事件写盘失败，会停用本次磁盘事件记录，在 stderr 和在线事件查询中报告，服务继续运行。** 重新以持久化参数启动 supervisor 才会重试磁盘记录。
+
+`events --stored` 要求 writer 已停止，沿用相同实例/profile 参数，YAML 删除后仍可查询。按保留文件顺序跨运行筛选、取尾部；批次的 context、最早可用序号和游标描述最后一个保留运行。保留范围内的游标可继续读到后续运行；游标所属运行已丢失时返回缺口及空事件列表，去掉游标即可查看剩余历史。离线未知服务无匹配结果。输出明确标为 `stored`，旧 PID 仅为历史证据。
+
+正常关闭会排空并同步磁盘；慢磁盘订阅、未完整结束的运行和未写完的尾记录都会显示缺口。下次持久化启动只修复未完成尾记录，并留下恢复标记；完整记录损坏或 schema 不支持时明确报错。单次查询最多保留 128 个缺口诊断，`omitted_gaps` 标出被丢弃的旧诊断数。轮转、强杀与掉电仍可能丢失历史，这是一份有边界的诊断记录。事件不保存命令、URL 或环境内容，但上下文仍包含实例状态路径，路径条件事件还会包含解析后的声明路径（不保存文件内容或解析后的软链接目标）。
+
+**不靠猜，解释一次故障。** `devd explain <service>` 是只读、确定性的诊断报告，依据当前 supervisor 快照和结构化生命周期事件，区分依赖阻塞、启动失败、健康失败、资源超限、重启预算耗尽、手动停止以及健康／运行状态，并引用对应的事件序号、进程代次、因果事件和时间。它不会探测服务、启动或重启进程，也不会执行报告里的建议。
+
+```bash
+devd explain api
+devd explain api --json
+# 持久化运行停止后：
+devd explain api --stored --json
+```
+
+在线模式连接正在运行的 supervisor，不重新读取 YAML。`--stored` 在 writer 停止后读取保留的事件文件，即使 YAML 已删除也可用；报告会标记 `source: stored`，历史 PID 只作为证据。报告中的 `complete: false` 表示存在明确缺口或被省略的缺口，结论只对保留下来的历史负责。没有匹配事件时会明确说无法确定原因，并给出下一步只读检查。任何模式都不会自动修复。
+
+解释以当前服务代次为准；没有活服务时使用保留下来的最新代次，离线 `status` 仍为 null。CPU 与内存的恢复分别解除对应告警。正在重启时可以沿明确的 cause 引用旧代原因，但旧故障不会覆盖新代的运行或健康状态。导出和 Agent 报告沿用同一规则。
+
+**启动前先查环境。** `devd doctor` 检查服务工作目录、声明的 `requires` 路径、dotenv 文件、服务命令和脚本探测程序是否可找到，以及显式声明的 TCP 监听地址。它不会启动服务、执行命令或探测脚本，也不会改动文件和进程。`requires` 使用与启动相同的 evaluator 检查可读文件、可访问目录及目标存在的软链接。用 `listen` 声明服务自己的端口，例如 `listen: [127.0.0.1:3000]`；健康检查目标不会被当作服务自有端口。检查会短暂绑定后释放地址，只说明检查当时是否可用。没有声明时会标记为 `not-checked`。可用 `--profile` 检查合并后的配置，用 `--json` 获取带版本的机器可读报告。发现失败时返回非零退出码；通过检查不代表之后启动必然成功。
+
+```bash
+devd doctor
+devd doctor --profile staging --json
+```
+
+doctor 还会展示显式 `requires` 与 `paths` 的解析链：中间目录链接、相对目标和可观测的失败节点。JSON 新增 schema 1 的 `resources`，包含 `entries`、`captured_from/to`、`complete`、`omitted` 和 `limits`。每项标注服务、有效声明（requires 索引/类型，或 paths 名称/scope）、声明路径、有效 cwd、请求路径和解析观察；结合报告的 `config`、`profile` 与资源 `state_dir` 定位来源。这是合并后字段的来源，不提供 YAML 行号，也不把选中 profile 等同于该字段被覆盖。requires 项另有原检查器的 `condition.satisfied/failure`，与解析链分别呈现。
+
+`inspection.nodes` 包含路径、类型与链接目标，`resolved` 表示解析终点，`failure` 与 `failed_node` 标注失败和从零开始的节点索引，位置不可用时为 null。解析只读取元数据与链接目标，不读文件正文。`atomic` 始终为 false；`change_detected` 表示复查发现变化，false 也不能排除竞争。缺失、悬空、类型错误、拒绝访问和循环分别报告。不支持的 reparse 行为、Windows 含父目录段的路径、非 UTF-8 路径或容量耗尽会标为不完整。`display_paths_lossy` 标出经过替换显示的路径，不能拿它作为精确标识。Windows 支持普通软链接，不假定其他 reparse 类型也有相同语义。
+
+资源视图最多 128 项，每项最多 128 个观测节点、跟随 40 个链接；单路径上限 4096 字节，每条链的紧凑节点 JSON 上限 64 KiB，全部条目的紧凑 JSON 上限 1 MiB，排版和原有检查输出另计。省略条目或观察到变化会令 `resources.complete: false`；覆盖完整不表示所有资源都存在。这些限额约束遍历工作量，不保证阻塞文件系统上单次 OS 调用的耗时。原有前置检查仍会执行，`ready` 语义不变：普通路径映射缺失不会额外阻止启动，doctor 也不会创建 `cleanup: true` 目录。输出另有 5 秒写入/flush 期限，Ctrl+C 可取消输出；被中断的报告可能不完整。路径和链接目标本身仍可能包含敏感信息。
+
+**看看一条路径牵连了谁。** 选定一个有效声明，再沿服务依赖图查看潜在影响：
+
+```bash
+# 0 表示 profile 合并后的第一个 requires 条目。
+devd impact api --require 0 --profile staging
+# DATA 是该服务 paths 映射中的名称。
+devd impact database --path DATA --scope worktrees --json
+```
+
+默认 `--scope project` 只读取选定的磁盘配置。`requires` 的声明服务是直接使用者；`paths` 的提供者和直接依赖它、接收路径映射的服务都是直接使用者。下游服务去重显示，并给出一条最短服务依赖链解释来源。关联依据是相同请求路径或成功观察到的相同解析终点，不识别硬链接身份、目录包含关系或应用动态访问。`shared`、`instance` 保留各声明的归属；requires 即使与某映射互为别名，归属仍是未知。临时目录提示不授予清理权限；查询不会启动、重启、创建或删除资源。
+
+显式 `--scope worktrees` 才复用当前 Git 仓库及其 worktree 中的实例登记；非 Git 目录只查当前项目，未登记实例不在覆盖内。在线身份只证明哪个实例应答，其他实例 YAML 标为 `disk-candidate`，`runtime_equivalence: unknown` 表示磁盘编辑或重载可能使它与内存配置不同。不可达、身份替换或协议不兼容的实例不推断影响。配置缺失/无效、损坏索引及省略实例均明确报告。`registry_complete` 表示登记覆盖；只要存在其他实例，因未核实运行配置，`impact_complete` 就保持 false。默认项目查询同样不声称磁盘配置等于运行配置。
+
+JSON schema 1 保留 config/profile/state、推导的 `instance_id`（不证明在线）、采集区间、所选解析链、`current.matches`、`direct_consumers`、`downstream` 及可选的 `discovery.peers`。匹配条目给出依据和归属；观察矛盾时标记 `conflicts_with_selection` 并令视图不完整。`complete` 只描述有界声明覆盖，不代表资源健康或原子快照（`atomic` 始终 false），也不把潜在影响当作应用故障因果。
+
+每份配置最多 256 个服务、1024 条依赖边、256 个检查声明、64 个匹配。图超限或选中声明位于扫描限额之外时返回错误，其余省略项和不确定别名计数报告。扩展查询最多分析 8 个其他实例，各自 YAML 必须为不超过 1 MiB 的普通文件，同时沿用发现模块的 64 worktree／256 记录限制。完整排版输出最多 2 MiB，写入/flush 期限 5 秒，Ctrl+C 可取消输出。文件系统调用沿用 doctor 的非原子观察及阻塞 I/O 边界；路径本身仍可能敏感。
+
+**日志默认保存在内存里。** 保留全栈最近 1000 条，单行最多 16 KiB；没有开启持久化时，停止后无法再查询。`logs --follow` 先输出指定条数的历史日志，再持续接收新日志，按 Ctrl+C 或 supervisor 停止时退出；跟随者落后过多会报错退出。最多同时连接 16 个跟随者，为控制命令保留连接槽位。前台输出过慢时会丢弃部分实时条目并告警；前台输出管道断开会触发服务清理。
+
+**需要留案底，就显式写盘。** 用 `devd start --persist-logs` 启动，退出后用 `devd logs --stored` 查询：
+
+```bash
+devd start --persist-logs --log-max-size 10 --log-keep 3
+# 前台 supervisor 停止后：
+devd logs api --stored --level error --since 1h --tail 50
+```
+
+实例状态目录下保存 `logs/current.jsonl` 和 `logs/archive-1.jsonl`（最新归档），归档数量由配置控制。每条记录保留 UTC 时间、服务名、进程代次、级别、消息和截断标记。默认单文件 10 MiB，保留 3 份归档，日志数据最多 40 MiB；完整记录将超过上限时先轮转。`--log-max-size` 支持 1–1024 MiB，`--log-keep` 支持 1–100 份归档，均要求 `--persist-logs`。减小保留数后，下次持久化启动会删除多余的受管归档。减小文件大小上限不会重写已有归档，它们会随正常轮转淘汰。Unix 新目录和文件权限为 0700／0600，Windows 继承目录 ACL，应将项目和状态目录保存在当前用户目录内。日志可能含应用密钥；多次启动会追加到当前文件，共用这套保留上限。
+
+查询时使用与启动相同的 `--config`、`--profile` 和 `--state-dir`。不同实例/profile 的日志隔离；YAML 被删除后仍可用 `--stored` 查询，但必须先停止持久化 writer，且不能与 `--follow` 同用。日志目录不存在时报错，服务名没有历史记录时返回空结果。普通 `logs` 仍只读本次运行的内存。磁盘查询在全部保留文件上使用相同过滤条件，再取最新的 tail 条。
+
+磁盘写入使用独立的有界订阅，不阻塞服务采集。磁盘过慢可能丢失完整条目，文件中会留下包含丢失数量的 `devd` WARN。写盘失败会有序停止全栈并返回错误。正常关闭会排空已接收条目并同步磁盘；强杀或断电可能丢失尚未同步的数据。离线查询忽略异常中断留下的最后半条 JSONL，下次持久化启动会清掉它并记录警告；损坏的完整记录会让查询报错。这是有上限的开发日志，不是审计日志。
+
+`--level`、`--since`、`--grep` 可单独使用或组合，用于筛选历史和实时日志。例如 `devd logs api --level error --since 5m --grep database --tail 50 --follow` 先显示最多 50 条匹配的内存历史，再持续接收匹配的新日志。级别精确匹配；`--grep` 对原始消息做区分大小写的字面匹配。`--since` 支持 `ms`、`s`、`m`、`h`（如 `500ms`、`2h`），在命令发起时固定截止时间。筛选无法找回已从内存淘汰的日志。
+
+**诊断各管一层。** `status` 离线时返回错误，遗留状态文件仅用于诊断。配置内容被改坏后，仍可通过活实例执行 `stop`、`status`、`logs`、`restart` 和 `top`。`check` 校验配置结构和关系，`doctor` 不执行项目命令，只检查启动前置条件；健康探测只由 supervisor 在运行时执行。命令失败返回非零退出码。
+
+`devd top` 连接与 `status`、`logs` 相同的运行实例。顶部显示实例标识、supervisor 运行标识、profile 和配置路径，服务表展示状态、PID、重启次数与 CPU／RSS。**Tab 切换日志页和事件页。** 上下方向键（或 j/k）选服务，`r` 重启选中服务；两个页面均展示整个服务栈。Page Up/Down 翻当前页面，End 回到最新记录，左右方向键横向查看长记录和顶部字段，Home 回到行首。`s` 会先要求确认停止整个服务栈；Enter 或再次按 `s` 确认，Esc 或 `n` 取消。`q` 和 Ctrl+C 只退出界面。需要至少 60×16 的交互式终端，不会自行启动 supervisor。
+
+事件时间线大约每秒查询一次内存历史，最多保留 1,000 行（含缺口标记）。记录按本次运行的 `#序号` 排列；`g` 是代次起始事件的序号，不是 PID 或重启次数。`cause=#…` 表示记录中已有的直接因果引用，`cause=-` 表示没有记录因果关系，`(unavailable)` 表示引用的事件已不在界面保留的历史中。两条记录挨得近，不能据此判定谁导致了谁。摘要持续展示 supervisor 历史淘汰／查询截断缺口、本地淘汰行数和磁盘记录失败；最新缺口的行被淘汰后，摘要仍保留其说明。界面不会开启事件持久化，也不读取离线历史。状态、事件和应用日志分别采集，不承诺原子快照。断连或运行换代会报错并退出；控制与日志订阅绑定最初的运行，旧界面不能操作替换后的 supervisor。
+
+**资源指标只统计服务主进程。** supervisor 大约每秒采样一次，不累加 shell 或包管理器启动的子进程。CPU 以一个核心满载为 100%，多线程进程可以超过 100%；内存为 RSS，终端以 MiB 显示。不可用的指标显示 `-`，CPU 在启动或重启后需要两次成功采样。JSON 的可选 `resources` 包含 `cpu_percent`（预热时为 `null`）、`memory_bytes` 和 `sampled_at`。进程退出后清除指标。
+
+可选的 `limits` 在采样值超出阈值时记录告警，恢复到阈值内时再记录一次：
+
+```yaml
+services:
+  api:
+    command: ./run-api
+    limits: {cpu: '150%', memory: 512MiB}
+```
+
+CPU 使用正整数百分比；内存使用正整数及 `B`、`KB`、`MB`、`GB`、`KiB`、`MiB` 或 `GiB` 单位，十进制与二进制单位不同。每次跨越阈值只记录一次，进程重启后重新计数。缺失采样及 CPU 预热不会清除既有告警。不包含子进程用量，也不提供 CPU 或内存硬限额。
+
+**超限重启需要按服务显式授权。** 省略 `limits.on-exceed` 默认为 `warn`，服务继续运行。需要自动恢复时才开启：
+
+```yaml
+services:
+  api:
+    command: ./run-api
+    limits:
+      memory: 512MiB
+      on-exceed: restart
+    restart:
+      policy: on-failure
+      backoff: exponential
+      initial-delay: 1s
+      max-attempts: 3
+```
+
+同一指标连续 3 次有效采样超限才触发，大约每秒采样一次。恢复到阈值内或缺样会重置该指标的计数；CPU 预热只重置 CPU 计数。触发决定保留到当前进程代次结束。devd 停止进程组、排空日志，沿用现有退避并重新检查依赖后再启动。超限、崩溃、健康检查和依赖恢复重启共用累计预算；耗尽后服务失败并清理全栈。停止可以打断退避，手动重启可以接管等待，动作原因会写入日志和失败诊断。`on-exceed: restart` 与 `restart.policy: never` 冲突，启动前直接报错。profile 整体替换 `limits`，替换时省略 `on-exceed` 会回到 `warn`，`limits: null` 清除阈值。配置修改在下次启动 supervisor 或显式选择性重载时生效，不需要 root 权限或运行中弹窗确认。
+
+当前范围是本地进程管理。`init` 可生成初始配置，尚未实现项目扫描和交互式模板。文件前置条件可以按 [README](../README.zh-CN.md) 中的说明显式监测；配置文件监听和自动重载尚未实现，配置变化通过显式选择性重载应用。
+
+配置会拒绝未知字段和无效的 `limits`。YAML 值按字面使用，尚未实现 `${VAR}` 替换。`backoff: exponential` 从 `initial-delay` 开始，随累计重启次数翻倍，到 `max-delay` 封顶（默认 60s，不能小于初始延时）；健康检查成功不会重置计数。fixed 不使用 `max-delay`；两种等待均可被停止操作中断。
+

@@ -26,6 +26,8 @@ class ReleaseVerificationTests(unittest.TestCase):
         files = {
             "devd.exe" if windows else "devd": b"binary",
             "LICENSE": b"license", "THIRD_PARTY_LICENSES.md": b"third-party", "README.md": b"English", "README.zh-CN.md": b"Chinese",
+            "docs/USAGE_NOTES.md": b"English notes", "docs/USAGE_NOTES.zh-CN.md": b"Chinese notes",
+            "docs/COMMANDS.md": b"English guide", "docs/COMMANDS.zh-CN.md": b"Chinese guide",
             "VERSION": f"devd {self.version}\n".encode(),
             "REVISION": f"{self.revision}\n".encode(),
         }
@@ -92,6 +94,10 @@ class ReleaseVerificationTests(unittest.TestCase):
                 {"changes": {"../escape": b"outside"}},
                 {"changes": {"LICENSE": b""}},
                 {"changes": {"THIRD_PARTY_LICENSES.md": b""}},
+                {"changes": {"docs/USAGE_NOTES.md": b""}},
+                {"changes": {"docs/USAGE_NOTES.zh-CN.md": b""}},
+                {"changes": {"docs/COMMANDS.md": b""}},
+                {"changes": {"docs/COMMANDS.zh-CN.md": b""}},
                 {"duplicate": True}, {"symlink": True}, {"fifo": True},
             ]:
                 with self.subTest(windows=windows, options=options), tempfile.TemporaryDirectory() as directory:
@@ -104,7 +110,7 @@ class ReleaseVerificationTests(unittest.TestCase):
         files = subprocess.check_output(
             ["cargo", "package", "--list", "--locked", "--allow-dirty"], cwd=root, text=True
         ).splitlines()
-        self.assertTrue({"Cargo.toml", "README.md", "README.zh-CN.md", "THIRD_PARTY_LICENSES.md"}.issubset(files))
+        self.assertTrue({"Cargo.toml", "README.md", "README.zh-CN.md", "docs/USAGE_NOTES.md", "docs/USAGE_NOTES.zh-CN.md", "docs/COMMANDS.md", "docs/COMMANDS.zh-CN.md", "THIRD_PARTY_LICENSES.md"}.issubset(files))
         self.assertTrue({"TECHNICAL_DESIGN.md", "AGENTS.md", "COMPETITIVE_RESEARCH.md"}.isdisjoint(files))
 
     def test_archives_reject_corrupt_bytes_or_checksum_filename(self):

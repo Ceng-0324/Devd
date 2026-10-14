@@ -16,11 +16,11 @@
 
 ## 它能做什么
 
-v0.9 源码候选增加了可移交报告诊断、stdio MCP、显式资源基线和经过预览的恢复配方。
+v0.9 增加了可移交报告诊断、stdio MCP、显式资源基线和经过预览的恢复配方。
 [验收说明](VALIDATION.md) 记录可复现检查与尚缺的用户价值证据；参与开发与安全报告分别见
 [贡献指南](CONTRIBUTING.md) 和 [安全政策](SECURITY.md)。
 
-devd 是用 Rust 编写的本地开发服务管理器。**v0.8.0-alpha.1 已作为预发布版本发布，支持 Linux、macOS 和 Windows。** [下载二进制及 SHA-256 校验文件](https://github.com/Ceng-0324/Devd/releases/tag/v0.8.0-alpha.1)，提供 Linux x86_64、macOS arm64 和 Windows x86_64 MSVC 归档。
+devd 是用 Rust 编写的本地开发服务管理器。**v0.9.0-alpha.1 已作为预发布版本发布，支持 Linux、macOS 和 Windows。** [下载二进制及 SHA-256 校验文件](https://github.com/Ceng-0324/Devd/releases/tag/v0.9.0-alpha.1)，提供 Linux x86_64、macOS arm64 和 Windows x86_64 MSVC 归档。
 
 当初那场事故，现在有了一条能查下去的线：声明服务需要哪些文件和软链接，看清解析在哪一环断了、哪些声明服务在下游。重现问题前显式开启事故记录，supervisor 停止后仍能查看和导出证据。后来把目标补回来，也不会改写当时留下的记录。
 
@@ -116,703 +116,72 @@ services:
 
 这个例子需要你已有 `backend`、`frontend`、对应的 `dev` 脚本和 `backend/.env.local`。API 的健康接口返回 2xx 后，前端才会启动；依赖等待默认最多 30 秒。
 
-文件前置条件与应用健康检查分开声明。服务依赖就绪后、进程启动前会立即检查：
+`cwd` 相对配置目录，`env-file` 相对服务的 `cwd`。命令没有隐式 shell。关键文件也能声明为启动前置条件，详见[命令指南](docs/COMMANDS.zh-CN.md#文件前置条件与路径规则)。
 
-```yaml
-services:
-  api:
-    command: npm run dev
-    cwd: ./backend
-    requires:
-      - {type: file, path: .env.local}
-      - {type: directory, path: uploads}
-      - {type: symlink, path: current-data}
-```
+## 日常就这几步
 
-`file` 要求路径是可读普通文件，`directory` 要求是可访问目录，`symlink` 要求链接指向现存文件或目录。相对路径按服务生效后的 `cwd` 解析，也可以使用绝对路径。条件不满足时该服务不会启动，并按正常规则清理整组服务。`devd doctor` 使用相同检查，不启动服务，也不读取文件内容。
-
-需要在启动后观察这些条件时，在 `requires` 列表非空的服务上设置 `monitor-requires: true`。默认是 `false`，profile 可以再次关闭，也允许配合 `restart.policy: never` 使用。每次采样完成后间隔一秒，连续两次得到相同变化才报告。条件失效、失效原因变化和恢复会写入 `path-condition-changed` 事件及告警/恢复日志，重复结果不会刷屏。轮询可能错过短暂变化；文件或软链接换成另一个仍满足条件的对象，也不会产生事件。
-
-用 `devd events api --type path-condition-changed --json` 查看事件，或用 `devd explain api` 查看该进程代次每条条件的最近观测；已恢复时也会引用此前的失效证据。这些观测不改变应用健康状态、不重启服务，也不修改文件，更不能单凭发生顺序断定应用故障的原因。服务停止或换代时，旧进程的监测随之结束。需要停止后保留证据，仍须在启动时显式加 `--persist-events`，之后用 `events --stored` 或 `explain api --stored` 查询。
-
-`cwd` 相对配置文件所在目录，`env-file` 相对服务的 `cwd`。显式配置的 `env` 会覆盖环境文件里的同名值。命令支持带引号的参数；需要管道、重定向或 shell 展开时，显式使用 `sh -c '...'`。
-
-## 常用命令
-
-### 实例身份与发现
+启动之后，另一个终端里的事情通常很简单：
 
 ```bash
-devd instances --json                  # 当前仓库和全部 worktree
-devd identity --profile staging --json # 指定活实例的身份
+devd wait --timeout 30s       # 等到真的能用，再跑测试
+devd status                  # 谁在跑，谁出了问题
+devd logs api --tail 50       # 看最近的应用输出
+devd explain api             # 看记录里的故障线索
+devd restart api             # 显式重启这个服务
+devd stop                    # 做完了，有序收尾
 ```
 
-这两个命令已包含在 v0.7 中。`start` 会登记配置、profile、规范化状态目录、项目/worktree 根目录、supervisor PID、启动时间和事件 `run_id`。`instance_id` 由配置路径、规范化状态目录和 profile 生成，同一实例重启或切换分支时保持不变，路径移动后会变化。分支和提交是启动时的观测；detached HEAD 的分支为空，尚无提交的分支其提交字段为空。
+同一个现场要用相同的 `--config`、`--profile` 和 `--state-dir`。重启请求成功只表示进程启动了；需要就绪时，再用 `wait`。
 
-`instances` 从当前 Git 仓库及其 worktree 的 `.devd/instances/*.json` 读取索引，包括子目录配置和启动时登记的自定义 `--state-dir`。普通目录以配置目录为项目根，请在该目录查询；未安装 Git 时只能发现当前目录。它不扫描全盘，也无法发现尚未登记的旧版 supervisor。即使状态目录在项目外，启动登记仍要求项目索引可写；索引建立失败时不会启动服务。
+## 出了问题，别只剩一句“挂了”
 
-索引仅是线索，必须连接控制端点并核对完整身份后才标为 `live`；其他结果为 `unreachable`、`identity-mismatch` 或 `unsupported`。不可达不代表进程已死，停止后的记录会保留，再次启动同一实例时替换。发现命令不改索引、不接管旧 PID、不停止进程、不删除数据。JSON 包含 `schema_version: 1`、`entries`、`warnings` 和 `complete`；`complete` 仅指所选范围的登记记录已检查且没有索引警告，不保证服务在线或已找到本机所有实例。最多检查 64 个 worktree、256 条记录，每条上限 64 KiB；端点并发上限 8，每个等待 750 ms。繁忙实例可能暂时不可达，可稍后重试。
+软链接还在，目标没了。只看到“服务挂了”没什么用，得知道当时哪里断了、哪些声明服务可能受影响，还得让证据活得比现场久一点。
 
-`instances` 以当前目录确定范围，不接受非默认配置路径、profile 或状态目录选择器；`identity` 沿用 `status` 的选择器，YAML 删除后仍可查询。它们不隔离端口、应用文件或数据库。报告包含本地路径，分享前请留意。
-
-### 等待就绪
-
-进程启动了，不代表下一步就能用。跑测试、执行脚本，或者把环境交给另一个工具之前，可以先等活实例报告就绪：
+先用 `requires` 声明关键文件或链接，`devd doctor` 看解析链，`devd impact api --require 0` 看声明下游。需要在运行期观察条件变化，显式配置 `monitor-requires: true`；重现之前，再开启事故记录：
 
 ```bash
-devd wait                              # 等全栈，默认最多 30 秒
-devd wait api worker --timeout 1m --json
-devd wait api --profile staging --state-dir ./runtime
+devd start --record-incidents  # 在前台终端运行
 ```
 
-该命令已包含在 v0.7 中。不写服务名时选择 supervisor 当前有效配置中的全部服务；指定名称时精确匹配、自动去重。有健康检查的服务必须达到 `healthy` 且持有 PID，其余必须为 `running` 且持有 PID。沿用启动时的 `--config`、`--profile` 和 `--state-dir`。YAML 改坏或删除后仍能等待：命令只读取活状态，不重读配置，也不额外执行探测。
-
-默认期限 `30s` 包含连接建立，可用 `--timeout` 设置 `1ms` 到 `1h`。同一 supervisor 内手动重启或崩溃恢复可以继续等待新代次；手动重启请求一旦被接受，旧代次就不能满足等待。全栈停止、已接受的配置重载（包括等价配置）或控制连接断开会终止本次等待。预览和被拒绝的重载不影响等待，也不会自动重连新的 supervisor。Ctrl+C 只取消等待命令。
-
-退出码 `0` 表示在同一次活观测中，所选服务全部就绪；它不会锁住这些进程，也不保证之后持续健康。其他等待结果退出 `1`，CLI 参数错误退出 `2`。所选服务进入 stopped/failed 会终止等待；pending、starting、unhealthy 和 restarting 可以继续等。已观测到的全栈停止或重载优先于服务就绪。每个 supervisor 最多接受 8 个并发等待，多出的请求返回 `busy`，为控制命令保留连接余量。
-
-`--json` 在 stdout 输出一份最终报告，失败也有报告：`schema_version: 1`、`outcome`、`instance_id`、`run_id`、`observed_at`、`elapsed_ms`、`services`、`blocking` 和 `message`。每个服务包含健康要求、观测状态、PID、代次、是否就绪、是否有手动重启待完成，以及最近错误。结果为 `ready`、`failed`、`timed-out`、`cancelled`、`stopping`、`reloaded`、`disconnected`、`unavailable`、`invalid-service` 或 `busy`。超时、取消或断连时保留最后收到的证据，可能已经过时；未收到报告时身份和观测字段为 null。`waiting` 仅用于内部流式进度，不是 CLI 最终结果。参数错误可能在生成报告前退出。
-
-最终输出在就绪等待结束后另有 5 秒的写入和 flush 期限；管道阻塞时仍可用 Ctrl+C 取消。输出失败以非零状态退出，文本或 JSON 可能不完整，服务不会因此停止。
-
-### 导出诊断证据
-
-需要分享故障现场时，从选中的活 supervisor 导出一份有界报告：
+另一终端等服务就绪，重现问题，再查看留下来的记录：
 
 ```bash
-devd export --output diagnostic.json
-devd export --profile staging --state-dir ./runtime --output staging.json --include-logs
-```
-
-新 JSON 文件包含实例与运行身份、服务状态和 PID/代次、最近最多 1000 条生命周期事件，以及当前或近期出现的服务解释（最多 256 个服务）。事件游标、`gaps` 和 `omitted_gaps` 表示历史缺口。`captured_from`、`captured_to`、`event_watermark_after` 与 `stable_during_capture` 描述采样区间；稳定只表示采集期间未观测到状态或事件水位变化，不代表跨来源原子快照，也不保证之后仍是这个状态。不稳定的报告仍可排查，但状态与事件可能对应不同时间。
-
-`omitted_fields` 列出有意省略的自由文本字段，错误正文缺席不表示没有发生错误。默认不包含应用日志；`--include-logs` 才加入最近最多 200 条原始内存日志，分享前必须检查。状态错误正文、重载失败正文、配置命令和环境值不会进入默认报告。这是字段白名单，不是通用秘密脱敏：服务名称、配置/状态/worktree 路径、路径条件中的文件路径、Git 上下文，以及显式加入的日志仍可能泄露隐私。导出通过临时文件发布为新文件，绝不覆盖现有目标；YAML 被删除后，只要 supervisor 还在运行仍可导出。默认在线模式不查询离线历史；两种模式都不控制服务。
-
-**supervisor 已经停了，就导出真正留下来的证据。** 要分析的运行必须事先开启事件持久化：
-
-```bash
-# 重现问题之前：
-devd start --persist-events
-# 停止后，即使 devd.yml 已删除也能导出：
-devd export --stored --run latest --output retained.json
-# 使用 identity/events 或此前报告中的运行 UUID：
-devd export --stored --run 123e4567-e89b-12d3-a456-426614174000 --output selected-run.json
-```
-
-`--stored` 必须搭配 `--run UUID|latest`。latest 指保留文件顺序中的最后一次运行，不代表最近启动的 supervisor，也不按墙上时钟排序。UUID 不存在或已被完全轮转删除时返回错误。使用启动时相同的 config/profile/state 选择；命令不加载 YAML、不连接端点、不探测进程，也不拿当前文件检查结果补造历史。事件严格限定在所选 run，各服务解释使用保留下来的最新事件代次，窗口中的旧代事件仍保留代次标签。
-
-在线 CLI 与 Agent 导出保持 schema 1，增加 `source: live`；没有 source 的旧 schema 1 报告仍按 live 读取。离线使用 schema 2、`source: stored`，复用事件、解释和安全状态模型。顶层 `identity` 为 null、`state` 为空：旧事件存储只有 run/profile/state 上下文，没有完整实例身份或 Git 快照。`stored.selection` 保存请求的 config/profile/state 及推导的 `selected_instance_id`，它是查询来源，不是历史实例身份证明。`events.context` 保留原始记录，即使文件后来被移动。采集时间指本次导出，事件时间指原观察；`event_watermark_after` 为保留游标，`stable_during_capture` 与 `stored.atomic` 均为 false。
-
-`stored.historical_state` 区分 services.json 的 `missing`、`invalid`、`unknown-run`、`different-run` 和 `retained-matching-run`。只有匹配 run 的快照才附带白名单服务字段，始终标为 `stale: true`；`file_modified_at` 只是文件元数据，不是状态观察时间。历史 PID 不授予控制权，历史状态不参与当前健康判断。`stored.live_state` 为 `unavailable-offline`，解释中的 `status` 保持 null；即使曾强杀 supervisor，也不能据此断言进程现在是否存活。
-
-`begin_retained`、`end_retained` 独立表示存储 writer 的起止记录。标记缺失、事件缺口、内容截断或尾部限额都会令 `event_coverage_complete` 为 false。序号缺口可能来自轮转，`unfinished-record` 表示 current 文件尾部未写完，该片段不能可靠归属某次运行。完整记录损坏、归档文件截断则返回错误。结束标记只证明 writer 关闭事件流，不证明所有进程都成功停止；未记录的证据不会被重建。
-
-离线 `--include-logs` 将最多 200 条原始历史日志放在独立的 `stored.unassigned_logs` 附件。旧日志格式没有 run_id，内容可能跨越多次运行，明确标为 `run_attribution: unknown-no-run-id-in-log-format`，不参与所选 run 的解释。轮转/运行覆盖保持未知，`omitted_entries` 与 `unfinished_bytes` 分别报告尾部省略及未写完字节。日志目录不存在时标为 missing，默认不读取它。附件标注可能敏感，沿用在线报告的字段白名单和路径隐私边界。
-
-离线采集以共享模式持有已有 `services.json.lock`，并复用事件/日志读取锁。supervisor 或 writer 正在写入、状态锁缺失、受管文件是链接/特殊文件/多硬链接时拒绝读取，不创建源目录或锁文件。每种历史最多扫描 64 MiB、101 个受管文件，最多识别 256 次运行，事件尾部最多 1000 条、服务名最多 256 个；历史状态上限 1 MiB，两种模式最终 JSON 上限 16 MiB。超限失败，不发布部分报告。
-
-两种 CLI 模式采集及准备阶段限时 30 秒、支持 Ctrl+C，再通过临时文件以不覆盖方式发布。发布前受理的取消可阻止后台任务迟到落盘；发布已被受理时允许完成，取消不删除已保存的报告。取消/期限在文件系统调用之间检查，单次阻塞 OS 调用无法强行打断。保存成功提示另有 5 秒输出期限。
-
-### 留下有界的事故证据
-
-碰上偶发故障，不必等它消失后再拼现场。重现前显式开启采集：
-
-```bash
-devd start --record-incidents
-```
-
-它与事件/日志持久化、文件监测、自动重启和清理授权相互独立。触发范围为未观测到停止请求的非零/信号退出、启动/进程/actor 失败、服务进入 Failed、健康进入 Unhealthy、依赖失败/超时、资源超限和文件条件失效。正常退出与手动控制本身不触发。文件故障来自启动检查或显式配置的 `monitor-requires`；此参数不会偷偷开启持续监测。
-
-同服务、同代次的触发合并到一个 5 秒后续窗口，从采集器收到首个触发时计时，重复失败不会延长期限。每个事故最多保留前序、后续各 200 条事件，两段分别限 256 KiB；采集中、排队中和写入中的事故合计最多 4 个。容量满时丢弃新触发，订阅缺口、丢弃触发、合并次数和上下文省略量均计数，采集器结束时也会在 stderr 报告覆盖缺口。停止、重载、代次替换提前结束已有窗口并记录原因，之后的新故障可另建事故。控制请求及结果只记录窗口内真正观察到的事件，不把“请求已发出”写成“操作已成功”。
-
-制品位于所选实例/profile 的 `incidents/`，schema 2 JSONL 依次写入 `begin`、`resources` 与 `end`。初始记录保存实例/run、触发代次、前序事件，以及收到触发后观察到的状态白名单和运行配置摘要。此时配置或代次可能已经变化，所以单独标明观察时间与代次，不保证它们等同于触发瞬间。新的路径检查复用有界解析器，最多检查触发服务的 8 项 requires/paths；它与历史条件事件分开保存，不能用新观察替换旧事实，也不靠时间相邻认定根因。
-
-schema 2 还保存当时有效配置中的声明依赖边，以及资源匹配依据推导出的直接使用者和下游服务。`incidents show` 将 DAG 投影成易读的树；`[ref]` 表示已在其他分支展开的共享服务，JSON 则保留全部记录边。它是声明影响假设，不是实际访问追踪，也不是因果证明。配置摘要限 256 服务、每服务 64 依赖、128 KiB；关系区限 512 KiB、1,024 条边。各资源投影共用最多 256 个不同路径的检查批次，每个所选资源最多考察 256 项声明、保留 64 项匹配；树输出限 128 KiB，另附覆盖说明。省略、别名未知和中断都会留下证据，服务图不完整时不会生成看似完整的资源投影。之后修复目标或删掉 YAML，查询仍只读这些历史事实。schema 1 制品保持可读，并明确显示 `unknown-not-recorded-by-schema-1`，不会用今天的文件重建过去。
-
-每个文件最多 2 MiB，总计保留 20 个，包含未完成制品。启动时按已有文件修改时间/名称排序，新制品按受理顺序加入，仍在采集的文件免于淘汰；记录本次记录器的淘汰计数。只管理 UUID 命名的事故文件，其他文件、日志、事件、快照保留。目录有独立 writer 锁，新文件绝不覆盖已有目标，拒绝链接、重解析点、特殊文件和多硬链接。
-
-单个有界订阅者与单个阻塞工作线程负责采集，磁盘 I/O 不进入 supervisor 控制循环或应用输出排空链。路径检查在 OS 调用之间响应截止时间和提前结束；正常关闭排空已受理写入后才释放状态锁，单次卡住的文件系统调用不能强行打断。启动存储失败时不启动服务；**运行中记录器失败则停用本次事故记录、在 stderr 报告，服务继续运行。** 缺少 `end` 或尾部 JSONL 未写完都是不完整证据，取消后无法确定的计数用 null 表示。强杀 supervisor 不承诺补齐尾部。
-
-默认制品不含应用日志、完整 YAML、命令、环境/dotenv 正文和自由错误文本；路径、链接目标与标识仍可能敏感。证据不是文件系统快照，也不是可恢复的会话备份。`export --stored --run` 读取独立持久化的事件历史；事故查询和 `export --incident` 读取事故目录。
-
-
-### 找到事故，并把证据带走
-
-```bash
-devd incidents list --json
+devd incidents list
 devd incidents show INCIDENT_UUID
 devd export --incident INCIDENT_UUID --output incident.json
-
-# 停止后，即使 YAML 已经删掉，也可以读取：
-devd incidents list --stored --json
-devd incidents show INCIDENT_UUID --stored --json
-devd export --stored --incident INCIDENT_UUID --output saved-incident.json
-```
-
-在线查询绑定所选 supervisor 的 instance 和当前 run，要求本次运行开启事故记录。离线选择相同 config/profile/state，列出该实例所有保留运行的事故；查看、导出使用完整 UUID，`--incident` 与 `--run` 互斥。列表按记录的观察时间倒序、UUID 排序。两种方式都不会重新检查今天的目标、加载当前 YAML，或拿新代次状态填补旧现场。
-
-查询 JSON 为 schema 1；事故导出为 schema 3，复用已有事件/解释白名单，增加 `incident` 证据区。普通在线导出与 Agent 保持 schema 1，历史运行导出保持 schema 2。即使在线获取，事故报告的 `source` 仍为 `stored`，顶层实时 identity/state 留空；历史身份、观察到的状态和代次、配置摘要、路径链、控制结果及省略量各自保留来源。解释只使用触发服务所属代次的已存事件。schema 1 事故未保存完整声明影响图，因此明确标为 `unknown-not-recorded-by-schema-1`，不从当前配置重建成历史事实。
-
-完整窗口、提前结束、缺少 end、尾部截断/损坏及不支持的版本分别显示。有效前缀可以继续查看，不支持的版本只提供有界诊断。`complete` 只说明有界记录窗口的覆盖情况，不代表完整运行历史、根因证明或完整资源影响图。淘汰计数仅覆盖写入它的那次记录器；UUID 不存在可能是留存淘汰，不能据此断定事故没发生过。
-
-`--include-logs` 单独授权附带最多 200 条应用日志：在线日志属于所选当前 run，但不代表事故窗口；离线磁盘日志归属未知。两者都不参与事故解释。默认省略日志、命令、环境正文和自由错误文本，路径与标识仍可能敏感。报告是诊断证据，不是可恢复的会话或数据库备份。
-
-读取保留状态/writer lease，拒绝链接、重解析点、多硬链接及特殊文件。在线最多两个阻塞读取任务，与 writer 串行访问制品；停止/断连在 OS 调用之间取消。离线须先停止 supervisor。目录扫描最多 256 项，列表最多读取 20 个文件、每个 2 MiB，输出最多 16 MiB；异常多于 20 个时按文件名选择并标注省略。检测到读取期间文件替换则报告变化，不返回混合证据。查询/准备限时 30 秒，终端输出限时 5 秒；Ctrl+C 可取消，导出沿用既有取消与不覆盖发布规则，单次阻塞 OS 调用无法强行打断。
-
-下面在 Linux/macOS 上用 Python 3 复现一次临时目标丢失。终端 A：
-
-```bash
-incident_demo=$(mktemp -d)
-cd "$incident_demo"
-printf 'keep me\n' > target.txt
-ln -s target.txt resource
-cat > devd.yml <<'YAML'
-version: '1'
-services:
-  worker:
-    command: python3 -u -c 'import time; print("ready"); time.sleep(600)'
-    restart: {policy: never}
-    requires: [{type: file, path: resource}]
-    monitor-requires: true
-YAML
-pwd  # 终端 B 使用这里打印的目录。
-devd start --record-incidents
-```
-
-终端 B 进入该目录，先执行 `devd wait --timeout 30s`，再执行 `rm ./target.txt`。监测事件产生后，`devd incidents list` 给出 UUID，`devd incidents show UUID` 展示当时保存的悬空链接链。窗口在 5 秒后结束，停止/重载/换代也可能提前结束。执行 `devd stop` 后即可使用上面的 `--stored` 命令；后来补回 `target.txt`，也不会改写已有事故证据。
-
-### 换台机器继续诊断
-
-现场可以消失，证据不用跟着报废。把导出的 JSON 单独复制到装有 devd 的另一台机器或空目录：
-
-```bash
+# 将 JSON 复制到另一台机器或空目录，也能继续查：
 devd diagnose incident.json
-devd diagnose incident.json --json
-# 普通在线报告、历史运行报告也能读：
-devd diagnose diagnostic.json --json
-devd diagnose retained.json
 ```
 
-`diagnose` 支持导出 schema 1（在线）、2（历史运行）、3（事故），兼容没有 `source` 的旧在线报告。不需要原 YAML、状态目录、注册索引或 supervisor，`--config`、`--profile`、`--state-dir` 在这里不作实例选择。它只读传入的报告，不访问嵌入路径/URL，不连接原端点，也不执行报告里的内容或控制进程。
+`INCIDENT_UUID` 换成列表里的完整 ID。记录窗口最多持续 5 秒，采集完成后导出；停止后查询加 `--stored`。关系图是声明影响，不能凭连线认定根因；后来修好目标，也不会改写旧证据。
 
-文本与 JSON 使用同一份历史事实：采集区间、历史身份和陈旧状态、按事件序号排列的时间线、缺口、重新计算的解释，以及事故中已记录的资源观察与声明影响。文本将保存的 DAG 投影为树，共享节点显示引用；缺失关系仍然未知。事故解释固定触发代次，其他报告解释保留事件中的最新代次，采集时状态另列。报告自带的解释不会直接采信，旧代故障不会扣到已恢复的新代上。这些结果都不代表当前健康，连线也不证明因果；结构校验不等于验证报告真伪。
-
-机器输出为诊断 schema 1，`source: imported-report`。报告有效但证据不完整、内部事故版本不支持时，命令仍可成功返回诊断，需检查其中的缺口；未知导出版本、JSON 损坏/截断、事件身份或顺序矛盾、超限输入则报错。事故缺少 end 或可选关系区损坏时，保留合法证据并标明未知。无法从剩余记录重验的原读取器诊断标为 `imported-reader-reported`。原始日志不展示、不参与解释，只单列附件数量和运行归属。路径与标识仍可能敏感。
-
-输入必须是至多 16 MiB 的普通单硬链接文件；拒绝软链接、重解析点和特殊文件，检测到读取时替换则失败。最多 1,000 条事件、256 个服务名、129 条缺口记录，每份日志附件最多 200 条，嵌入事故仍受原有 2 MiB 限额约束。准备限时 30 秒、输出限时 5 秒，Ctrl+C 可取消；终端字段转义。命令只向 stdout 输出，不创建运行状态或修复文件。
-
-### 显式配置实例端口与路径
-
-两个 worktree 不该一边抢同一个 API 端口，一边往同一个临时目录里写东西。把应用需要的地址和路径集中声明：
-
-```yaml
-version: "1"
-services:
-  api:
-    command: python api.py
-    ports:
-      API_ADDR: 127.0.0.1:3100
-    paths:
-      API_DATA: {scope: instance, path: api-data}
-      SHARED_DATA: {scope: shared, path: ./datasets}
-  web:
-    command: python web.py
-    depends-on: [api]
-profiles:
-  second:
-    services:
-      api:
-        ports: {API_ADDR: 127.0.0.1:3101}
-```
-
-`api`、它的脚本探测以及直接依赖它的 `web` 都会收到 `API_ADDR`、`API_DATA`、`SHARED_DATA` 环境变量。`API_ADDR` 是完整 TCP 地址（IPv6 为 `[地址]:端口`），不是 URL，也不是纯端口号。应用必须主动读取这些变量；devd 不替换命令、URL 或任意 YAML 字符串。映射必须使用具体单播地址；通配绑定地址仍可通过 `listen` 声明。脚本探测可读取同一环境，内置 TCP/HTTP 探测字段仍需显式配置。
-
-`instance` 路径按 `<所选状态目录>/runtime/` 解析，因此示例中的 `api-data` 随 profile/worktree 隔离。路径分量只允许小写 ASCII 字母、数字、`_`、`-`、`.`，拒绝父目录跳转、设备保留名、空格和尾点。`shared` 路径按声明服务的 `cwd` 解析，即使传给依赖者也保持同一个地址。默认由应用准备自己的运行目录，共享数据仍然共享；显式开启 `cleanup: true` 时由 devd 创建专用可丢弃目录，见下一节。scope 是配置归属，不是文件系统沙箱，也不授权删除已有文件或在清理时跟随软链接。
-
-映射名称采用大写 ASCII 环境变量名；与服务显式 `env` 重名（不区分大小写），或与该服务能看到的另一映射重名，都会拒绝配置。映射覆盖继承环境和 dotenv 值，只传给直接依赖者。profile 对 `ports`、`paths` 分别整体替换，`{}` 清空对应映射。reload 预览会列出变更字段及下游影响，应用后受影响的新代次收到新环境。
-
-`check` 拒绝地址声明冲突和实例独占路径重叠；`doctor` 对 `ports` 与 `listen` 地址实际尝试绑定后立即释放。**检查空闲不等于预约成功。** 启动前仍可能被其他进程抢占，应用绑定失败继续通过日志、退出和健康事件呈现；devd 不自动分配端口，也不凭退出状态猜测失败原因。
-
-### 检查环境漂移（v0.9 开发中）
-
-链接没断，不代表它还指着你原来选的目录。就绪检查能发现坏掉的前置条件；显式基线则用来回答：配置没动，这些关键资源的解析关系和元数据变了吗？
+若丢的是可以重建的已登记 instance 目录，审阅一份恢复配方，正常停止全栈、等 supervisor 成功退出，再执行：
 
 ```bash
-devd baseline capture --service api --resource requires:0 --resource cwd --output baseline.json
-devd baseline check baseline.json --json
-# 看过变化后，再显式保存新文件，接受新的基线。
-devd baseline capture --service api --resource requires:0 --resource cwd --output accepted-baseline.json
+devd recover --recipe recipe.yml --dry-run
+devd recover --recipe recipe.yml --apply --plan PLAN_ID
 ```
 
-`--resource` 可重复选择 `requires:索引`、`paths:名称`、`cwd`、`program`、`env-file`。program 只取命令第一个 token 的显式路径：`./bin/api` 可以，`api` 不行；不搜索 PATH，也不猜 shell 中真正执行的解释器或脚本。相对路径沿用配置目录／服务 cwd 的规则，instance 映射沿用所选状态目录。capture 不检查资源可读性、不执行程序、不读资源正文、不创建映射目录，也不连接 supervisor；它只保存新基线，并在 `<所选状态目录>/baseline-origin.id` 留一个本地来源标记。
+`PLAN_ID` 使用这次预览返回的值。命令有你的系统权限，必须自己审阅；恢复不会自动启动服务。核对结果后重新 `start`，再 `wait`。共享资源和未登记目录不接管，修复失败也不装作已经恢复。
 
-check 比较的是当前所选的**磁盘有效配置**，沿用 `--profile` 和 `--state-dir`，不冒充 supervisor 内存配置。导入的资源选择器必须经过当前配置解析，基线中记录的路径不会变成任意文件读取指令。JSON schema 1 同时保留旧观察、当前观察、各自采集区间、比较原因，以及当前声明使用者和下游影响。这是独立的基线比较报告，暂不能交给 diagnose 或 MCP 的报告适配入口。
+[完整事故复现](docs/COMMANDS.zh-CN.md#找到事故并把证据带走) · [恢复配方](docs/COMMANDS.zh-CN.md#执行审阅过的恢复配方)
 
-结果区分 `no-observed-change`（未观察到变化）、`changed`（已观察到变化）、`unknown`（无法比较）；有变化或未知时，打印报告后返回非零退出码。允许记录缺失路径，所以能观察缺失后恢复；接受基线不代表资源健康。声明变更、选择器消失、来源不匹配、不支持的解析链和检查中变化都标未知。检查不修复文件、不重启服务，也不改变 ready。
+## 按你现在要做的事找
 
-本地来源结合随机标记、标记文件身份、平台、主机提示及 config/profile/state 路径；check 不会补建缺失标记。只复制基线到另一处通常会无法比较，文件身份不能作为跨机器稳定 ID；连来源标记和上下文一起克隆也不构成机器认证。旧基线保留，接受变化须重新 capture 到新文件，已有目标绝不覆盖。
-
-这些是非原子的元数据和链接目标观察，**不证明正文相同，也不证明故障因果**。祖先目录内增删其他文件不算资源替换；Unix 记录本地文件身份，Windows 记录属性和创建时间，文件身份明确不可用（`comparison.complete: false`）。路径和目标仍可能敏感。最多选择 32 项资源，基线输入／输出各限 2 MiB，配置输入限 1 MiB，比较输出限 16 MiB；解析沿用 128 节点／40 链接限制，影响图限 256 服务／1,024 条边，并共享有界观察缓存，别名覆盖不足须显示。准备工作限时 30 秒且可取消，输出限时 5 秒，不能打断单次 OS 文件调用。发布接受前取消可防止后台迟到生成基线；已接受的发布可能完成，来源标记也可能已建立。运行期监测和恢复仍须另行设计、授权。
-
-### 执行审阅过的恢复配方（v0.9 开发中）
-
-查清楚生成缓存丢失以后，先停止**全栈**，等前台 supervisor 成功退出。监测、基线和 `cleanup: true` 都不会替你运行修复命令；恢复是另一项显式操作。首版只允许当前仍声明 `scope: instance, cleanup: true`、且确实由 devd 创建登记的目录，共享或未登记路径拒绝接管。
-
-新建独立 `recipe.yml`，把下面的程序和脚本路径换成你审阅过的生成器：
-
-```yaml
-version: 1
-service: api
-resources: [API_CACHE]
-steps:
-  - id: generate-cache
-    resource: API_CACHE
-    command: ["/absolute/path/python", "/absolute/path/rebuild-cache.py"]
-    timeout: 30s
-    requires: []
-    ensures: [{type: file, path: generated.json}]
-```
-
-```bash
-devd stop
-devd recover --recipe recipe.yml --dry-run --json
-devd recover --recipe recipe.yml --apply --plan PLAN_ID --json
-# 核对结果后，再显式启动、验证就绪：
-devd start  # 在另一个终端前台运行
-devd wait --timeout 30s
-```
-
-沿用相同 config/profile/state。预览不写文件、不执行命令；`sha256:...:TIMESTAMP` 计划有效期 5 分钟，绑定配置／配方字节及文件身份、登记／运行身份、目录清单和程序元数据。应用及每个新动作前重验输入、期限和资源。观察非原子，也不证明文件正文相同；恢复期间请停下其它写入者。
-
-仅重建丢失的**已登记叶目录**并写入新归属标记，父目录须仍然完整；原有受管目录内容保留。替换目录、链接／reparse point、硬链接、特殊文件、未完成清理及共享映射重叠均拒绝。配方不提供内建删除动作。命令 cwd 固定为该步骤选择的资源目录；相对程序路径按服务有效 cwd 解析，配方文件路径按发起终端解析。程序必须是显式路径，Windows 可用 `C:/...`，不搜索 PATH、没有隐式 shell。`requires`／`ensures` 只接受资源内普通相对文件／目录条件，不允许越界、链接或 devd 标记，不读资源正文。
-
-**命令拥有你的系统权限，这不是沙箱。** 用户仍可显式声明 shell；devd 不能约束任意程序只写选定目录。命令继承发起终端环境，不加载服务 dotenv/env 覆盖；stdin 关闭、stdout/stderr 丢弃，预览和记录不回显参数正文或应用输出，路径仍可能敏感。整个执行和进程树清理期间持有实例状态锁，新 supervisor 不能抢跑。Ctrl+C 停止当前命令树并取消后续步骤；超时或失败也停止后续步骤，不承诺回滚，不自动启动服务。
-
-schema 1 结果和每步 accepted／completed／failed／cancelled／timed-out／unknown 证据同步保存在 `<state-dir>/recovery-receipts.json`。退出成功还须通过声明的后置条件；这不证明服务就绪或根因已修复。重复应用旧计划只返回留存记录，`already_attempted: true` 不代表重新检查了今天的文件。同一配方摘要在同 run 只尝试一次；已知失败应先核对现场，再明确修改配方或完成一次新的正常运行，重新预览。强杀或无法确认进程树清理会把实例保留为不安全，拒绝 start／clean／recover；保留证据并人工核实，不要改归属记录绕过拒绝。devd 不向历史 PID 发信号，不删除事故、不自动接受漂移基线；本模块也不向 Agent／MCP 开放恢复权限。
-
-最多 16 个资源、32 个步骤、每命令 128 个参数（各 8 KiB）、每步 32 项前置和 1–32 项后置条件、每命令超时不超过 5 分钟。配方须普通单硬链接文件，限 256 KiB；配置限 1 MiB。最多留存 64 次记录、总文件 1 MiB，不自动淘汰，满额须显式归档／核实。每次文件准备限时 30 秒、stdout 限时 5 秒；单次 OS 调用不能被强行打断，在途 worker 持锁直到退出。
-
-### 清理可丢弃的实例数据
-
-项目就是从一次误删事故开始的，删除权限当然不能靠猜。单独声明 `scope: instance` 不允许删除。确实可以丢弃的缓存，给它一个专用目录，再显式开启：
-
-```yaml
-services:
-  api:
-    command: python api.py
-    paths:
-      API_CACHE: {scope: instance, path: api-cache, cleanup: true}
-```
-
-`start` 会在启动服务前创建并登记该目录。**这表示目录及其后续所有内容都可以丢弃。** 已有但未登记的目录拒绝接管，持久数据请放在别处。`cleanup` 默认 `false`，只允许用于 instance 路径；`check`、`doctor` 和预览不会创建这些目录。
-
-停止全栈，等运行 `start` 的进程成功退出后再操作：
-
-```bash
-devd stop
-devd clean --dry-run --json
-devd clean --apply --plan sha256:... --json  # 使用预览返回的 plan_id
-```
-
-前后使用相同的 `--config`、`--profile`、`--state-dir`。两个清理命令都必须取得已有实例状态锁，并核对上次授权运行的成功结束记录。连不上 supervisor、被强杀或运行失败都不满足这个条件，清理和目录复用会拒绝，需人工核实资源。devd 不会拿旧状态里的 PID 发信号来强行制造清理条件。不确定的数据先保留；急需恢复开发可换一个新的专用状态目录，不要编辑归属记录绕过拒绝。
-
-计划同时检查当前 YAML 授权、创建登记、目录身份、归属标记和有界目录清单。配置字节、运行身份、登记或观测到的目录树变化都会让旧计划失效。所有候选都通过检查后才开始删除。共享映射（含解析后的别名）、未登记路径、日志、事件、快照和实例元数据保留；撤销 `cleanup` 后，旧目录也保留。清理声明发生变化必须全栈 stop/start，reload 预览会标明不能应用。
-
-删除不是事务，失败可能留下部分进度。排除报告中的问题后重新预览再试；已完成计划重复应用不会碰同一路径上后来出现的用户目录。原本已消失的目录只注销记录。JSON 为 schema 1，分别报告 `removed`、`already_absent`、`already_applied` 和失败原因。
-
-清理期间也应停止外部写入者。链接／reparse point、硬链接、特殊文件、跨文件系统目录、嵌套 devd 归属或状态标记、非 UTF-8 文件名都会拒绝；最多登记 128 个根目录，每根最多 10,000 个条目、64 层嵌套目录。清单检查文件元数据，不读取应用文件内容，因此不构成内容哈希，也不抵御同用户恶意进程任意篡改文件系统。父目录和归属记录保留，供重试和后续启动核对。
-
-### 接入 MCP 客户端（v0.9 开发中）
-
-让客户端先看清现场，再按需交出控制权。`devd mcp --stdio` 使用 MCP JSON-RPC；下面的 JSON-lines `agent` 接口继续保留。先启动 supervisor，再为采用 `mcpServers` 的客户端配置只读连接（替换两个绝对路径）：
-
-```json
-{
-  "mcpServers": {
-    "devd": {
-      "command": "/absolute/path/to/devd",
-      "args": ["mcp", "--stdio", "--config", "/absolute/project/devd.yml"]
-    }
-  }
-}
-```
-
-有 profile 或自定义状态目录时，加上与 supervisor 一致的 `--profile` / `--state-dir`。需要控制时，在 `args` 中追加 `"--allow", "restart,stop,reload,clean"`，只保留愿意授予的项。会话固定绑定一个 instance/run；从 `devd_identity` 取得两个 ID，每个控制传入 `"target": {"instance_id": "…", "run_id": "…"}`。supervisor 换代后必须重新建会话，客户端确认和工具描述不能代替服务端授权。
-
-| 工具 | 参数与行为 |
+| 要做什么 | 去哪里看 |
 | --- | --- |
-| `devd_identity`、`devd_status` | 无参数，读取绑定的活身份和服务状态 |
-| `devd_events` | 可选 `tail`（1–1000，默认 100）、`service`，保留历史缺口 |
-| `devd_explain` | 必填 `service` |
-| `devd_wait` | 可选 `services`（默认全栈）、`timeout_ms`（1–3600000，默认 30000） |
-| `devd_export` | 可选 `include_logs`（默认 false），返回 JSON，不写文件 |
-| `devd_incidents_list`、`devd_incidents_show` | 列出本次运行留存事故；show 必填事故 UUID `id` |
-| `devd_restart`、`devd_stop` | 必填 `target`，restart 还需 `service`；须分别授权 |
-| `devd_reload_preview`、`devd_reload_apply` | 可选 `candidate`；apply 还需 `target`、新鲜 `plan_id` 和 `reload` 授权 |
-| `devd_clean_preview`、`devd_clean_apply` | 沿用同一会话，正常停栈后使用；apply 还需 `target`、新鲜 `plan_id` 和 `clean` 授权 |
-
-工具在一个文本内容块中返回 JSON。先检查 `isError`，再检查报告的 `outcome`，拿到报告不代表等待、重载或清理成功。事件和事故证据保留来源与缺口；路径、诊断消息仍可能敏感，显式日志最多附带最近 200 条。相对 candidate 按 adapter 的工作目录解析。
-
-拿到移交报告时，把客户端参数改为 `["mcp", "--stdio", "--report", "/absolute/path/report.json"]`。此时只开放无参数的 `devd_diagnose`，复用 `devd diagnose` 的验证器，只加载启动者指定的报告，所有证据标为历史。无需原项目或 supervisor，拒绝在线选择参数和控制授权，也不能通过工具参数读取另一条路径。
-
-支持 MCP `2025-06-18` 与 `2025-11-25`。输入每行 16 KiB、输出 8 MiB，内部 supervisor 请求仍限 4096 字节；最多八个未完成请求、一个控制处理器。输入超限、未完成请求 ID 重复或并发超限会关闭 adapter，输出超限返回对应请求的错误。初始化和普通调用限 30 秒，wait 沿用所选期限；输出阻塞限 5 秒。取消、EOF、Ctrl+C 只结束 adapter 工作，不停止服务；已受理控制可能继续，重试前查状态和事件，ID 不负责动作去重。这是接口能力限制，不是同用户沙箱。固定版本官方 Inspector 验证见 [tests/README.md](tests/README.md)，不冒充模型驱动的客户端对话验收。
-
-### 给 Agent 的实例接口
-
-让 Agent 看状态，不代表顺手把停机按钮也递过去。先启动服务，再用相同的实例参数启动逐行 JSON 接口：
-
-```bash
-devd agent --stdio                                   # 默认只读
-devd agent --stdio --allow restart,stop               # 只开放指定控制
-devd agent --stdio --allow restart,stop,reload,clean   # 开放四种控制
-```
-
-权限由启动者一次确定，请求不能自行增加权限或改变 config/profile/state。每个会话绑定一个**活实例及其本次运行**，supervisor 换代后会拒绝，不能悄悄跟过去。停止全栈后保持这个会话打开，即可预览／执行清理；新会话需要活 supervisor，独立离线清理仍用 `devd clean`。普通 CLI 保持原有权限。这是接口能力限制，不是同用户进程沙箱；不新增远程守护进程、多用户 RBAC 或自动启动。
-
-stdin 每行一个 UTF-8 JSON 对象，stdout 只输出 JSON 回复；启动或 I/O 失败写 stderr 并非零退出：
-
-```json
-{"schema_version":1,"id":"inspect-1","operation":{"method":"status"}}
-```
-
-每条回复包含 `schema_version`、`id`、`instance_id`、`run_id`、`ok`。成功返回 `data`，拒绝返回 `error: {code, message}`；非法请求外壳的 `id` 为 null。ID 为 1–128 字节、不含控制字符，**只关联请求，不负责去重**。未知请求字段和方法会拒绝；客户端应接受回复新增字段，并检查 schema 1。`ok: true` 只表示拿到了报告，wait/reload/clean 仍要检查 `data.outcome`；等待超时、部分清理都不能当成功。
-
-| method | operation 内的其他字段 | 权限 |
-| --- | --- | --- |
-| `describe` | 无；返回能力及会话建立时观测的身份 | 读取 |
-| `identity` | 无；查询绑定的活 supervisor | 读取 |
-| `status` | 无；返回 `observed_at` 与白名单 `services` 状态 | 读取 |
-| `events` | `query: {filter: {}, tail: 100, cursor: null}`，沿用 service/kinds/since 过滤及 run/sequence 游标 | 读取 |
-| `explain` | `service` | 读取 |
-| `wait` | `timeout_ms`（1–3600000）、可选 `services`（默认全栈）；只返回最终就绪报告 | 读取 |
-| `export` | 可选 `include_logs`（默认 false）；直接返回报告，不写文件 | 读取 |
-| `incidents` | 可选事故 UUID `id`；省略则列出本次运行的留存事故 | 读取 |
-| `reload-preview` | 可选 `candidate`，默认原配置路径 | 读取 |
-| `clean-preview` | 无；要求同一运行已成功停止 | 读取 |
-| `restart` | `target`、`service`；沿用重启及依赖联动语义 | `restart` |
-| `stop` | `target`；回复只表示正在停止，不表示收尾完成 | `stop` |
-| `reload-apply` | `target`、`plan_id`、可选 `candidate`，须与预览一致 | `reload` |
-| `clean-apply` | `target`、`plan_id`，保留全部目录归属检查 | `clean` |
-
-从 `describe` 或 `identity` 取得身份，每个控制请求都带两个标识。接口在 I/O 前检查授权，supervisor 在实际操作前再次核对作用域；离线清理在状态锁内核对运行。
-
-```json
-{"schema_version":1,"id":"restart-1","operation":{"method":"restart","service":"api","target":{"instance_id":"<instance_id>","run_id":"<run_id>"}}}
-```
-
-相对 candidate 按 Agent 进程工作目录解析，普通诊断不重读 YAML。status 和重启回复复用导出的状态白名单，省略自由文本错误；export 沿用已有隐私边界。事件、解释、等待和错误消息保留原有诊断细节，可能包含本地路径或命令文本，不承诺通用脱敏。应用日志仅在显式 export 请求中附带。
-
-请求串行执行：每行含换行最多 16 KiB，包装后的 supervisor 请求最多 4096 字节，回复最多 8 MiB，stdout 写入阻塞超过 5 秒会退出。超大输入回复错误后关闭，其他非法请求可继续发送。EOF 处理完已接收输入再退出；Ctrl+C 退出接口并取消正在等待的只读请求，二者都不隐式停止服务。已经受理的控制（含阻塞中的清理）可能在断连后继续，重试前查 status/events；长时间 wait 不该阻塞其他操作时，使用另一个会话。
-
-稳定错误码为 `invalid-request`、`unsupported-version`、`permission-denied`、`wrong-instance`、`stale-run`、`operation-failed`、`invalid-response`、`request-too-large`、`response-too-large`、`input-failed`。message 用于说明，不作为解析契约；操作报告继续保留历史缺口、旧计划拒绝和部分进度语义。
-
-### 多环境配置
-
-环境之间的差异可以留在同一份 YAML 里：
-
-```yaml
-version: "1"
-services:
-  app:
-    command: npm run dev
-    env: {MODE: dev, LOG_LEVEL: info}
-profiles:
-  staging:
-    services:
-      app:
-        command: npm run staging
-        env: {MODE: staging}
-```
-
-`devd check --profile staging` 检查合并后的配置，`devd start --profile staging` 启动它。这里的 `LOG_LEVEL` 会从基础配置继承。查看状态、读日志、重启、停止时，使用同一个 `--profile`；不指定时选择基础配置及其独立实例。
-
-服务按名称合并。`env` 和 `restart` 按字段覆盖，其余字段整体替换，包括依赖列表、路径前置条件、端口/路径映射和健康检查。`cwd`、`env-file`、`healthcheck` 等可选字段可以用 `null` 清除；空 `env`/`restart` 映射表示继承，`ports: {}`、`paths: {}`、`depends-on: []` 和 `requires: []` 分别清空对应字段。新增服务必须有命令；暂不支持删除服务或 profile 之间的继承。未选中的 profile 也会检查未知字段，依赖及就绪条件按所选结果校验。不带 profile 的 `check` 检查基础配置。
-
-路径仍沿用配置目录和服务 `cwd` 的相对路径规则。profile 名称以 ASCII 字母、数字或下划线开头，只允许 ASCII 字母、数字、`_`、`-`、`.`，区分大小写。默认运行目录为 `.devd/<配置文件名>/profiles/<名称>/`，大写字母转义为 `~hh`，避免大小写不敏感文件系统上的实例碰撞；显式 `--state-dir` 同样追加 `profiles/<名称>/`。隔离的是控制端点和状态文件，服务端口、应用文件仍需自行配置不同值。`init` 不接受 `--profile`。
-
-可以直接试 [dev / staging / prod 示例](examples/profiles/README.md)，其中也有依赖图导出、日志筛选和快照恢复的完整步骤。
-
-### 配置快照
-
-改配置前先留一份。需要回退时，恢复成新文件，再检查它：
-
-```bash
-devd snapshot save before-refactor
-devd snapshot restore before-refactor --output devd.recovered.yml
-devd check --config devd.recovered.yml
-```
-
-快照原样复制磁盘上的整份 YAML，包括所有 profile；默认保存在 `.devd/<配置文件名>/snapshots/<名称>.yml`，也可以用 `--state-dir` 指定存放目录。恢复时沿用相同的 `--config` 和 `--state-dir`，即使原配置已被删除也可以。名称长度为 1–64，只允许小写 ASCII 字母、数字、`_`、`-`、`.`，且首字符只能是字母、数字或 `_`。
-
-`--output` 只能是原配置目录里的新文件名，这样相对 `cwd` 和环境文件路径不会变义。保存和恢复都不覆盖已有文件。快照保留原始字节，不做配置校验；使用恢复文件前请运行 `check`。它不保存运行状态，不热重载正在运行的 supervisor，也不启动或接管旧进程。快照包含全部 profile，因此 `snapshot` 不接受 `--profile`。
-
-### 依赖图
-
-`graph` 默认输出依赖列表和并行启动层。需要可视化时，可以导出 Graphviz DOT 或 Mermaid 源码：
-
-```bash
-devd graph --format dot > dependencies.dot
-dot -Tsvg dependencies.dot -o dependencies.svg # 已安装 Graphviz 时
-devd graph --profile staging --format mermaid > dependencies.mmd
-```
-
-图中的箭头从前置服务指向依赖它的服务，边上的标签是就绪条件；没有依赖边的服务也会显示。`graph` 会校验配置，但不启动服务或创建运行状态。DOT 和 Mermaid 输出是供相应渲染器使用的源码，不是图片文件。
-
-### 配置变更预览与应用
-
-改一个服务，可能牵动半个栈。动进程之前，先让正在运行的 supervisor 列出影响：
-
-```bash
-devd reload --dry-run
-devd reload --dry-run --candidate devd.next.yml --json
-devd reload --dry-run --profile staging --candidate devd.next.yml
-```
-
-使用与启动时相同的 `--config`、`--profile` 和 `--state-dir` 定位实例。比较基线是 supervisor 内存里保留的有效配置，磁盘 YAML 改了也不会偷换基线。候选默认取 `--config`；`--candidate` 可指定另一份文件，不改变连接的实例。候选里的相对 `cwd` 按候选文件自己的目录解析，并使用该实例已有的 profile；候选必须包含这个 profile。预览需要活实例和不超过 1 MiB 的可读普通 YAML 文件。
-
-报告区分 `added`、`removed`、`modified`、`dependency-affected` 和 `unchanged`，列出变化字段，以及哪些直接变更的前置服务带来了影响。沿旧、新两张依赖图追踪全部下游，不受 `restart-on-dep-recovery` 开关限制。预计顺序是先按旧图逆序分层停止受影响服务，再按新图正序分层启动；无关服务不进入这两份列表。成功报告只列字段名，不输出配置值、命令正文或环境内容；校验错误沿用通常的配置诊断。
-
-`--json` 返回 `schema_version: 1`、supervisor 的 `run_id`、旧/新有效配置摘要、进程代次和 `plan_id`。确认影响后，用这次预览的 ID 和同一候选文件显式应用：
-
-```bash
-devd reload --apply --plan 'sha256:<64位十六进制摘要>' --candidate devd.next.yml
-# 加 --json 可取得执行报告，包括部分失败和中断。
-```
-
-应用时重新读取、校验候选，并对活实例重新计算计划。配置、进程代次或生命周期状态变化都会使 ID 过期，需要重新预览；实例中的服务也必须处于稳定状态。`apply_available: true` 表示支持应用，不保证稍后执行必然成功。实例/profile、状态目录和 supervisor 日志选项固定。候选只更新内存中的有效配置，不改写源 YAML，也不改变默认候选路径。
-
-先按旧图逆序停止受影响服务，等旧 actor 和进程组清理完成，再切换配置基线、按新图正序分层启动。有健康检查的服务必须通过检查，其余服务必须启动；每层沿用依赖超时（30 秒）。无关服务保留原进程，等价配置不会重启任何服务。执行期间拒绝手动 restart 和第二次 reload；受影响服务暂停自动恢复，成功后恢复新配置中的策略，无关服务继续按原策略运行。全栈 stop 可以抢占任意阶段。
-
-失败会停止全栈，包括无关服务，不自动回滚。配置一旦切换，新的内存基线保持到 supervisor 退出。执行报告列出已完成停止、观测到的启动、已就绪的层和 `config_committed`；失败或中断返回非零退出码。生命周期事件记录计划、结果及进度，可通过 `events` 查询，启用事件持久化后也可用 `--stored`。客户端断开或等待响应超过 60 秒不会取消已受理的重载，重试前先检查 status/events。
-
-`--dry-run` 与 `--apply` 必须二选一。预览校验 YAML、命令引号、设置和依赖图，不执行服务/探测命令、读取 dotenv 正文、检查实时路径/端口或写运行状态。比较范围只有 YAML 定义；dotenv、继承环境和程序文件内容变化需要显式 restart。文件监听自动重载仍后置。
-
-### 命令速查
-
-| 命令 | 用途 |
-| --- | --- |
-| `devd start [--persist-logs] [--persist-events] [--record-incidents]` | 前台启动全栈，分别显式开启日志、事件留存与有界事故采集 |
-| `devd stop` | 请求有序关闭，前台进程完成清理后退出 |
-| `devd restart <service>` | 用当前有效配置重启一个服务，重新检查依赖 |
-| `devd reload --dry-run / --apply --plan ID [--candidate PATH] [--json]` | 预览或显式应用受影响服务的配置变化 |
-| `devd status [--json]` | 查看实时状态、PID、CPU／RSS、重启次数和诊断信息 |
-| `devd identity [--json]` | 查看所选活 supervisor 的实例与运行身份 |
-| `devd instances [--json]` | 发现当前仓库及其 worktree 中已登记的实例 |
-| `devd incidents list/show [UUID] [--stored] [--json]` | 查询当前运行或离线保留的事故证据 |
-| `devd diagnose REPORT.json [--json]` | 无需原项目，直接诊断移交报告 |
-| `devd export --incident UUID [--stored] --output FILE [--include-logs]` | 导出单事故报告 |
-| `devd export --output FILE [--include-logs]` | 导出有界的活实例诊断报告到新 JSON 文件 |
-| `devd export --stored --run UUID/latest --output FILE [--include-logs]` | 停止后导出指定历史运行 |
-| `devd clean --dry-run [--json]` | 在成功停止后预览已登记、明确授权丢弃的目录 |
-| `devd clean --apply --plan ID [--json]` | 应用当前清理计划，保留共享和未登记数据 |
-| `devd mcp --stdio [--allow restart,stop,reload,clean] [--report FILE]` | 为一个活运行或隔离历史报告提供 MCP 工具 |
-| `devd agent --stdio [--allow restart,stop,reload,clean]` | 提供绑定本次运行、控制须显式授权的 JSON 接口 |
-| `devd top` | 在交互式终端查看运行中的服务和实时日志 |
-| `devd events [service] [--type TYPE] [--since DURATION] [--tail N] [--cursor RUN_UUID:NEXT_SEQUENCE] [--json] [--follow \| --stored]` | 查询生命周期经过、游标与历史缺口 |
-| `devd explain <service> [--json] [--stored]` | 基于确定性事件证据解释一个服务最近的故障或状态 |
-| `devd baseline capture --service NAME --resource SELECTOR --output FILE` | 显式选资源并接受为新基线 |
-| `devd baseline check FILE [--json]` | 按磁盘配置比较资源，变化／未知返回非零 |
-| `devd recover --recipe FILE --dry-run [--json]` | 正常停栈后预览已登记资源的恢复配方 |
-| `devd recover --recipe FILE --apply --plan ID [--json]` | 显式执行当前计划，留存结果并拒绝未知结果重放 |
-| `devd doctor [--json]` | 检查服务启动前置条件，不启动服务 |
-| `devd impact SERVICE --require INDEX/--path NAME [--scope project/worktrees] [--json]` | 查看声明资源的使用者和潜在下游影响 |
-| `devd logs [service] [--tail N] [--level info|warn|error] [--since DURATION] [--grep TEXT] [--follow \| --stored]` | 查询内存或离线磁盘日志，跟随实时输出 |
-| `devd check` | 校验配置、命令引号、依赖关系及当前支持的设置 |
-| `devd graph [--format text|dot|mermaid]` | 显示依赖边与启动层，或导出依赖图 |
-| `devd init [--service NAME] [--command CMD]` | 创建通过校验的初始配置，不覆盖现有文件 |
-| `devd snapshot save <NAME>` | 保存磁盘上整份 YAML 到项目状态目录 |
-| `devd snapshot restore <NAME> --output <FILENAME>` | 恢复成原配置目录中的新文件 |
-
-命令共用 `-c / --config <PATH>`、`--profile <NAME>`（`init`、`snapshot` 除外）、`--state-dir <PATH>` 和 `--color auto|always|never`。`instances` 改用当前目录确定范围，不接受非默认配置路径、profile 或状态目录选择器。选项可以放在子命令前后：
-
-```bash
-devd start --config ./devd.local.yml
-devd --config ./devd.local.yml status --json
-```
-
-## 用之前知道这几件事
-
-**前台运行，项目内通信。** devd 使用 Tokio 管理服务任务，其他终端通过 Unix socket 或仅允许当前用户访问的 Windows 本地命名管道连接实例。默认运行目录是配置目录下的 `.devd/<配置文件名>/`，建议把 `.devd/` 加进项目的 `.gitignore`。Unix socket 路径过长时，可以用较短的 `--state-dir`；同一实例的命令要使用相同参数。
-
-**Windows 有自己的进程收尾方式。** 支持 Windows 10/11、Windows Server 2016+；每代服务在开始执行前就归入独立 Job Object，后代一起受管。停止时先向服务自己的控制台进程组发送 Ctrl+Break，宽限期结束后终止整个 Job；无控制台服务直接终止。应用需要处理 Ctrl+Break 才能优雅退出。devd 被关闭或强杀时，Job 也会关闭并清理后代。TCP、HTTP、脚本探测、`top`、profile、快照、资源控制和磁盘日志使用相同命令；Windows 下 `check`、`start` 会拒绝 Unix socket 探测，请换成 TCP 或脚本。TUI 需要交互式控制台。
-
-Windows 命令也使用 shell 风格引号。YAML 路径优先写 `/`，有空格的程序路径需要加引号，例如 `command: "'C:/Program Files/Python/python.exe' app.py"`。需要脚本解释器时显式调用 `powershell.exe -NoProfile -File script.ps1` 或 `cmd.exe /C ...`。Windows 快速体验只需 `devd init`，然后一个终端运行 `devd start`，另一个终端执行 `devd status`、`devd top` 或 `devd stop`。
-
-**健康检查可以用自己的命令扩展。** 端口能连、HTTP 返回正常，还不足以证明业务就绪时，用 `type: script` 执行自定义检查。任意语言的脚本或可执行程序都可以，退出码 `0` 表示健康。假设应用已提供 `scripts/check_ready.py`：
-
-```yaml
-services:
-  api:
-    command: python3 app.py
-    cwd: backend
-    env-file: .env
-    healthcheck:
-      type: script
-      command: python3 scripts/check_ready.py
-      interval: 5s
-      timeout: 2s
-      retries: 3
-  web:
-    command: npm run dev
-    cwd: frontend
-    depends-on:
-      - service: api
-        condition: script-ready
-```
-
-声明脚本探测即允许它以 devd 当前用户身份执行。它继承服务的工作目录与环境，优先级为显式 `env` 高于 `env-file`，再高于继承环境；每次探测都会重新读取环境文件。命令使用与服务相同的参数引用规则，不隐式经过 shell；需要管道或 shell 展开时显式写 `sh -c '...'`。标准输入关闭，标准输出和错误输出丢弃；退出状态决定健康，失败原因显示在 `status` 中。
-
-首次立即探测，后续串行执行。默认 `interval: 10s`、`timeout: 2s`、`retries: 3`。非零退出、信号退出、执行失败或超时均计为一次失败，成功清零；达到失败阈值后沿用服务的重启策略。`script-ready` 等待第一次成功，前置服务必须配置脚本探测。超时涵盖环境加载、执行及正常结束时的进程树清理。探测超时、取消、服务重启或关闭时，会终止探测的 Unix 进程组或 Windows Job；Unix 探测子进程应保留在该组内。正常结束也会清理后台后代。`check` 和 `graph` 只校验，不执行探测；profile 仍整体替换健康检查。
-
-**重启有明确边界。** 手动重启以指定服务为目标，使用当前有效配置，包括已经提交的重载；成功表示目标的新进程已启动，健康检查和已开启的依赖联动可能还在进行。手动操作可以绕过 `never` 和自动重试上限，但累计重启次数不会重置。启动失败或自动重试耗尽等终止性错误会触发全栈清理。
-
-**依赖回来了，服务也可以跟着重启。** 对已经声明 `depends-on` 的服务，加上：
-
-```yaml
-restart-on-dep-recovery: true
-restart:
-  policy: on-failure
-  initial-delay: 1s
-  max-attempts: 3
-```
-
-默认关闭。开启后，直接依赖换了进程，且所有依赖重新满足各自的就绪条件，才会重启当前正在运行的服务。依赖的手动重启和自动恢复都适用；同一进程从不健康变健康不触发。依赖不可用期间，当前服务继续运行。首次启动不补一次重启，已经正常结束的服务也不会被重新拉起。沿依赖链传播时，每一层都需要自行开启。
-
-联动复用服务的退避设置，与其他重启共用累计 `max-attempts` 预算；耗尽后清理全栈。与 `policy: never` 同时启用、或未声明依赖，会在配置检查时明确报错。下一次启动就绪检查完成前观察到的多次恢复合并为一次重启；之后依赖再次变化，仍可能再触发一次，各服务独立恢复，不是整张依赖图的原子重启。停止可打断等待，手动重启当前服务可接管待执行的联动退避。
-
-**出事之后，至少要知道发生了什么。** `devd events` 记录启动、退出、依赖、健康、资源和重启决策，带运行 ID、进程代次与因果引用。
-
-```bash
-devd events api --type restart-decision --since 10m --tail 20
-devd events --json --follow
-devd start --persist-events --event-max-size 10 --event-keep 3
-# 停止后查询：
-devd events --stored --json
-```
-
-全栈内存保留 1024 条事件，单条序列化上限 16 KiB。`--tail` 默认 100，范围 1–1000，先筛选再取尾部。`--type` 可重复指定，命中任意一个类型即保留；服务名精确匹配，`--since` 在命令开始时固定包含边界的 UTC 阈值。顺序以序号为准，不受系统时间回拨影响。在线查询不读取 YAML；日志和事件共用最多 16 个跟随连接，Ctrl+C 只退出查询。
-
-`--json` 返回带 schema 版本的批次，包含 `source`、`context`、`entries`、`gaps`、`first_available`、`cursor` 和在线磁盘状态 `persistence`（`disabled`／`recording`／`failed`）。跟随模式每行一个 JSON 批次，只更新水位或磁盘状态时事件列表可以为空。`--cursor RUN_UUID:NEXT_SEQUENCE` 从指定序号开始，包含该序号；返回游标指向下一个待检查位置，即使筛选没有命中也会前进。首批历史与订阅原子衔接，后续跟随批次的 `first_available` 为空。历史淘汰、运行变更、尾部截取都显式报告缺口；超前游标报错。慢订阅者报告缺口后以错误退出，可用最后游标重连，恢复仍在内存中的记录。拿旧运行游标查询新运行时，会返回新运行并标出运行变更。
-
-事件写盘需要单独开启 `--persist-events`，放在实例/profile 的 `events/` 目录，与 `logs/` 独立，共用文件锁、安全访问和轮转规则。默认每文件 10 MiB、3 份归档，共 40 MiB；`--event-max-size` 支持 1–1024 MiB，`--event-keep` 支持 1–100，均要求显式开启。启动时无法打开存储则不启动服务。**运行中事件写盘失败，会停用本次磁盘事件记录，在 stderr 和在线事件查询中报告，服务继续运行。** 重新以持久化参数启动 supervisor 才会重试磁盘记录。
-
-`events --stored` 要求 writer 已停止，沿用相同实例/profile 参数，YAML 删除后仍可查询。按保留文件顺序跨运行筛选、取尾部；批次的 context、最早可用序号和游标描述最后一个保留运行。保留范围内的游标可继续读到后续运行；游标所属运行已丢失时返回缺口及空事件列表，去掉游标即可查看剩余历史。离线未知服务无匹配结果。输出明确标为 `stored`，旧 PID 仅为历史证据。
-
-正常关闭会排空并同步磁盘；慢磁盘订阅、未完整结束的运行和未写完的尾记录都会显示缺口。下次持久化启动只修复未完成尾记录，并留下恢复标记；完整记录损坏或 schema 不支持时明确报错。单次查询最多保留 128 个缺口诊断，`omitted_gaps` 标出被丢弃的旧诊断数。轮转、强杀与掉电仍可能丢失历史，这是一份有边界的诊断记录。事件不保存命令、URL 或环境内容，但上下文仍包含实例状态路径，路径条件事件还会包含解析后的声明路径（不保存文件内容或解析后的软链接目标）。
-
-**不靠猜，解释一次故障。** `devd explain <service>` 是只读、确定性的诊断报告，依据当前 supervisor 快照和结构化生命周期事件，区分依赖阻塞、启动失败、健康失败、资源超限、重启预算耗尽、手动停止以及健康／运行状态，并引用对应的事件序号、进程代次、因果事件和时间。它不会探测服务、启动或重启进程，也不会执行报告里的建议。
-
-```bash
-devd explain api
-devd explain api --json
-# 持久化运行停止后：
-devd explain api --stored --json
-```
-
-在线模式连接正在运行的 supervisor，不重新读取 YAML。`--stored` 在 writer 停止后读取保留的事件文件，即使 YAML 已删除也可用；报告会标记 `source: stored`，历史 PID 只作为证据。报告中的 `complete: false` 表示存在明确缺口或被省略的缺口，结论只对保留下来的历史负责。没有匹配事件时会明确说无法确定原因，并给出下一步只读检查。任何模式都不会自动修复。
-
-解释以当前服务代次为准；没有活服务时使用保留下来的最新代次，离线 `status` 仍为 null。CPU 与内存的恢复分别解除对应告警。正在重启时可以沿明确的 cause 引用旧代原因，但旧故障不会覆盖新代的运行或健康状态。导出和 Agent 报告沿用同一规则。
-
-**启动前先查环境。** `devd doctor` 检查服务工作目录、声明的 `requires` 路径、dotenv 文件、服务命令和脚本探测程序是否可找到，以及显式声明的 TCP 监听地址。它不会启动服务、执行命令或探测脚本，也不会改动文件和进程。`requires` 使用与启动相同的 evaluator 检查可读文件、可访问目录及目标存在的软链接。用 `listen` 声明服务自己的端口，例如 `listen: [127.0.0.1:3000]`；健康检查目标不会被当作服务自有端口。检查会短暂绑定后释放地址，只说明检查当时是否可用。没有声明时会标记为 `not-checked`。可用 `--profile` 检查合并后的配置，用 `--json` 获取带版本的机器可读报告。发现失败时返回非零退出码；通过检查不代表之后启动必然成功。
-
-```bash
-devd doctor
-devd doctor --profile staging --json
-```
-
-doctor 还会展示显式 `requires` 与 `paths` 的解析链：中间目录链接、相对目标和可观测的失败节点。JSON 新增 schema 1 的 `resources`，包含 `entries`、`captured_from/to`、`complete`、`omitted` 和 `limits`。每项标注服务、有效声明（requires 索引/类型，或 paths 名称/scope）、声明路径、有效 cwd、请求路径和解析观察；结合报告的 `config`、`profile` 与资源 `state_dir` 定位来源。这是合并后字段的来源，不提供 YAML 行号，也不把选中 profile 等同于该字段被覆盖。requires 项另有原检查器的 `condition.satisfied/failure`，与解析链分别呈现。
-
-`inspection.nodes` 包含路径、类型与链接目标，`resolved` 表示解析终点，`failure` 与 `failed_node` 标注失败和从零开始的节点索引，位置不可用时为 null。解析只读取元数据与链接目标，不读文件正文。`atomic` 始终为 false；`change_detected` 表示复查发现变化，false 也不能排除竞争。缺失、悬空、类型错误、拒绝访问和循环分别报告。不支持的 reparse 行为、Windows 含父目录段的路径、非 UTF-8 路径或容量耗尽会标为不完整。`display_paths_lossy` 标出经过替换显示的路径，不能拿它作为精确标识。Windows 支持普通软链接，不假定其他 reparse 类型也有相同语义。
-
-资源视图最多 128 项，每项最多 128 个观测节点、跟随 40 个链接；单路径上限 4096 字节，每条链的紧凑节点 JSON 上限 64 KiB，全部条目的紧凑 JSON 上限 1 MiB，排版和原有检查输出另计。省略条目或观察到变化会令 `resources.complete: false`；覆盖完整不表示所有资源都存在。这些限额约束遍历工作量，不保证阻塞文件系统上单次 OS 调用的耗时。原有前置检查仍会执行，`ready` 语义不变：普通路径映射缺失不会额外阻止启动，doctor 也不会创建 `cleanup: true` 目录。输出另有 5 秒写入/flush 期限，Ctrl+C 可取消输出；被中断的报告可能不完整。路径和链接目标本身仍可能包含敏感信息。
-
-**看看一条路径牵连了谁。** 选定一个有效声明，再沿服务依赖图查看潜在影响：
-
-```bash
-# 0 表示 profile 合并后的第一个 requires 条目。
-devd impact api --require 0 --profile staging
-# DATA 是该服务 paths 映射中的名称。
-devd impact database --path DATA --scope worktrees --json
-```
-
-默认 `--scope project` 只读取选定的磁盘配置。`requires` 的声明服务是直接使用者；`paths` 的提供者和直接依赖它、接收路径映射的服务都是直接使用者。下游服务去重显示，并给出一条最短服务依赖链解释来源。关联依据是相同请求路径或成功观察到的相同解析终点，不识别硬链接身份、目录包含关系或应用动态访问。`shared`、`instance` 保留各声明的归属；requires 即使与某映射互为别名，归属仍是未知。临时目录提示不授予清理权限；查询不会启动、重启、创建或删除资源。
-
-显式 `--scope worktrees` 才复用当前 Git 仓库及其 worktree 中的实例登记；非 Git 目录只查当前项目，未登记实例不在覆盖内。在线身份只证明哪个实例应答，其他实例 YAML 标为 `disk-candidate`，`runtime_equivalence: unknown` 表示磁盘编辑或重载可能使它与内存配置不同。不可达、身份替换或协议不兼容的实例不推断影响。配置缺失/无效、损坏索引及省略实例均明确报告。`registry_complete` 表示登记覆盖；只要存在其他实例，因未核实运行配置，`impact_complete` 就保持 false。默认项目查询同样不声称磁盘配置等于运行配置。
-
-JSON schema 1 保留 config/profile/state、推导的 `instance_id`（不证明在线）、采集区间、所选解析链、`current.matches`、`direct_consumers`、`downstream` 及可选的 `discovery.peers`。匹配条目给出依据和归属；观察矛盾时标记 `conflicts_with_selection` 并令视图不完整。`complete` 只描述有界声明覆盖，不代表资源健康或原子快照（`atomic` 始终 false），也不把潜在影响当作应用故障因果。
-
-每份配置最多 256 个服务、1024 条依赖边、256 个检查声明、64 个匹配。图超限或选中声明位于扫描限额之外时返回错误，其余省略项和不确定别名计数报告。扩展查询最多分析 8 个其他实例，各自 YAML 必须为不超过 1 MiB 的普通文件，同时沿用发现模块的 64 worktree／256 记录限制。完整排版输出最多 2 MiB，写入/flush 期限 5 秒，Ctrl+C 可取消输出。文件系统调用沿用 doctor 的非原子观察及阻塞 I/O 边界；路径本身仍可能敏感。
-
-**日志默认保存在内存里。** 保留全栈最近 1000 条，单行最多 16 KiB；没有开启持久化时，停止后无法再查询。`logs --follow` 先输出指定条数的历史日志，再持续接收新日志，按 Ctrl+C 或 supervisor 停止时退出；跟随者落后过多会报错退出。最多同时连接 16 个跟随者，为控制命令保留连接槽位。前台输出过慢时会丢弃部分实时条目并告警；前台输出管道断开会触发服务清理。
-
-**需要留案底，就显式写盘。** 用 `devd start --persist-logs` 启动，退出后用 `devd logs --stored` 查询：
-
-```bash
-devd start --persist-logs --log-max-size 10 --log-keep 3
-# 前台 supervisor 停止后：
-devd logs api --stored --level error --since 1h --tail 50
-```
-
-实例状态目录下保存 `logs/current.jsonl` 和 `logs/archive-1.jsonl`（最新归档），归档数量由配置控制。每条记录保留 UTC 时间、服务名、进程代次、级别、消息和截断标记。默认单文件 10 MiB，保留 3 份归档，日志数据最多 40 MiB；完整记录将超过上限时先轮转。`--log-max-size` 支持 1–1024 MiB，`--log-keep` 支持 1–100 份归档，均要求 `--persist-logs`。减小保留数后，下次持久化启动会删除多余的受管归档。减小文件大小上限不会重写已有归档，它们会随正常轮转淘汰。Unix 新目录和文件权限为 0700／0600，Windows 继承目录 ACL，应将项目和状态目录保存在当前用户目录内。日志可能含应用密钥；多次启动会追加到当前文件，共用这套保留上限。
-
-查询时使用与启动相同的 `--config`、`--profile` 和 `--state-dir`。不同实例/profile 的日志隔离；YAML 被删除后仍可用 `--stored` 查询，但必须先停止持久化 writer，且不能与 `--follow` 同用。日志目录不存在时报错，服务名没有历史记录时返回空结果。普通 `logs` 仍只读本次运行的内存。磁盘查询在全部保留文件上使用相同过滤条件，再取最新的 tail 条。
-
-磁盘写入使用独立的有界订阅，不阻塞服务采集。磁盘过慢可能丢失完整条目，文件中会留下包含丢失数量的 `devd` WARN。写盘失败会有序停止全栈并返回错误。正常关闭会排空已接收条目并同步磁盘；强杀或断电可能丢失尚未同步的数据。离线查询忽略异常中断留下的最后半条 JSONL，下次持久化启动会清掉它并记录警告；损坏的完整记录会让查询报错。这是有上限的开发日志，不是审计日志。
-
-`--level`、`--since`、`--grep` 可单独使用或组合，用于筛选历史和实时日志。例如 `devd logs api --level error --since 5m --grep database --tail 50 --follow` 先显示最多 50 条匹配的内存历史，再持续接收匹配的新日志。级别精确匹配；`--grep` 对原始消息做区分大小写的字面匹配。`--since` 支持 `ms`、`s`、`m`、`h`（如 `500ms`、`2h`），在命令发起时固定截止时间。筛选无法找回已从内存淘汰的日志。
-
-**诊断各管一层。** `status` 离线时返回错误，遗留状态文件仅用于诊断。配置内容被改坏后，仍可通过活实例执行 `stop`、`status`、`logs`、`restart` 和 `top`。`check` 校验配置结构和关系，`doctor` 不执行项目命令，只检查启动前置条件；健康探测只由 supervisor 在运行时执行。命令失败返回非零退出码。
-
-`devd top` 连接与 `status`、`logs` 相同的运行实例。顶部显示实例标识、supervisor 运行标识、profile 和配置路径，服务表展示状态、PID、重启次数与 CPU／RSS。**Tab 切换日志页和事件页。** 上下方向键（或 j/k）选服务，`r` 重启选中服务；两个页面均展示整个服务栈。Page Up/Down 翻当前页面，End 回到最新记录，左右方向键横向查看长记录和顶部字段，Home 回到行首。`s` 会先要求确认停止整个服务栈；Enter 或再次按 `s` 确认，Esc 或 `n` 取消。`q` 和 Ctrl+C 只退出界面。需要至少 60×16 的交互式终端，不会自行启动 supervisor。
-
-事件时间线大约每秒查询一次内存历史，最多保留 1,000 行（含缺口标记）。记录按本次运行的 `#序号` 排列；`g` 是代次起始事件的序号，不是 PID 或重启次数。`cause=#…` 表示记录中已有的直接因果引用，`cause=-` 表示没有记录因果关系，`(unavailable)` 表示引用的事件已不在界面保留的历史中。两条记录挨得近，不能据此判定谁导致了谁。摘要持续展示 supervisor 历史淘汰／查询截断缺口、本地淘汰行数和磁盘记录失败；最新缺口的行被淘汰后，摘要仍保留其说明。界面不会开启事件持久化，也不读取离线历史。状态、事件和应用日志分别采集，不承诺原子快照。断连或运行换代会报错并退出；控制与日志订阅绑定最初的运行，旧界面不能操作替换后的 supervisor。
-
-**资源指标只统计服务主进程。** supervisor 大约每秒采样一次，不累加 shell 或包管理器启动的子进程。CPU 以一个核心满载为 100%，多线程进程可以超过 100%；内存为 RSS，终端以 MiB 显示。不可用的指标显示 `-`，CPU 在启动或重启后需要两次成功采样。JSON 的可选 `resources` 包含 `cpu_percent`（预热时为 `null`）、`memory_bytes` 和 `sampled_at`。进程退出后清除指标。
-
-可选的 `limits` 在采样值超出阈值时记录告警，恢复到阈值内时再记录一次：
-
-```yaml
-services:
-  api:
-    command: ./run-api
-    limits: {cpu: '150%', memory: 512MiB}
-```
-
-CPU 使用正整数百分比；内存使用正整数及 `B`、`KB`、`MB`、`GB`、`KiB`、`MiB` 或 `GiB` 单位，十进制与二进制单位不同。每次跨越阈值只记录一次，进程重启后重新计数。缺失采样及 CPU 预热不会清除既有告警。不包含子进程用量，也不提供 CPU 或内存硬限额。
-
-**超限重启需要按服务显式授权。** 省略 `limits.on-exceed` 默认为 `warn`，服务继续运行。需要自动恢复时才开启：
-
-```yaml
-services:
-  api:
-    command: ./run-api
-    limits:
-      memory: 512MiB
-      on-exceed: restart
-    restart:
-      policy: on-failure
-      backoff: exponential
-      initial-delay: 1s
-      max-attempts: 3
-```
-
-同一指标连续 3 次有效采样超限才触发，大约每秒采样一次。恢复到阈值内或缺样会重置该指标的计数；CPU 预热只重置 CPU 计数。触发决定保留到当前进程代次结束。devd 停止进程组、排空日志，沿用现有退避并重新检查依赖后再启动。超限、崩溃、健康检查和依赖恢复重启共用累计预算；耗尽后服务失败并清理全栈。停止可以打断退避，手动重启可以接管等待，动作原因会写入日志和失败诊断。`on-exceed: restart` 与 `restart.policy: never` 冲突，启动前直接报错。profile 整体替换 `limits`，替换时省略 `on-exceed` 会回到 `warn`，`limits: null` 清除阈值。配置修改在下次启动 supervisor 或显式选择性重载时生效，不需要 root 权限或运行中弹窗确认。
-
-当前范围是本地进程管理。`init` 可生成初始配置，尚未实现项目扫描和交互式模板。文件前置条件可以按上文显式监测；配置文件监听和自动重载尚未实现，配置变化通过显式选择性重载应用。
-
-配置会拒绝未知字段和无效的 `limits`。YAML 值按字面使用，尚未实现 `${VAR}` 替换。`backoff: exponential` 从 `initial-delay` 开始，随累计重启次数翻倍，到 `max-delay` 封顶（默认 60s，不能小于初始延时）；健康检查成功不会重置计数。fixed 不使用 `max-delay`；两种等待均可被停止操作中断。
+| 多个 worktree 一起开发 | [实例发现](docs/COMMANDS.zh-CN.md#实例身份与发现)、[端口与路径](docs/COMMANDS.zh-CN.md#显式配置实例端口与路径) |
+| 环境启动、切换与配置调整 | [等待就绪](docs/COMMANDS.zh-CN.md#等待就绪)、[profiles](docs/COMMANDS.zh-CN.md#多环境配置)、[重载](docs/COMMANDS.zh-CN.md#配置变更预览与应用) |
+| 看故障、保存和移交证据 | [报告导出](docs/COMMANDS.zh-CN.md#导出诊断证据)、[事故记录](docs/COMMANDS.zh-CN.md#留下有界的事故证据)、[离线诊断](docs/COMMANDS.zh-CN.md#换台机器继续诊断) |
+| 对比资源变化、恢复与清理 | [基线](docs/COMMANDS.zh-CN.md#检查环境漂移)、[恢复配方](docs/COMMANDS.zh-CN.md#执行审阅过的恢复配方)、[清理](docs/COMMANDS.zh-CN.md#清理可丢弃的实例数据) |
+| 让工具接入当前现场 | [MCP](docs/COMMANDS.zh-CN.md#接入-mcp-客户端)、[Agent JSON 接口](docs/COMMANDS.zh-CN.md#给-agent-的实例接口) |
+
+全部参数与示例见[命令指南](docs/COMMANDS.zh-CN.md)。平台行为、日志留存和权限边界见[使用须知](docs/USAGE_NOTES.zh-CN.md)。
 
 ## 开发与验证
 
-[API + 网页 + worker 示例](examples/local-stack/README.md)提供了一套可以直接运行的服务，
-附带可重复执行的故障恢复验证脚本。
+想试一个完整项目，可以从 [API + 网页 + worker 示例](examples/local-stack/README.md) 开始，里面有可重复执行的故障恢复脚本。
 
-```bash
-cargo fmt --all -- --check
-cargo test --locked --all-targets
-cargo clippy --locked --all-targets -- -D warnings
-cargo build --locked
-```
+参与开发见[贡献指南](CONTRIBUTING.md)，专项检查见[测试与手动验证](tests/README.md)。发布流程见[发布清单](RELEASING.md)，漏洞报告见[安全政策](SECURITY.md)。
 
-原生测试会启动真实子进程，验证就绪、恢复、诊断和关闭行为。平台前置条件与专项验证命令见下方测试指南。
-
-[测试与手动验证](tests/README.md) · [发布清单](RELEASING.md) · [变更记录](CHANGELOG.md) · [MIT 许可证](LICENSE) · [架构设计](ARCHITECTURE.md)
+[变更记录](CHANGELOG.md) · [MIT 许可证](LICENSE) · [架构设计](ARCHITECTURE.md)
