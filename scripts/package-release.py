@@ -38,7 +38,7 @@ def main():
     version_path.write_text(version + "\n", encoding="utf-8", newline="\n")
     revision_path.write_text(revision + "\n", encoding="utf-8", newline="\n")
     files = [(binary, binary.name)] + [(Path(name), name) for name in (
-        "LICENSE", "README.md", "README.zh-CN.md")]
+        "LICENSE", "THIRD_PARTY_LICENSES.md", "README.md", "README.zh-CN.md")]
     files.extend([(version_path, "VERSION"), (revision_path, "REVISION")])
     archive = args.output_dir / f"devd-{target}.{'zip' if windows else 'tar.gz'}"
     if windows:

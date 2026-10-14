@@ -21,7 +21,7 @@ jobs:
   quality:
     name: Format and Clippy
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -40,6 +40,11 @@ jobs:
       - name: Verify Cargo package
         # Keep extracted package sources out of rust-cache's target traversal.
         run: cargo package --locked --target-dir "$RUNNER_TEMP/devd-package"
+      - name: Verify dependency licenses and registries
+        run: |
+          cargo install --locked cargo-deny@0.20.2
+          cargo deny --locked check licenses sources
+          python3 scripts/generate-third-party-notices.py --check
 
   test:
     name: Build and test (${{ matrix.os }})
@@ -84,6 +89,8 @@ jobs:
         run: python examples/local-stack/smoke.py --duration 5 --restarts 2
       - name: Exercise resource failure and retained incident evidence
         run: python scripts/incident-smoke.py
+      - name: Exercise drift, reviewed recovery and transferred evidence
+        run: python scripts/recovery-smoke.py
       - name: Install Node for MCP interoperability
         uses: actions/setup-node@v4
         with:

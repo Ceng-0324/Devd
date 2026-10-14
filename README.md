@@ -26,6 +26,11 @@ For parallel development, find instances across worktrees, wait for real readine
 
 Profiles, configuration snapshots, dependency diagrams, filtered logs, optional disk history and a live terminal view support the same workflow. `doctor` checks the environment, `events` shows the timeline, and `explain` connects service failures to recorded evidence.
 
+The v0.9 source candidate adds transferred-report diagnosis, stdio MCP, selected
+resource baselines and reviewed recovery recipes. See [validation scope](VALIDATION.md)
+for reproducible checks and remaining user-value evidence. To contribute or
+report a vulnerability, use [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
+
 Describe your services and their dependencies in `devd.yml`, then run `devd start` in the foreground. Use another terminal to check status, read logs, or restart a service.
 
 - **Start in dependency order.** Independent services start concurrently. Dependencies can wait for a process to start or for a TCP / HTTP / Unix socket / script health check to pass.

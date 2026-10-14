@@ -33,7 +33,7 @@ def verify_archive(archive, version, revision, smoke=False):
     if Path(str(archive) + ".sha256").read_text(encoding="utf-8").strip() != expected_checksum:
         raise ValueError("archive SHA-256 or checksum filename does not match")
     binary = "devd.exe" if target.endswith("windows-msvc") else "devd"
-    expected = {binary, "LICENSE", "README.md", "README.zh-CN.md", "VERSION", "REVISION"}
+    expected = {binary, "LICENSE", "THIRD_PARTY_LICENSES.md", "README.md", "README.zh-CN.md", "VERSION", "REVISION"}
     if archive.suffix == ".zip":
         with zipfile.ZipFile(archive) as source:
             entries = source.infolist()
@@ -74,6 +74,8 @@ def verify_archive(archive, version, revision, smoke=False):
                             "--binary", str(executable), "--duration", "5", "--restarts", "2"],
                            cwd=root, check=True, timeout=120)
             subprocess.run([sys.executable, str(root / "scripts/incident-smoke.py"),
+                            "--binary", str(executable)], cwd=root, check=True, timeout=120)
+            subprocess.run([sys.executable, str(root / "scripts/recovery-smoke.py"),
                             "--binary", str(executable)], cwd=root, check=True, timeout=120)
     return target
 

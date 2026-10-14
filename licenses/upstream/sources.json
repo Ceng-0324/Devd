@@ -1,0 +1,10 @@
+{
+  "objc2": {
+    "source": "https://raw.githubusercontent.com/madsmtm/objc2/7b1abfd750a2cacaea71d6a56ecfb83cb7de560b/LICENSE.md",
+    "file": "objc2.txt"
+  },
+  "rmcp": {
+    "source": "https://raw.githubusercontent.com/modelcontextprotocol/rust-sdk/79437f291b2c44053d00dcd5db969fd0cca7c887/LICENSE",
+    "file": "rmcp-Apache-2.0.txt"
+  }
+}

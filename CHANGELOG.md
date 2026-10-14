@@ -5,6 +5,12 @@ Release assets, source revisions and validation evidence are on
 
 ## v0.9.0-alpha.1 — Unreleased
 
+- Add a complete native drift/recovery/evidence-handoff scenario to CI and
+  extracted release-binary checks. Include generated third-party license texts
+  in release archives, check dependency licenses and registries, and publish
+  contribution/security guidance and a fixed-version synthetic comparison.
+  Keep engineering acceptance separate from independent user-value evidence.
+
 - Add explicit stopped-instance `recover --recipe --dry-run/--apply --plan`
   workflows for registered disposable resources, bounded commands and file
   postconditions. Hold the instance lease, reject stale/expired plans and unsafe

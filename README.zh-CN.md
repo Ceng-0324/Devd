@@ -16,6 +16,10 @@
 
 ## 它能做什么
 
+v0.9 源码候选增加了可移交报告诊断、stdio MCP、显式资源基线和经过预览的恢复配方。
+[验收说明](VALIDATION.md) 记录可复现检查与尚缺的用户价值证据；参与开发与安全报告分别见
+[贡献指南](CONTRIBUTING.md) 和 [安全政策](SECURITY.md)。
+
 devd 是用 Rust 编写的本地开发服务管理器。**v0.8.0-alpha.1 已作为预发布版本发布，支持 Linux、macOS 和 Windows。** [下载二进制及 SHA-256 校验文件](https://github.com/Ceng-0324/Devd/releases/tag/v0.8.0-alpha.1)，提供 Linux x86_64、macOS arm64 和 Windows x86_64 MSVC 归档。
 
 当初那场事故，现在有了一条能查下去的线：声明服务需要哪些文件和软链接，看清解析在哪一环断了、哪些声明服务在下游。重现问题前显式开启事故记录，supervisor 停止后仍能查看和导出证据。后来把目标补回来，也不会改写当时留下的记录。

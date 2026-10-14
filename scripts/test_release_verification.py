@@ -25,7 +25,7 @@ class ReleaseVerificationTests(unittest.TestCase):
         archive = Path(directory) / f"devd-{target}.{'zip' if windows else 'tar.gz'}"
         files = {
             "devd.exe" if windows else "devd": b"binary",
-            "LICENSE": b"license", "README.md": b"English", "README.zh-CN.md": b"Chinese",
+            "LICENSE": b"license", "THIRD_PARTY_LICENSES.md": b"third-party", "README.md": b"English", "README.zh-CN.md": b"Chinese",
             "VERSION": f"devd {self.version}\n".encode(),
             "REVISION": f"{self.revision}\n".encode(),
         }
@@ -76,10 +76,10 @@ class ReleaseVerificationTests(unittest.TestCase):
                 self.assertNotEqual(executable.parent, archive.parent)
                 commands = [call.args[0] for call in run.call_args_list]
                 self.assertEqual([Path(command[1]).name for command in commands],
-                                 ["smoke.py", "incident-smoke.py"])
+                                 ["smoke.py", "incident-smoke.py", "recovery-smoke.py"])
                 for command in commands:
                     self.assertEqual(command[command.index("--binary") + 1], str(executable))
-                run.side_effect = [None, subprocess.CalledProcessError(1, "incident-smoke")]
+                run.side_effect = [None, None, subprocess.CalledProcessError(1, "recovery-smoke")]
                 with self.assertRaises(subprocess.CalledProcessError):
                     verify_release.verify_archive(archive, self.version, self.revision, smoke=True)
 
@@ -91,6 +91,7 @@ class ReleaseVerificationTests(unittest.TestCase):
                 {"changes": {"TECHNICAL_DESIGN.md": b"private"}},
                 {"changes": {"../escape": b"outside"}},
                 {"changes": {"LICENSE": b""}},
+                {"changes": {"THIRD_PARTY_LICENSES.md": b""}},
                 {"duplicate": True}, {"symlink": True}, {"fifo": True},
             ]:
                 with self.subTest(windows=windows, options=options), tempfile.TemporaryDirectory() as directory:
@@ -103,8 +104,8 @@ class ReleaseVerificationTests(unittest.TestCase):
         files = subprocess.check_output(
             ["cargo", "package", "--list", "--locked", "--allow-dirty"], cwd=root, text=True
         ).splitlines()
-        self.assertTrue({"Cargo.toml", "README.md", "README.zh-CN.md"}.issubset(files))
-        self.assertTrue({"TECHNICAL_DESIGN.md", "AGENTS.md"}.isdisjoint(files))
+        self.assertTrue({"Cargo.toml", "README.md", "README.zh-CN.md", "THIRD_PARTY_LICENSES.md"}.issubset(files))
+        self.assertTrue({"TECHNICAL_DESIGN.md", "AGENTS.md", "COMPETITIVE_RESEARCH.md"}.isdisjoint(files))
 
     def test_archives_reject_corrupt_bytes_or_checksum_filename(self):
         for windows in [False, True]:

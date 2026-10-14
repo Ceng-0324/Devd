@@ -11,6 +11,10 @@ action after the source revision, checks, and artifacts have been reviewed.
    `cargo test --locked --all-targets`,
    `python3 -m unittest discover -s scripts -p 'test_*.py' -v`, and
    `cargo package --locked`.
+   Also run `cargo deny --locked check licenses sources` using cargo-deny 0.20.2
+   and `python3 scripts/generate-third-party-notices.py --check`. Regenerate the
+   third-party notice after dependency changes; review the pinned upstream files
+   in `licenses/upstream/` when a published crate omits its license text.
    Verify that local-only documents are absent from `cargo package --list`.
 3. Push the release commit and require successful Linux/macOS/Windows CI on that
    exact SHA, including the three-service recovery smoke test and native Windows
@@ -35,27 +39,35 @@ action after the source revision, checks, and artifacts have been reviewed.
    binary: it reproduces a dangling target, verifies unchanged service PIDs,
    exports the original evidence offline, and checks the incomplete boundary
    after abrupt supervisor death. Symlink privileges are mandatory on Windows.
+   v0.9 also requires retained relationship validation, transferred-report
+   diagnosis without the source project, pinned official MCP Inspector
+   interoperability, drift comparison and reviewed stopped-instance recovery.
+   Run `python scripts/recovery-smoke.py` to cover baseline drift, original
+   incident evidence, shared-resource protection, replay/run guards, new-run
+   readiness and transfer to an empty recipient directory. Record fixed-version
+   comparison and independent feedback separately, as described in VALIDATION.md;
+   synthetic engineering success is not user-value evidence.
 4. Trigger **Release artifacts** from main with the full source commit SHA in
    its required `revision` input. The workflow verifies the checkout and tests
    the archived release binary on each target platform.
    The packaging entry point is `python scripts/package-release.py <target>`;
    it requires committed tracked sources and an already-built native release
    binary, checks its version against Cargo.toml, writes archives/checksums under
-   `target/release-artifacts/`, then verifies the archive and runs recovery and
-   incident smoke using its extracted binary. Python 3.11 or newer is required.
-   It never publishes them. The six-file allowlist excludes local-only design
+   `target/release-artifacts/`, then verifies the archive and runs the stack, incident and reviewed-recovery
+   smokes using its extracted binary. Python 3.11 or newer is required.
+   It never publishes them. The seven-file allowlist excludes local-only design
    and agent documents.
 5. Download the Linux x86_64 and macOS arm64 `.tar.gz` artifacts and Windows
    x86_64 MSVC `.zip`. Verify each archive with `shasum -a 256 -c <file>.sha256`
    (or compare PowerShell `Get-FileHash -Algorithm SHA256` against its checksum).
    Inspect the contents: binary (`devd.exe` on Windows), license, both READMEs,
-   `VERSION`, and `REVISION`; confirm the latter two match the intended release.
+   `THIRD_PARTY_LICENSES.md`, `VERSION`, and `REVISION`; confirm the latter two match the intended release.
    Local macOS testing does not replace validation of the other artifacts.
    Automate these checks for downloaded archives with:
 
    ```bash
    python3 scripts/verify-release.py <archive> [<archive> ...] \
-     --version 0.8.0-alpha.1 --revision <full-40-character-SHA>
+     --version 0.9.0-alpha.1 --revision <full-40-character-SHA>
    ```
 
    Keep each checksum beside its archive. Add `--smoke` for a single native
@@ -70,7 +82,9 @@ action after the source revision, checks, and artifacts have been reviewed.
    causation; schema-1 incidents do not retain the complete impact graph. Fresh
    post-trigger observations are non-atomic, abrupt death can leave incomplete
    captures, and default exports still contain potentially sensitive identifiers
-   and paths. Optional logs have separate attribution. Candidate validation alone
+   and paths. Recovery commands have the user's OS permissions and are not a
+   sandbox; recovery never auto-starts services or rewrites incidents/baselines.
+   Optional logs have separate attribution. Candidate validation alone
    does not publish it. Any source change requires CI and artifacts for the new
    SHA before publication.
 

@@ -14,6 +14,8 @@ cargo build --locked
 cargo doc --locked --no-deps
 python3 -m unittest discover -s scripts -p 'test_*.py' -v
 python3 scripts/incident-smoke.py
+python3 scripts/recovery-smoke.py
+python3 scripts/generate-third-party-notices.py --check
 ```
 
 The CI matrix builds, lints, and runs all applicable test targets on Linux, macOS,
@@ -41,6 +43,13 @@ the descendant received TERM. This avoids depending on shell trap/reaping
 behavior while preserving exit-status and process-group cleanup assertions.
 
 ## Coverage
+
+`scripts/recovery-smoke.py` runs the selected native binary through link-target
+drift, dangling-resource capture, stopped-instance recipe recovery, replay and
+old-run rejection, new-run readiness and original-evidence handoff. It protects
+shared fixture data and accepted baselines. CI and release packaging run this
+same scenario; the release path uses the extracted archive binary. Synthetic
+competitor comparison and its limitations are described in VALIDATION.md.
 
 `recover.rs` runs native stopped-instance recipe workflows: missing registered
 directory reconstruction, multistep conditions, literal argv/privacy, profile/custom
