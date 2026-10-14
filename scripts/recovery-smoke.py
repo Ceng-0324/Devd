@@ -113,8 +113,11 @@ def exercise(binary):
                 baseline_bytes = (root / "baseline.json").read_bytes()
                 unchanged = cli("baseline", "check", "baseline.json", "--json", required=False)
                 unchanged_value = json.loads(unchanged.stdout)
-                # Windows metadata comparisons explicitly lack file identity.
-                assert unchanged_value["outcome"] == ("unknown" if os.name == "nt" else "no-observed-change")
+                # No observed change is narrower than a complete identity comparison.
+                assert unchanged_value["outcome"] == "no-observed-change", unchanged_value
+                assert unchanged.returncode == 0, unchanged.stderr
+                if os.name == "nt":
+                    assert unchanged_value["entries"][0]["comparison"]["complete"] is False, unchanged_value
                 alternate = root / "alternate"
                 alternate.write_text(SECRET, encoding="utf-8")
                 link.unlink()
