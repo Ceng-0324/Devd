@@ -5,6 +5,9 @@ between observation and control clearer, not widen it by accident.
 
 ## Getting started
 
+Development happens on `dev`. Branch from `dev` and target it with development
+pull requests; `main` is the release branch.
+
 Use Rust 1.95 or newer, Python 3.11 or newer, and Git. From the repository
 root, run the checks that cover the code you changed:
 
