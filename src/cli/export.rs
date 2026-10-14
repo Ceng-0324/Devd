@@ -83,6 +83,8 @@ pub(super) struct Report {
 /// Explicit allowlist: error strings, commands and environment values are absent.
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct SafeServiceState {
+    #[serde(default)]
+    kind: crate::config::ServiceKind,
     status: ServiceState,
     pid: Option<u32>,
     started_at: Option<DateTime<Utc>>,
@@ -97,6 +99,7 @@ pub(super) struct SafeServiceState {
 impl From<&ServiceSnapshot> for SafeServiceState {
     fn from(value: &ServiceSnapshot) -> Self {
         Self {
+            kind: value.kind,
             status: value.status,
             pid: value.pid,
             started_at: value.started_at,

@@ -4,6 +4,7 @@
 
 The stack is running. Now what? Find the task you need below; the examples get you started, and the details explain what happens when things go wrong.
 
+- [One-shot tasks](#one-shot-tasks)
 - [File prerequisites and path rules](#file-prerequisites-and-path-rules)
 - [Instance discovery](#instance-discovery)
 - [Wait for readiness](#wait-for-readiness)
@@ -22,6 +23,72 @@ The stack is running. Now what? Find the task you need below; the examples get y
 - [Dependency diagrams](#dependency-diagrams)
 - [Preview and apply configuration changes](#preview-and-apply-configuration-changes)
 - [Command reference](#command-reference)
+
+### One-shot tasks
+
+A build or migration is not ready just because its process started. Declare it
+as a task and let consumers wait for a successful exit:
+
+```yaml
+version: "1"
+services:
+  generate:
+    kind: task
+    command: python3 scripts/generate.py
+    task-timeout: 2m
+  api:
+    command: python3 app.py
+    depends-on:
+      - service: generate
+        condition: completed-successfully
+```
+
+`kind` defaults to `service`. Tasks publish `succeeded` only after exit code 0,
+managed process-tree cleanup, and bounded log draining. They then have no PID.
+Every edge to a task must use `completed-successfully`; that condition is
+rejected for long-running services. Health probes and `always` restart are
+invalid for tasks. Path prerequisites, environment bindings, and read-only
+path/resource observation still work; dependency-recovery and resource-limit
+restarts are not task actions.
+
+Tasks default to `restart.policy: never`, including an omitted policy inside a
+restart block. To retry failures, explicitly set `policy: on-failure`; the
+existing delay/backoff and cumulative `max-attempts` apply. A retry can repeat
+external effects: devd does not roll back a half-finished database migration.
+A failure with no remaining retry stops the whole stack. Stop/cancellation and
+timeout never count as task success, even if termination returns exit code 0.
+
+`task-timeout` (alias `task_timeout`) is positive, defaults to `5m`, and starts
+after the process is spawned. Timeout initiates normal process-tree shutdown;
+cleanup may take additional time. Dependency waiting has its own existing
+`start --dependency-timeout` (default `30s`), and `wait --timeout` is separate.
+For a long build, increase those waiting deadlines too. `task-timeout` is
+rejected on services. Profiles replace `kind` and `task-timeout`; `null` clears
+the timeout override. Restart fields still merge by key, so an explicitly
+inherited policy remains explicit when a profile changes the kind.
+
+Restarting a consumer reuses a completed task in the same supervisor run.
+`restart generate` explicitly reruns the task and invalidates its old success
+when accepted; it returns once the replacement process starts (or a very fast
+task completes), so use `wait generate` for completion. Consumers already
+released are not retroactively stopped; an opted-in long-running consumer can
+use `restart-on-dep-recovery` to restart after the new task generation succeeds.
+New attempts wait for the new result. A fresh supervisor always executes tasks
+again and never trusts a completion file or an old state snapshot.
+
+Reload reruns affected tasks and their downstream consumers, while unrelated
+successful tasks retain their results. A task must finish successfully before
+reload advances its layer. The layer still uses the configured dependency
+waiting deadline; affected tasks do not automatically retry during reload,
+matching the existing failure-stops-the-stack contract. A stack containing only
+tasks exits 0 when every task succeeds; use that `start` exit status in scripts,
+since there may no longer be a live supervisor to answer a subsequent `wait`.
+
+State/export reports include `kind`, and wait evidence includes
+`requires_completed`. Existing reports without these fields remain readable.
+New `succeeded`, `completed-successfully`, and `task-timed-out` enum values require
+a reader that supports tasks; older binaries are not forward-compatible readers.
+For a runnable example, see [examples/tasks](../examples/tasks/README.md).
 
 ### File prerequisites and path rules
 
@@ -100,7 +167,8 @@ devd wait api --profile staging --state-dir ./runtime
 This command is included in v0.7. Omit names to select every service
 in the supervisor's effective configuration; supplied names match exactly and
 duplicates are ignored. Services with a health check need `healthy` and a PID;
-others need `running` and a PID. Use the same `--config`, `--profile`, and
+other long-running services need `running` and a PID. Tasks need `succeeded`
+with exit code 0 and no PID. Use the same `--config`, `--profile`, and
 `--state-dir` as `start`. The YAML can be edited or removed: `wait` reads live
 state without loading it or running extra probes.
 
@@ -123,7 +191,7 @@ waits; excess callers receive `busy`, leaving capacity for control commands.
 `--json` prints one final report on stdout, including unsuccessful waits:
 `schema_version: 1`, `outcome`, `instance_id`, `run_id`, `observed_at`,
 `elapsed_ms`, `services`, `blocking`, and `message`. Each service includes its
-health requirement, observed state, PID, generation, readiness, pending manual
+health/completion requirement, observed state, PID, generation, readiness, pending manual
 restart, and last error. Outcomes are `ready`, `failed`, `timed-out`,
 `cancelled`, `stopping`, `reloaded`, `disconnected`, `unavailable`,
 `invalid-service`, or `busy`. Timeout/cancellation/disconnect preserve the last
@@ -920,7 +988,7 @@ devd reload --apply --plan 'sha256:<64-hex-digits>' --candidate devd.next.yml
 
 Application re-reads and validates the candidate, then recomputes the plan against the live instance. Changed configuration, process generations, or lifecycle states invalidate the ID; preview again. Services must be in stable states. `apply_available: true` describes support, not a guarantee that a later application will succeed. Instance/profile, state-directory, and supervisor logging options stay fixed. The candidate is an in-memory configuration update; neither source YAML nor the default candidate path is rewritten.
 
-Only affected services are stopped, in old reverse dependency order. After they finish, the supervisor commits the candidate baseline and starts new forward layers. Each affected service must start and, when configured, pass its health check; each layer has the existing dependency timeout (30 seconds). Unchanged services retain their processes. No-op configurations restart nothing. Manual restart and a second reload are rejected while application is active. Affected services pause automatic recovery until application completes; unrelated services keep their existing policies. `stop` can interrupt any phase.
+Only affected services are stopped, in old reverse dependency order. After they finish, the supervisor commits the candidate baseline and starts new forward layers. Each affected task must succeed; long-running services must start and, when configured, pass their health check; each layer has the existing dependency timeout (30 seconds). Unchanged services retain their processes. No-op configurations restart nothing. Manual restart and a second reload are rejected while application is active. Affected services pause automatic recovery until application completes; unrelated services keep their existing policies. `stop` can interrupt any phase.
 
 A failure stops the whole stack, including unrelated services. There is no automatic rollback: once committed, the new in-memory baseline remains until the supervisor exits. The execution report lists completed stops, observed starts, ready layers, and `config_committed`; it returns a nonzero exit code on failure or interruption. Lifecycle events record the plan and outcome, with progress available through `events` (and `--stored` when event persistence was enabled). Client disconnect or the 60-second response timeout does not cancel an accepted reload; inspect status/events before retrying.
 

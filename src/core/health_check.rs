@@ -127,6 +127,8 @@ impl HealthChecker {
         let probe = match config {
             HealthCheck::Script { command, .. } => Probe::Script {
                 config: Box::new(ServiceConfig {
+                    kind: Default::default(),
+                    task_timeout: None,
                     command: command.clone(),
                     listen: Vec::new(),
                     ports: Default::default(),

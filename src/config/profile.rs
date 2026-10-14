@@ -95,7 +95,9 @@ impl ConfigDocument {
                         if value.is_null()
                             && !matches!(
                                 key.as_str(),
-                                Some("cwd" | "env-file" | "healthcheck" | "limits")
+                                Some(
+                                    "cwd" | "env-file" | "healthcheck" | "limits" | "task-timeout"
+                                )
                             )
                         {
                             return Err(serde_yaml::Error::custom(format!(
@@ -178,6 +180,7 @@ fn normalize_service(service: &mut Mapping) -> Result<(), serde_yaml::Error> {
         service,
         &[
             ("env_file", "env-file"),
+            ("task_timeout", "task-timeout"),
             ("monitor_requires", "monitor-requires"),
             ("depends_on", "depends-on"),
             ("restart_on_dep_recovery", "restart-on-dep-recovery"),

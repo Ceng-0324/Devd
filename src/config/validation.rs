@@ -61,6 +61,42 @@ impl DevdConfig {
                     "command must be non-empty and contain no NUL bytes",
                 ));
             }
+            if service.kind == super::ServiceKind::Task {
+                if service.healthcheck.is_some() {
+                    return Err(invalid(
+                        format!("{prefix}.healthcheck"),
+                        "tasks use successful completion, not health probes",
+                    ));
+                }
+                if service.restart.policy == RestartPolicyType::Always {
+                    return Err(invalid(
+                        format!("{prefix}.restart.policy"),
+                        "tasks allow only never or explicit on-failure",
+                    ));
+                }
+                if service.restart_on_dep_recovery
+                    || service
+                        .limits
+                        .as_ref()
+                        .is_some_and(|l| l.on_exceed == super::ResourceLimitAction::Restart)
+                {
+                    return Err(invalid(prefix.clone(), "tasks cannot restart on dependency recovery or resource limits; use explicit on-failure retries"));
+                }
+                if service
+                    .effective_task_timeout()
+                    .is_some_and(|v| v.is_zero())
+                {
+                    return Err(invalid(
+                        format!("{prefix}.task-timeout"),
+                        "task timeout must be positive",
+                    ));
+                }
+            } else if service.task_timeout.is_some() {
+                return Err(invalid(
+                    format!("{prefix}.task-timeout"),
+                    "task-timeout requires kind: task",
+                ));
+            }
             if service.listen.iter().any(|address| address.port() == 0) {
                 return Err(invalid(
                     format!("{prefix}.listen"),
@@ -223,6 +259,21 @@ impl DevdConfig {
         let graph = DependencyGraph::from_config(self)?;
         for (name, dependency, condition) in graph.edges() {
             let target = &self.services[dependency];
+            if target.kind == super::ServiceKind::Task {
+                if *condition != DependencyCondition::CompletedSuccessfully {
+                    return Err(invalid(
+                        format!("services.{name}.depends-on.{dependency}"),
+                        "task dependencies require completed-successfully",
+                    ));
+                }
+                continue;
+            }
+            if *condition == DependencyCondition::CompletedSuccessfully {
+                return Err(invalid(
+                    format!("services.{name}.depends-on.{dependency}"),
+                    "completed-successfully requires a task dependency",
+                ));
+            }
             let matches = matches!(
                 (condition, &target.healthcheck),
                 (DependencyCondition::Started, _)

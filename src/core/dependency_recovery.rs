@@ -83,17 +83,24 @@ impl DependencyRecovery {
 }
 
 pub(super) fn dependency_ready(state: &ServiceSnapshot, condition: &DependencyCondition) -> bool {
-    state.pid.is_some()
-        && match condition {
-            DependencyCondition::Started => matches!(
-                state.status,
-                ServiceState::Running | ServiceState::Healthy | ServiceState::Unhealthy
-            ),
-            DependencyCondition::HttpReady
-            | DependencyCondition::ScriptReady
-            | DependencyCondition::TcpReady
-            | DependencyCondition::SocketReady => state.status == ServiceState::Healthy,
+    match condition {
+        DependencyCondition::CompletedSuccessfully => {
+            state.kind == crate::config::ServiceKind::Task && state.ready(false)
         }
+        DependencyCondition::Started => {
+            state.pid.is_some()
+                && matches!(
+                    state.status,
+                    ServiceState::Running | ServiceState::Healthy | ServiceState::Unhealthy
+                )
+        }
+        DependencyCondition::HttpReady
+        | DependencyCondition::ScriptReady
+        | DependencyCondition::TcpReady
+        | DependencyCondition::SocketReady => {
+            state.pid.is_some() && state.status == ServiceState::Healthy
+        }
+    }
 }
 
 #[cfg(test)]

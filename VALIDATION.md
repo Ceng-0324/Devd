@@ -1,7 +1,7 @@
-# v0.9 validation
+# Validation
 
-This document describes repeatable engineering validation for the v0.9 release
-candidate. It is not a user study and does not measure productivity, resource
+This document describes repeatable engineering validation for the current source.
+Published results belong to their release revision; new source scenarios must be rerun. It is not a user study and does not measure productivity, resource
 use, diagnosis time, or adoption.
 
 ## Native scenario
@@ -45,12 +45,14 @@ python3 scripts/compare-process-compose.py \
   --output comparison.json
 ```
 
-The successful and failed task gates are intentionally included because Process Compose has
-native `process_completed_successfully`; devd does not. The devd entry therefore
-uses an explicit completion/failure-marker wrapper. The plain composition invokes
-producer and consumer sequentially. Failure prevents consumer output for all
-three, and actual stack exit codes are retained separately. This is a functional
-gap in devd's native dependency model.
+The successful and failed task gates use native completion dependencies:
+Process Compose uses `process_completed_successfully`; devd uses `kind: task`
+and `completed-successfully`. The Python composition invokes producer and
+consumer sequentially. Fixture output files are checked as results; devd no
+longer uses a marker-wait wrapper to order these tasks. The assertions require
+failure to prevent consumer output and retain actual stack exit codes separately.
+The v0.9 comparison used a wrapper; its published results do not validate this
+new native path.
 
 For link loss, Process Compose runs the same handwritten observer as the plain
 script case. Both can preserve a first observation and transfer JSON after

@@ -10,6 +10,6 @@ pub(crate) use schema::ResourceThresholds;
 pub use schema::{
     BackoffType, Dependency, DependencyCondition, DevdConfig, HealthCheck, PathRequirement,
     PathRequirementType, PathScope, ResourceLimitAction, ResourceLimits, RestartPolicy,
-    RestartPolicyType, RuntimePath, ServiceConfig,
+    RestartPolicyType, RuntimePath, ServiceConfig, ServiceKind,
 };
 pub use validation::ConfigValidationError;

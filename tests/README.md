@@ -344,3 +344,12 @@ export and offline diagnosis with the original YAML removed. It uses temporary
 files and cleans up its supervisor. Native Linux/macOS/Windows CI runs this same
 exercise with Node 24. This proves Inspector protocol interoperability; it does
 not claim a model-driven Codex or Claude conversation was accepted.
+
+### One-shot task gates
+
+`cargo test --locked --test task_config` checks contextual defaults, profiles,
+strict fields and lifecycle/edge validation. `cargo test --locked --test wait tasks::`
+runs native CLI fixtures on every supported platform: success/failure ordering,
+opt-in retries, timeout/stop/spawn failure, descendant cleanup, manual rerun with
+stale-success rejection, selective reload and failed reload, and transferred
+completion evidence. The ignored task fixture is launched only by these tests.

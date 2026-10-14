@@ -175,6 +175,7 @@ Use the plan ID returned by that preview. Commands run with your OS permissions,
 | --- | --- |
 | Running several worktrees | [Instance discovery](docs/COMMANDS.md#instance-discovery), [ports and paths](docs/COMMANDS.md#explicit-instance-ports-and-paths) |
 | Starting or changing an environment | [Readiness](docs/COMMANDS.md#wait-for-readiness), [profiles](docs/COMMANDS.md#named-environments), [reload](docs/COMMANDS.md#preview-and-apply-configuration-changes) |
+| Finishing a build before starting consumers | [One-shot tasks](docs/COMMANDS.md#one-shot-tasks), [runnable example](examples/tasks/README.md) |
 | Saving and handing off failure evidence | [Exports](docs/COMMANDS.md#export-diagnostics), [incidents](docs/COMMANDS.md#keep-bounded-incident-evidence), [offline diagnosis](docs/COMMANDS.md#diagnose-a-report-on-another-machine) |
 | Comparing, rebuilding or cleaning resources | [Baselines](docs/COMMANDS.md#detect-environment-drift), [recovery](docs/COMMANDS.md#run-a-reviewed-recovery-recipe), [cleanup](docs/COMMANDS.md#clean-disposable-instance-data) |
 | Connecting another tool | [MCP](docs/COMMANDS.md#connect-an-mcp-client), [Agent JSON interface](docs/COMMANDS.md#a-scoped-interface-for-agents) |

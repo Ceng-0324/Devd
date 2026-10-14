@@ -79,6 +79,9 @@ pub enum EventData {
     Started {
         pid: Option<u32>,
     },
+    TaskTimedOut {
+        timeout: Duration,
+    },
     Exited {
         code: Option<i32>,
         signal: Option<i32>,
@@ -191,6 +194,7 @@ pub enum RestartOutcome {
 #[serde(tag = "type", rename_all = "kebab-case")]
 pub enum RestartCause {
     ProcessExit,
+    TaskTimeout,
     SpawnFailure,
     HealthFailure,
     DependencyRecovery { services: Vec<DependencyChange> },

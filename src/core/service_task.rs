@@ -6,7 +6,7 @@ use chrono::Utc;
 use tokio::{sync::watch, task::JoinSet};
 
 use crate::config::{
-    BackoffType, ResourceLimitAction, RestartPolicy, RestartPolicyType, ServiceConfig,
+    BackoffType, ResourceLimitAction, RestartPolicy, RestartPolicyType, ServiceConfig, ServiceKind,
 };
 use crate::logging::{LogCollector, LogLevel};
 
@@ -46,6 +46,7 @@ pub(super) struct ServiceTask {
 enum GenerationEnd {
     Exit(ExitStatus),
     HealthFailure,
+    TaskTimedOut,
     DependencyRecovery(Vec<DependencyChange>),
     ResourceLimit(String),
     Error(super::process_manager::ProcessError),
@@ -220,11 +221,33 @@ impl ServiceTask {
                 }
                 GenerationEnd::Exit(status) => {
                     self.record_exit(status);
-                    self.trigger(RestartCause::ProcessExit);
+                    if self.config.kind != ServiceKind::Task || !status.success() {
+                        self.trigger(RestartCause::ProcessExit);
+                    }
                     if !status.success() {
                         self.state.last_error = Some(format!("process exited with {status}"));
                     }
                     !status.success()
+                }
+                GenerationEnd::TaskTimedOut => {
+                    self.cause = Some(self.record(EventData::TaskTimedOut {
+                        timeout: self.config.effective_task_timeout().expect("task timeout"),
+                    }));
+                    self.trigger(RestartCause::TaskTimeout);
+                    self.state.last_error = Some("task execution timed out".into());
+                    self.transition(ServiceState::Stopping);
+                    match process.stop(self.options.grace_period).await {
+                        Ok(status) => self.record_exit(status),
+                        Err(error) => {
+                            self.cause = Some(self.record(EventData::ProcessFailed {
+                                failure: (&error).into(),
+                            }));
+                            readers.finish().await;
+                            self.fail(error.to_string());
+                            break;
+                        }
+                    }
+                    true
                 }
                 GenerationEnd::HealthFailure
                 | GenerationEnd::DependencyRecovery(_)
@@ -260,11 +283,38 @@ impl ServiceTask {
             };
             readers.finish().await;
             drop(process);
+            if self.config.kind == ServiceKind::Task && !failed && self.complete_task() {
+                break;
+            }
             if !self.schedule_restart(failed).await {
                 break;
             }
             restarting = true;
         }
+    }
+
+    fn complete_task(&mut self) -> bool {
+        let mut completed = false;
+        // Match the manager's snapshot -> control lock order. A concurrent
+        // accepted restart/stop cannot leave a stale success visible to gates.
+        let snapshots = self.snapshots.clone();
+        snapshots.send_if_modified(|snapshot| {
+            if !matches!(*self.control.borrow(), Control::Running | Control::Loading) {
+                return false;
+            }
+            let previous = snapshot.services.get_mut(&self.name).unwrap();
+            self.record(EventData::StateChanged {
+                from: self.state.status,
+                to: ServiceState::Succeeded,
+            });
+            self.state.status = ServiceState::Succeeded;
+            self.state.last_error = None;
+            self.state.resources = None;
+            *previous = self.state.clone();
+            completed = true;
+            true
+        });
+        completed
     }
 
     fn publish(&self) {
@@ -476,6 +526,10 @@ impl ServiceTask {
             &logs,
         );
         tokio::pin!(path_monitor);
+        let task_deadline = self
+            .config
+            .effective_task_timeout()
+            .map(|duration| tokio::time::Instant::now() + duration);
         let mut health = self.checker.clone().map(HealthMonitor::new);
         let mut previous_health = None;
         let mut health_event = None;
@@ -528,6 +582,10 @@ impl ServiceTask {
                         Ok(status) => GenerationEnd::Exit(status),
                         Err(error) => GenerationEnd::Error(error),
                     },
+                    _ = async {
+                        if let Some(deadline) = task_deadline { tokio::time::sleep_until(deadline).await; }
+                        else { pending::<()>().await; }
+                    } => return GenerationEnd::TaskTimedOut,
                     _ = std::future::ready(()), if !recovered.is_empty() && *self.control.borrow() == Control::Running => {
                         return GenerationEnd::DependencyRecovery(recovered);
                     },
@@ -719,6 +777,50 @@ impl OutputReaders {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_task_success_cannot_publish_after_control_acceptance() {
+        for control in [
+            Control::Running,
+            Control::Loading,
+            Control::Quiescing,
+            Control::Restarting(9),
+            Control::Stopping(Some(9)),
+        ] {
+            let config = serde_yaml::from_str("command: build\nkind: task").unwrap();
+            let (sender, receiver) = watch::channel(Control::Running);
+            let initial = ServiceSnapshot {
+                kind: ServiceKind::Task,
+                status: ServiceState::Running,
+                last_exit_code: Some(0),
+                event_generation: Some(1),
+                ..Default::default()
+            };
+            let (snapshots, _) = watch::channel(RuntimeSnapshot {
+                supervisor_pid: 42,
+                event_run_id: None,
+                services: [("build".into(), initial)].into(),
+            });
+            let mut task = ServiceTask::new(
+                "build".into(),
+                config,
+                None,
+                ManagerOptions::new("unused"),
+                receiver,
+                snapshots.clone(),
+                LogCollector::new(Default::default()).unwrap(),
+                EventRecorder::new("unused".into(), None),
+                None,
+            );
+            sender.send_replace(control);
+            let allowed = matches!(control, Control::Running | Control::Loading);
+            assert_eq!(task.complete_task(), allowed);
+            assert_eq!(
+                snapshots.borrow().services["build"].status == ServiceState::Succeeded,
+                allowed
+            );
+        }
+    }
 
     #[test]
     fn test_resources_survive_health_updates_and_clear_on_exit() {

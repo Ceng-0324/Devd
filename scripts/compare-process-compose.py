@@ -45,6 +45,12 @@ def config(path, name, modes, root, gate=False):
     else:
         value = {"version": "1", "services": {service: {"command": command(mode, root),
                  "restart": {"policy": "never"}} for service, mode in modes.items()}}
+        if gate:
+            for service in value["services"].values():
+                service["kind"] = "task"
+            value["services"]["consumer"]["depends-on"] = [
+                {"service": "producer", "condition": "completed-successfully"}
+            ]
     path.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
     return len(path.read_text().splitlines())
 
@@ -63,7 +69,7 @@ def tasks(root, binaries):
             else:
                 path = case / "config.yml"
                 lines = config(path, name, {"producer": producer,
-                               "consumer": "consumer" if name == "process-compose" else "wrapped-consumer"}, case, gate=True)
+                               "consumer": "consumer"}, case, gate=True)
                 if name == "process-compose":
                     arguments = [binaries[name], "--no-server", "--tui=false", "--disable-dotenv",
                                  "--log-file", str(case / "pc.log"), "--config", str(path), "up"]

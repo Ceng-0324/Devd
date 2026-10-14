@@ -4,6 +4,7 @@
 
 服务跑起来了，接下来呢？按手头的事情往下找。每节先给用法，再说明失败、权限和证据的边界，省得出事时还要猜。
 
+- [一次性任务](#一次性任务)
 - [文件前置条件与路径规则](#文件前置条件与路径规则)
 - [实例身份与发现](#实例身份与发现)
 - [等待就绪](#等待就绪)
@@ -22,6 +23,36 @@
 - [依赖图](#依赖图)
 - [配置变更预览与应用](#配置变更预览与应用)
 - [命令速查](#命令速查)
+
+### 一次性任务
+
+生成代码、构建资源、执行迁移，真正要等的是“做完了”，而不是“进程起来了”：
+
+```yaml
+version: "1"
+services:
+  generate:
+    kind: task
+    command: python3 scripts/generate.py
+    task-timeout: 2m
+  api:
+    command: python3 app.py
+    depends-on:
+      - service: generate
+        condition: completed-successfully
+```
+
+`kind` 默认是 `service`。任务只有退出码为 0、受管进程树清理完成、日志经过有界排空后才进入 `succeeded`，此时没有 PID。所有指向任务的依赖都必须写 `completed-successfully`；长驻服务不能使用这个完成条件。任务禁止健康探测和 `always` 重启，也不支持依赖恢复联动或资源超限重启；文件前置条件、环境映射与只读监测仍然可用。
+
+任务默认 `restart.policy: never`，即使写了 restart 块却没写 policy，也不会自动重试。需要时显式设为 `on-failure`，沿用已有退避和累计 `max-attempts`。但迁移执行一半失败，再试一次可能重复外部副作用，devd 不会替你回滚数据库。失败且没有剩余重试次数时停止全栈；停止、取消和超时都不会算成功，即使程序在被终止时返回了 0。
+
+`task-timeout`（别名 `task_timeout`）须为正值，默认 `5m`，从进程启动后开始计时。超时会触发正常进程树关闭，清理还可能需要额外时间。依赖等待仍由 `start --dependency-timeout` 控制（默认 `30s`），`wait --timeout` 又是单独的客户端期限；构建时间较长时，记得一起调大等待期限。长驻服务不能设置 task-timeout。profile 整体替换 kind 和 task-timeout，`null` 清除超时覆盖；restart 仍按字段合并，因此基础配置明确写出的 policy 会继续被继承。
+
+重启消费者会复用本次 supervisor 运行内已经成功的任务。`restart generate` 才是明确重跑：受理时立即作废旧成功结果，命令在新进程启动或快速任务完成后返回，需要等完成再用 `wait generate`。已放行的消费者不会因此被追溯停掉；长驻消费者可以显式开启 `restart-on-dep-recovery`，等任务新代次成功后联动重启。新启动尝试必须等新结果。重新启动 supervisor 则会重新执行任务，不采信旧状态或完成标记文件。
+
+reload 只重跑受影响任务及其下游，无关任务保留成功结果。每层要等任务成功才能推进，仍沿用依赖等待期限；重载期间暂停受影响任务的自动重试，失败停止全栈。纯任务栈全部成功后 `start` 退出 0，脚本直接使用这个退出码；之后 supervisor 已经结束，不能再指望在线 `wait` 回答。
+
+状态与导出报告增加 `kind`，wait 证据增加 `requires_completed`；旧报告省略这些字段仍可读取。新增 `succeeded`、`completed-successfully` 和 `task-timed-out` 枚举值需要支持任务的新版本读取，旧二进制不保证向前兼容。可运行示例见 [examples/tasks](../examples/tasks/README.md)。
 
 ### 文件前置条件与路径规则
 
@@ -71,13 +102,13 @@ devd wait api worker --timeout 1m --json
 devd wait api --profile staging --state-dir ./runtime
 ```
 
-不写服务名时选择 supervisor 当前有效配置中的全部服务；指定名称时精确匹配、自动去重。有健康检查的服务必须达到 `healthy` 且持有 PID，其余必须为 `running` 且持有 PID。沿用启动时的 `--config`、`--profile` 和 `--state-dir`。YAML 改坏或删除后仍能等待：命令只读取活状态，不重读配置，也不额外执行探测。
+不写服务名时选择 supervisor 当前有效配置中的全部服务；指定名称时精确匹配、自动去重。有健康检查的服务必须达到 `healthy` 且持有 PID，其他长驻服务必须为 `running` 且持有 PID；任务须成功退出并进入 `succeeded`，此时没有 PID。沿用启动时的 `--config`、`--profile` 和 `--state-dir`。YAML 改坏或删除后仍能等待：命令只读取活状态，不重读配置，也不额外执行探测。
 
 默认期限 `30s` 包含连接建立，可用 `--timeout` 设置 `1ms` 到 `1h`。同一 supervisor 内手动重启或崩溃恢复可以继续等待新代次；手动重启请求一旦被接受，旧代次就不能满足等待。全栈停止、已接受的配置重载（包括等价配置）或控制连接断开会终止本次等待。预览和被拒绝的重载不影响等待，也不会自动重连新的 supervisor。Ctrl+C 只取消等待命令。
 
 退出码 `0` 表示在同一次活观测中，所选服务全部就绪；它不会锁住这些进程，也不保证之后持续健康。其他等待结果退出 `1`，CLI 参数错误退出 `2`。所选服务进入 stopped/failed 会终止等待；pending、starting、unhealthy 和 restarting 可以继续等。已观测到的全栈停止或重载优先于服务就绪。每个 supervisor 最多接受 8 个并发等待，多出的请求返回 `busy`，为控制命令保留连接余量。
 
-`--json` 在 stdout 输出一份最终报告，失败也有报告：`schema_version: 1`、`outcome`、`instance_id`、`run_id`、`observed_at`、`elapsed_ms`、`services`、`blocking` 和 `message`。每个服务包含健康要求、观测状态、PID、代次、是否就绪、是否有手动重启待完成，以及最近错误。结果为 `ready`、`failed`、`timed-out`、`cancelled`、`stopping`、`reloaded`、`disconnected`、`unavailable`、`invalid-service` 或 `busy`。超时、取消或断连时保留最后收到的证据，可能已经过时；未收到报告时身份和观测字段为 null。`waiting` 仅用于内部流式进度，不是 CLI 最终结果。参数错误可能在生成报告前退出。
+`--json` 在 stdout 输出一份最终报告，失败也有报告：`schema_version: 1`、`outcome`、`instance_id`、`run_id`、`observed_at`、`elapsed_ms`、`services`、`blocking` 和 `message`。每个服务包含健康/任务完成要求、观测状态、PID、代次、是否就绪、是否有手动重启待完成，以及最近错误。结果为 `ready`、`failed`、`timed-out`、`cancelled`、`stopping`、`reloaded`、`disconnected`、`unavailable`、`invalid-service` 或 `busy`。超时、取消或断连时保留最后收到的证据，可能已经过时；未收到报告时身份和观测字段为 null。`waiting` 仅用于内部流式进度，不是 CLI 最终结果。参数错误可能在生成报告前退出。
 
 最终输出在就绪等待结束后另有 5 秒的写入和 flush 期限；管道阻塞时仍可用 Ctrl+C 取消。输出失败以非零状态退出，文本或 JSON 可能不完整，服务不会因此停止。
 
@@ -487,7 +518,7 @@ devd reload --apply --plan 'sha256:<64位十六进制摘要>' --candidate devd.n
 
 应用时重新读取、校验候选，并对活实例重新计算计划。配置、进程代次或生命周期状态变化都会使 ID 过期，需要重新预览；实例中的服务也必须处于稳定状态。`apply_available: true` 表示支持应用，不保证稍后执行必然成功。实例/profile、状态目录和 supervisor 日志选项固定。候选只更新内存中的有效配置，不改写源 YAML，也不改变默认候选路径。
 
-先按旧图逆序停止受影响服务，等旧 actor 和进程组清理完成，再切换配置基线、按新图正序分层启动。有健康检查的服务必须通过检查，其余服务必须启动；每层沿用依赖超时（30 秒）。无关服务保留原进程，等价配置不会重启任何服务。执行期间拒绝手动 restart 和第二次 reload；受影响服务暂停自动恢复，成功后恢复新配置中的策略，无关服务继续按原策略运行。全栈 stop 可以抢占任意阶段。
+先按旧图逆序停止受影响服务，等旧 actor 和进程组清理完成，再切换配置基线、按新图正序分层启动。任务须成功完成；有健康检查的长驻服务必须通过检查，其余长驻服务必须启动；每层沿用依赖超时（30 秒）。无关服务保留原进程，等价配置不会重启任何服务。执行期间拒绝手动 restart 和第二次 reload；受影响服务暂停自动恢复，成功后恢复新配置中的策略，无关服务继续按原策略运行。全栈 stop 可以抢占任意阶段。
 
 失败会停止全栈，包括无关服务，不自动回滚。配置一旦切换，新的内存基线保持到 supervisor 退出。执行报告列出已完成停止、观测到的启动、已就绪的层和 `config_committed`；失败或中断返回非零退出码。生命周期事件记录计划、结果及进度，可通过 `events` 查询，启用事件持久化后也可用 `--stored`。客户端断开或等待响应超过 60 秒不会取消已受理的重载，重试前先检查 status/events。
 

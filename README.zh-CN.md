@@ -172,6 +172,7 @@ devd recover --recipe recipe.yml --apply --plan PLAN_ID
 | --- | --- |
 | 多个 worktree 一起开发 | [实例发现](docs/COMMANDS.zh-CN.md#实例身份与发现)、[端口与路径](docs/COMMANDS.zh-CN.md#显式配置实例端口与路径) |
 | 环境启动、切换与配置调整 | [等待就绪](docs/COMMANDS.zh-CN.md#等待就绪)、[profiles](docs/COMMANDS.zh-CN.md#多环境配置)、[重载](docs/COMMANDS.zh-CN.md#配置变更预览与应用) |
+| 构建或迁移完成后再启动下游 | [一次性任务](docs/COMMANDS.zh-CN.md#一次性任务)、[可运行示例](examples/tasks/README.md) |
 | 看故障、保存和移交证据 | [报告导出](docs/COMMANDS.zh-CN.md#导出诊断证据)、[事故记录](docs/COMMANDS.zh-CN.md#留下有界的事故证据)、[离线诊断](docs/COMMANDS.zh-CN.md#换台机器继续诊断) |
 | 对比资源变化、恢复与清理 | [基线](docs/COMMANDS.zh-CN.md#检查环境漂移)、[恢复配方](docs/COMMANDS.zh-CN.md#执行审阅过的恢复配方)、[清理](docs/COMMANDS.zh-CN.md#清理可丢弃的实例数据) |
 | 让工具接入当前现场 | [MCP](docs/COMMANDS.zh-CN.md#接入-mcp-客户端)、[Agent JSON 接口](docs/COMMANDS.zh-CN.md#给-agent-的实例接口) |

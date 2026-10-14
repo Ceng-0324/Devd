@@ -260,7 +260,8 @@ fn eligible(data: &EventData, intentional_exit: bool) -> bool {
         EventData::Exited { code, signal } => {
             !intentional_exit && (signal.is_some() || code.is_some_and(|c| c != 0))
         }
-        EventData::SpawnFailed { .. }
+        EventData::TaskTimedOut { .. }
+        | EventData::SpawnFailed { .. }
         | EventData::ProcessFailed { .. }
         | EventData::ActorFailed { .. }
         | EventData::DependencyFailed { .. }

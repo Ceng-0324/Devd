@@ -3,6 +3,14 @@
 Release assets, source revisions and validation evidence are on
 [GitHub Releases](https://github.com/Ceng-0324/Devd/releases).
 
+## v1.0.0 — Unreleased
+
+- Add explicit one-shot tasks with successful-completion dependency gates,
+  bounded execution, opt-in failure retries, generation-scoped manual reruns,
+  task-aware wait/reload, and retained completion/timeout diagnostics.
+  Preserve existing service defaults and replace the comparison's marker-wait
+  wrapper with native task ordering.
+
 ## v0.9.0-alpha.1 — 2026-10-14
 
 - Move detailed command, usage and permission notes out of both READMEs into

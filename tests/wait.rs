@@ -1,4 +1,6 @@
 use serde_json::{json, Value};
+#[path = "wait/tasks.rs"]
+mod tasks;
 use std::{
     fs,
     path::{Path, PathBuf},

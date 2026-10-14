@@ -87,6 +87,14 @@ flowchart LR
 
 默认状态目录为 `<config-dir>/.devd/<config-name>/`，可用 `--state-dir` 覆盖。服务 cwd 相对配置目录；环境文件相对服务 cwd。stop 的响应表示请求已接受，前台 supervisor 负责完成反向依赖关闭。手动 restart 通过 manager channel 停止旧 actor 并重建，保留计数/日志代次、重新检查依赖；仅当下游显式开启 `restart-on-dep-recovery` 时，目标恢复会触发后续联动。命令成功只表示指定目标的新进程已启动。
 
+### 一次性任务完成门控
+
+配置以 `kind: service|task` 区分生命周期，任务仅允许 `completed-successfully` 入边；任务的未声明重试策略解析为 never，其他服务保留 on-failure 默认。字段使用同一 serde 定义，contextual defaults 在严格解码前处理，profile 在有效字段合并后应用这些默认值。task-timeout 默认五分钟，校验为正值且能放入运行期计时器。
+
+actor 复用进程所有权、日志排空、依赖等待及累计重试预算。任务成功先等待受管进程树清理，再发布无 PID 的 Succeeded；超时记录独立事件，经正常关闭后按失败处理。成功发布与手动重跑接受遵循同一 snapshot → control 锁序，受理重跑立即作废旧完成状态。consumer 的门控观察决定当前尝试能否继续，不追溯撤销已通过的门控；依赖恢复联动仍须由长驻消费者显式开启。
+
+ServiceSnapshot 的 kind 默认 service 以读取旧状态；ready 在任务上要求 Succeeded、退出码 0、进程代次和无 PID，wait 与 reload 共用该判定。reload 清理并替换受影响 actor/快照后再启动新任务，无关成功结果保留；受影响任务沿用重载期间暂停自动恢复的边界。全任务栈 actor 完成后自然退出，历史 PID 与磁盘成功记录不能放行新 run。
+
 ### Profiles 与配置快照
 
 单文件 `profiles` 配合全局 `--profile` 选择有效配置。`config/profile.rs` 独占文档解析、别名归一化及覆盖合并；运行时 `DevdConfig` 只包含所选结果。所有定义检查 schema，选中结果再执行依赖和就绪校验。`env`、`restart` 按字段合并，其余字段整体替换；可选字段支持 null 清除。CLI 在默认或显式运行目录下追加 profile 子目录：Unix 将大写字节转义为 `~hh`，Windows 使用前述名称编码，保证大小写不敏感文件系统上的不同 profile 也有不同端点。控制命令只校验名称和计算路径，不读取 YAML；服务目录、端口与应用文件不在隔离范围内。
