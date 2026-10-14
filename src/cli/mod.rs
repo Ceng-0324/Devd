@@ -2,6 +2,7 @@ mod agent;
 mod baseline;
 mod clean;
 mod control_session;
+mod coverage;
 mod doctor;
 mod events;
 mod explain;
@@ -142,6 +143,8 @@ enum Command {
     Explain(explain::Args),
     /// Inspect local service prerequisites without starting or executing them.
     Doctor(doctor::Args),
+    /// Explain declared diagnostic coverage and known evidence gaps without changing the stack.
+    Coverage(coverage::Args),
     /// Trace consumers and potential downstream impact of a declared resource.
     Impact(impact::Args),
     /// Print buffered logs, or query stored logs after shutdown (oldest first).
@@ -402,6 +405,9 @@ impl Cli {
             }
             Command::Doctor(args) => {
                 doctor::run(args, &config_path, self.profile.as_deref(), &state_dir).await?;
+            }
+            Command::Coverage(args) => {
+                coverage::run(args, &config_path, self.profile.as_deref(), &socket).await?;
             }
             Command::Impact(args) => {
                 impact::run(args, &config_path, self.profile.as_deref(), &state_dir).await?;

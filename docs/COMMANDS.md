@@ -8,6 +8,7 @@ The stack is running. Now what? Find the task you need below; the examples get y
 - [File prerequisites and path rules](#file-prerequisites-and-path-rules)
 - [Instance discovery](#instance-discovery)
 - [Wait for readiness](#wait-for-readiness)
+- [See what diagnostics can cover](#see-what-diagnostics-can-cover)
 - [Export diagnostics](#export-diagnostics)
 - [Keep bounded incident evidence](#keep-bounded-incident-evidence)
 - [Find and export a recorded incident](#find-and-export-a-recorded-incident)
@@ -202,6 +203,75 @@ outcome. Argument errors may occur before a report can be produced.
 Final output has a separate five-second write/flush deadline after the readiness
 deadline. Ctrl+C can cancel a stalled output pipe too. An output failure exits
 nonzero and may leave partial text or JSON; it never stops services.
+
+### See what diagnostics can cover
+
+A `requires` entry can keep a broken service from starting. It does not, by
+itself, watch that file after startup. Likewise, keeping events on disk does not
+turn on incident recording. Check those gaps before you need the evidence:
+
+```bash
+devd coverage                         # declarations in the selected disk YAML/profile
+devd coverage --online               # effective config and live recorder observations
+devd coverage --online --json         # the same explanation as schema-1 JSON
+```
+
+The default mode needs no supervisor. It reads at most 1 MiB of configuration,
+applies `--profile`, and explains the declared services, `requires` selectors,
+named paths/scopes, health checks and resource limits. `cwd_resolved` describes
+the effective working directory, including the default, rather than proof of
+an explicit YAML entry. No application path is inspected; missing files,
+programs or dotenv files do not prevent a coverage report for valid YAML.
+It never starts a service/probe, binds a port, creates cleanup-owned paths,
+enables monitoring or grants control. Use `doctor` to inspect prerequisites.
+
+`--online` requires the selected live endpoint and reads its effective config,
+instance/run identity, observed service states and recording status. Edits on
+disk take effect in this report only after successful reload or a new start;
+even removed YAML can still address its original running instance. Recording
+options come from that run's startup flags. Old files left in the state
+directory cannot establish that a recorder is enabled now. No live connection
+means an error, with no static fallback and no stale-health claim.
+
+| Reported evidence | Meaning |
+| --- | --- |
+| `unknown` | Static inspection did not observe the runtime recording choice |
+| `disabled` | This run did not enable that recorder |
+| `recording` | The recorder is enabled and has no observed failure; completeness is not guaranteed |
+| `failed` | This run observed a recorder failure; previously retained evidence may be incomplete |
+| Known gaps | Findings identify memory-window eviction, retained event truncation, missed incident triggers/context, or this recorder's artifact eviction, with their source and consequence |
+
+Events, application logs and incidents have independent states. Event or incident
+writer failure leaves services running; the existing disk-log failure policy
+stops the stack, so a failed log writer may already be unavailable to inspect.
+Incident eviction counts can include artifacts from earlier runs. Event-memory
+eviction says nothing about whether a disk copy survived.
+
+Capacity figures describe rotation, not hours of history: events/logs use the
+run's maximum bytes per file and archive count; incidents keep at most 20
+artifacts of at most 2 MiB each; the event buffer holds 1024 events. This command
+does not scan stored evidence. Disk-writer lag, unfinished artifacts and losses
+outside the observed counters remain unknown; use `events --stored` and
+`incidents ... --stored` after shutdown to inspect retained history.
+
+A configured monitor is not proof of a successful sample. Path monitoring only
+runs during managed process generations, ends when a task completes, and can
+miss changes between polls. It checks declared conditions, not file contents.
+A named path alone enables no monitor, though the same path can separately be
+listed in `requires`. CPU/RSS samples cover the leader PID and may be unavailable.
+Implicit dependencies remain unknown; coverage is neither a health verdict nor
+a reliability score.
+
+Text and JSON share the same findings. JSON marks the source, collection time,
+`atomic: false`, and omitted service/resource counts. Live state and recorder
+observations are not an atomic snapshot. Reports show at most 256 services and
+512 combined requirement/path entries, with a 2 MiB output cap. Collection is
+limited to 30 seconds, output to 5 seconds; Ctrl+C cancels only this query.
+Exit `0` means a report was produced, even with gaps; exit `1` means collection,
+connection, validation, cancellation or output failed (output may be partial).
+Invalid CLI syntax exits `2`. Resource path values, commands, environment bodies
+and application logs are omitted; service/binding names and the config path can
+still be sensitive. This command does not add Agent or MCP tools.
 
 ### Export diagnostics
 
@@ -1021,6 +1091,7 @@ Choose exactly one of `--dry-run` or `--apply`. Preview validates YAML, quoting,
 | `devd baseline check FILE [--json]` | Compare current disk resources; changes/unknown return nonzero |
 | `devd recover --recipe FILE --dry-run [--json]` | Preview a normally stopped instance's explicit recovery recipe |
 | `devd recover --recipe FILE --apply --plan ID [--json]` | Execute once with retained results and file postconditions |
+| `devd coverage [--online] [--json]` | Explain declared coverage and known evidence gaps without probing or changing the stack |
 | `devd doctor [--json]` | Check configured service prerequisites without starting them |
 | `devd impact SERVICE --require INDEX/--path NAME [--scope project/worktrees] [--json]` | Show declared resource users and potential downstream impact |
 | `devd logs [service] [--tail N] [--level info|warn|error] [--since DURATION] [--grep TEXT] [--follow \| --stored]` | Query live memory or offline disk logs; follow live output |

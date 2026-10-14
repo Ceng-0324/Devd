@@ -5,6 +5,11 @@ Release assets, source revisions and validation evidence are on
 
 ## v1.0.0 — Unreleased
 
+- Add read-only `coverage [--online] [--json]` explanations of declared resources,
+  configured monitoring and independent event/log/incident recording choices.
+  Keep static unknowns separate from live recorder failures, bounded retention
+  and observed evidence gaps; never enable monitoring or infer implicit dependencies.
+
 - Add explicit one-shot tasks with successful-completion dependency gates,
   bounded execution, opt-in failure retries, generation-scoped manual reruns,
   task-aware wait/reload, and retained completion/timeout diagnostics.

@@ -44,6 +44,15 @@ behavior while preserving exit-status and process-group cleanup assertions.
 
 ## Coverage
 
+`wait/coverage.rs` shares the native process fixtures in `wait.rs` and tests
+static read-only inspection, profile overrides, malformed/oversized input,
+unavailable instances, effective config across edits/deletion/reload, independent
+recorders and reduced retention across runs. Task tests check completed-task
+coverage. Incident/event failure fixtures assert live recorder failure and
+known artifact eviction without changing service behavior; unit tests cover
+missed triggers/context, truncation, bounded inventories and cancellable output.
+
+
 `scripts/recovery-smoke.py` runs the selected native binary through link-target
 drift, dangling-resource capture, stopped-instance recipe recovery, replay and
 old-run rejection, new-run readiness and original-evidence handoff. It protects

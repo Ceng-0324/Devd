@@ -2,7 +2,7 @@
 pub(super) mod evidence;
 pub(super) mod query;
 mod relationships;
-mod storage;
+pub(super) mod storage;
 
 use super::{export::SafeServiceState, instances::Identity};
 use crate::{
@@ -34,12 +34,12 @@ const EVENT_BYTES: usize = 256 * 1024;
 
 pub(super) use storage::Storage;
 
-#[derive(Default, Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Default, Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(super) struct Statistics {
     admitted: u64,
     merged: u64,
-    dropped_triggers: u64,
-    skipped_events: u64,
+    pub(super) dropped_triggers: u64,
+    pub(super) skipped_events: u64,
 }
 impl Statistics {
     pub(super) fn notice(&self) -> Option<String> {
@@ -117,6 +117,7 @@ pub(super) struct Source {
     pub events: broadcast::Receiver<Arc<LifecycleEvent>>,
     pub snapshots: watch::Receiver<RuntimeSnapshot>,
     pub configurations: watch::Receiver<Arc<DevdConfig>>,
+    pub statistics: watch::Sender<Statistics>,
 }
 
 /// One async subscriber and one blocking worker, with at most four admitted
@@ -208,13 +209,22 @@ pub(super) async fn run(storage: Storage, source: Source) -> Result<Statistics> 
                                 pending.push(Pending { id, service: name.clone(), generation: event.generation,
                                     deadline: Instant::now() + WINDOW, finished, following: Tail::default(), merged: 0,
                                     skipped_at_start: statistics.skipped_events, _permit: permit });
-                            } else { statistics.dropped_triggers += 1; }
+                            } else {
+                                statistics.dropped_triggers += 1;
+                            }
                         }
                     }
                     prior.push((*event).clone());
                 }
             }
         }
+        source.statistics.send_if_modified(|previous| {
+            if *previous == statistics {
+                return false;
+            }
+            *previous = statistics.clone();
+            true
+        });
     }
     drop(send);
     worker.await.context("incident worker failed")??;

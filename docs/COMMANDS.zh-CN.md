@@ -8,6 +8,7 @@
 - [文件前置条件与路径规则](#文件前置条件与路径规则)
 - [实例身份与发现](#实例身份与发现)
 - [等待就绪](#等待就绪)
+- [看清诊断能覆盖什么](#看清诊断能覆盖什么)
 - [导出诊断证据](#导出诊断证据)
 - [留下有界的事故证据](#留下有界的事故证据)
 - [找到事故，并把证据带走](#找到事故并把证据带走)
@@ -111,6 +112,36 @@ devd wait api --profile staging --state-dir ./runtime
 `--json` 在 stdout 输出一份最终报告，失败也有报告：`schema_version: 1`、`outcome`、`instance_id`、`run_id`、`observed_at`、`elapsed_ms`、`services`、`blocking` 和 `message`。每个服务包含健康/任务完成要求、观测状态、PID、代次、是否就绪、是否有手动重启待完成，以及最近错误。结果为 `ready`、`failed`、`timed-out`、`cancelled`、`stopping`、`reloaded`、`disconnected`、`unavailable`、`invalid-service` 或 `busy`。超时、取消或断连时保留最后收到的证据，可能已经过时；未收到报告时身份和观测字段为 null。`waiting` 仅用于内部流式进度，不是 CLI 最终结果。参数错误可能在生成报告前退出。
 
 最终输出在就绪等待结束后另有 5 秒的写入和 flush 期限；管道阻塞时仍可用 Ctrl+C 取消。输出失败以非零状态退出，文本或 JSON 可能不完整，服务不会因此停止。
+
+### 看清诊断能覆盖什么
+
+在 `requires` 写上一个文件，只能保证启动前检查它；服务跑起来之后是否还在监测，是另一回事。事件写进磁盘，也不表示事故记录已经开启。别等证据用得上的时候，才发现根本没留：
+
+```bash
+devd coverage                         # 看所选磁盘配置/profile 的声明
+devd coverage --online               # 看当前运行的有效配置与记录器观测
+devd coverage --online --json         # 同一份说明，输出 schema-1 JSON
+```
+
+默认模式不需要 supervisor，最多读取 1 MiB 配置，应用 `--profile` 后列出服务、`requires` 索引、命名路径及归属、健康探测和资源阈值。`cwd_resolved` 表示已有有效工作目录，包含默认目录，不表示 YAML 一定显式写了 `cwd`。它不检查应用资源是否存在，不读资源正文，不运行服务或探针、不尝试绑定端口、不创建可清理目录，也不会开启监测或授予控制权。所以，只要 YAML 合法，程序、dotenv 或依赖文件缺失仍能给出覆盖说明；检查实际前置条件请用 `doctor`。
+
+`--online` 必须连接所选的活实例，读取 supervisor 当前使用的配置、instance/run 身份、观测到的服务状态与记录器状态。磁盘上尚未应用的编辑不会混进来；重载成功或重新启动后才更新，删除 YAML 后也能按原路径连接尚在运行的实例。记录选项来自本次启动参数，旧目录里有文件不算开启证据。连不上就报错，不会退回静态结果或把旧状态说成当前健康。
+
+| 证据状态 | 含义 |
+| --- | --- |
+| `unknown` | 静态检查没有观测本次运行的记录选项 |
+| `disabled` | 本次运行未开启该记录器 |
+| `recording` | 已开启且尚未观测到失败，不保证证据完整 |
+| `failed` | 本次已观测到写入失败，保留的证据可能不完整 |
+| 已知缺口 | findings 分别说明内存窗口淘汰、事件截断、事故触发或上下文遗漏，以及本记录器的事故制品淘汰，并标注来源和后果 |
+
+事件、应用日志与事故记录独立判断。事件或事故写入失败时服务继续运行；磁盘日志仍沿用失败后停栈的策略，因此查询时可能已经无法连接。事故淘汰计数可能包含先前运行的制品；内存事件被淘汰，也不代表磁盘上的副本一定丢了。
+
+容量不是时间承诺：事件和日志显示本次启动的单文件大小及归档份数，事故最多保留 20 份、每份最多 2 MiB，内存事件容量为 1024 条。这个命令不扫描磁盘证据，writer 延迟、未完成制品、计数器之外的历史缺失仍可能未知；停栈后用 `events --stored`、`incidents ... --stored` 查看实际留存。
+
+配置开启监测，也不证明已经取得有效采样。路径监测只在受管进程代次执行期间工作，任务完成后结束；轮询可能遗漏瞬时变化，也不检测文件正文。`paths` 映射本身不开监测，同一路径可以另外声明到 `requires`。CPU/RSS 仅覆盖主 PID，样本可能不可用。未声明的隐式依赖仍是未知，报告不提供健康裁定或可靠性评分。
+
+文本与 JSON 共用 findings。JSON 给出来源、采集时间、`atomic: false` 和省略数量；在线状态与各记录器观测并非原子快照。最多展示 256 个服务及合计 512 条 requires/paths，输出上限 2 MiB，采集限 30 秒，输出限 5 秒；Ctrl+C 只取消本次查询。退出 `0` 表示成功生成报告，即使报告含缺口；采集、连接、校验、取消或输出失败退出 `1`（输出可能不完整），参数错误退出 `2`。不输出资源路径值、命令、环境正文或应用日志，但服务名、绑定名与配置路径仍可能敏感。本模块不新增 Agent/MCP 工具。
 
 ### 导出诊断证据
 
@@ -551,6 +582,7 @@ devd reload --apply --plan 'sha256:<64位十六进制摘要>' --candidate devd.n
 | `devd baseline check FILE [--json]` | 按磁盘配置比较资源，变化／未知返回非零 |
 | `devd recover --recipe FILE --dry-run [--json]` | 正常停栈后预览已登记资源的恢复配方 |
 | `devd recover --recipe FILE --apply --plan ID [--json]` | 显式执行当前计划，留存结果并拒绝未知结果重放 |
+| `devd coverage [--online] [--json]` | 只读说明声明覆盖与已知证据缺口，不探测或改变服务 |
 | `devd doctor [--json]` | 检查服务启动前置条件，不启动服务 |
 | `devd impact SERVICE --require INDEX/--path NAME [--scope project/worktrees] [--json]` | 查看声明资源的使用者和潜在下游影响 |
 | `devd logs [service] [--tail N] [--level info|warn|error] [--since DURATION] [--grep TEXT] [--follow \| --stored]` | 查询内存或离线磁盘日志，跟随实时输出 |

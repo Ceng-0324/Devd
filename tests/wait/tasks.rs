@@ -236,6 +236,15 @@ fn test_task_evidence_export_and_offline_diagnosis() {
     let (mut project, _) = project("success");
     project.start();
     outcome(&mut project.spawn(&["wait", "--json"]), "ready");
+    let coverage = project.json(&["coverage", "--online", "--json"]);
+    let build = coverage["services"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["name"] == "build")
+        .unwrap();
+    assert_eq!(build["kind"], "task");
+    assert_eq!(build["runtime_status"], "succeeded");
     assert!(project
         .invoke(&["export", "--output", "report.json"])
         .status

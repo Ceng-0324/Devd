@@ -125,6 +125,12 @@ ServiceSnapshot 的 kind 默认 service 以读取旧状态；ready 在任务上�
 
 `storage` 统一提供带锁、安全文件访问、有界记录读取、尾部修复与轮转的 JSONL 底层，日志与事件各自持有独立目录、schema 和订阅。`core::events::storage` 仅在 `start --persist-events` 时开启，在阻塞线程中追加运行上下文、事件、缺口与排空结束标记；默认单文件 10 MiB、3 份归档。启动打开失败阻止服务启动；运行写入失败只停用本次事件 writer，通过 watch 发布 `failed`，stderr 限时异步报告，不停止服务。writer 排空结束前持有状态锁租约。`events --stored` 使用共享读锁，在单记录 64 KiB、结果最多 1000 条与 128 个缺口的边界内扫描；明确报告不完整运行、保留窗口缺失和未完成尾记录，拒绝完整损坏记录及不支持的 schema。事件和应用日志的写盘失败策略分别由 server 管理。
 
+### 诊断覆盖与盲区
+
+`cli::coverage` 的纯转换模型共用于静态 CLI 和在线 `Request::Coverage`，输出 schema 1。静态路径在单个 blocking worker 中有界读取普通配置、选择 profile、校验与解析 cwd，不检查应用资源。在线仅取 supervisor 的有效配置 watch、运行状态、事件窗口及记录器状态；不重读磁盘 YAML，不扫描旧文件推测记录开关。记录器通过独立状态 watch 报告 disabled/recording/failed，事故采集器发布 dropped/skipped 统计，storage 提供只读原子淘汰计数；均不参与控制或改变现有失败策略。静态 recording 保持 unknown；在线不可用直接失败，不作静态回退。
+
+模型区分声明和配置的监测选项，不声称采样成功；已完成 task 的状态可见，监测边界仍限进程代次。内存淘汰、事件截断、事故采集遗漏与制品淘汰分别说明来源及后果，磁盘未扫描的证据保持未知。容量常量复用实际存储定义，不解释为时间窗口。跨来源结果明确非原子；最多 256 服务、512 条 requires/paths，并标明省略。输入 1 MiB、报告 2 MiB，协议按该上限限制帧，采集 30 秒、可取消 stdout 5 秒；核对在线配置/profile 与 schema。Agent/MCP 工具目录保持原有范围。
+
 ### 确定性解释
 
 `core::diagnostics::explain` 将同一运行的状态快照和 `EventBatch` 转为版本化报告，在线请求由控制协议返回，`--stored` 在 writer 停止后读取保留历史。在线结论以快照当前代次为准；无活服务的离线或已移除服务按保留的最新代次解释，离线 status 仍为 null。CPU 与内存分别以最新观测判定恢复；旧代故障只通过明确 cause 链作为正在重启的历史证据，不能覆盖新代 Running/Healthy。结论只由结构化事件和当前状态决定，证据包含序号、类型、代次、因果引用与时间；普通生命周期事件也会在无法判断根因时作为最近事实展示。历史缺口降低 `complete` 并进入报告。该路径不探测、不启动或重启服务，也不执行 next steps；文本与 JSON 共用同一报告模型。
