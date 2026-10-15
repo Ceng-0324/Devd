@@ -145,6 +145,8 @@ identity/order/cause checks, missing sequences, limits, terminal escaping,
 cancellation and output backpressure. Unknown outer schemas and truncated JSON
 fail; partial incident windows and damaged optional graphs retain valid facts.
 
+`compare` reuses those transferred reports from an empty recipient directory and checks comparable/different/unknown source fields, independent log metadata, hashed resource identities, changed link targets, retained relationship edges, gap differences, output limits and terminal-safe text. It never reads the original project or treats similar historical explanations as a shared cause.
+
 `scripts/incident-smoke.py` executes that workflow against a selected native
 binary, including schema-2 retained dependency/resource relationships,
 unchanged PIDs, independent recording permissions, offline export after

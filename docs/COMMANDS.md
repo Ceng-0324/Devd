@@ -13,6 +13,7 @@ The stack is running. Now what? Find the task you need below; the examples get y
 - [Keep bounded incident evidence](#keep-bounded-incident-evidence)
 - [Find and export a recorded incident](#find-and-export-a-recorded-incident)
 - [Diagnose a report on another machine](#diagnose-a-report-on-another-machine)
+- [Compare two transferred reports](#compare-two-transferred-reports)
 - [Explicit instance ports and paths](#explicit-instance-ports-and-paths)
 - [Detect environment drift](#detect-environment-drift)
 - [Run a reviewed recovery recipe](#run-a-reviewed-recovery-recipe)
@@ -537,6 +538,43 @@ In terminal B, `cd` to that printed directory, run `devd wait --timeout 30s`, th
 closes after five seconds unless stop/reload/replacement ends it earlier.
 Run `devd stop`, then use the `--stored` commands above. Restoring `target.txt`
 later does not rewrite the saved observation.
+
+### Compare two transferred reports
+
+Two incidents can look similar while their evidence says different things. Keep
+the comparison explicit and offline:
+
+```bash
+devd compare before.json after.json
+devd compare before.json after.json --json
+```
+
+Both files are first passed through the same bounded `diagnose` validator used
+for transferred evidence. The command needs no YAML, state directory, original
+paths or running supervisor, and never follows a path, URL or command embedded
+in either report. It writes no files and has no control or Agent/MCP operation.
+
+The JSON schema is version 1. It reports each side's captured scope and then
+labels configuration/profile/instance/platform/scope as `comparable`,
+`different`, or `unknown`. Resource observations are keyed by their recorded
+selector; requested and observed path identities are hashed, while observation
+intervals and evidence source remain visible. A changed link target or
+declaration is therefore a retained observation, not a claim about file
+contents. Recorded relationship edges, service states, recomputed historical
+explanations, incident-trigger data hashes and evidence gaps are compared
+separately. Trigger payloads are never printed, and a trigger difference is
+not a shared-cause claim. Missing, truncated,
+unsupported or incomparable fields become `unknown`, never a fabricated
+change. Similar symptoms do not become a shared root cause, recurrence or
+recovery-effect conclusion.
+
+Log attachments remain metadata only. Their counts and attribution may differ,
+but log text is never used as incident-window evidence. The output keeps at
+most 2,048 changes and 16 MiB; each input is the existing 16 MiB regular-file
+limit. Collection and output are bounded to 30 and 5 seconds, and Ctrl+C
+cancels the comparison. Exit `0` means a comparison report was produced,
+including unknowns; malformed, unsupported, inconsistent, over-limit or
+unavailable inputs exit `1`, and invalid CLI syntax exits `2`.
 
 ### Diagnose a report on another machine
 
@@ -1077,6 +1115,7 @@ Choose exactly one of `--dry-run` or `--apply`. Preview validates YAML, quoting,
 | `devd instances [--json]` | Discover registered instances in the current repository and its worktrees |
 | `devd incidents list/show [UUID] [--stored] [--json]` | Query recorded incidents in the current run or offline |
 | `devd diagnose REPORT.json [--json]` | Diagnose a transferred report without the original project |
+| `devd compare LEFT.json RIGHT.json [--json]` | Compare two transferred historical reports offline |
 | `devd export --incident UUID [--stored] --output FILE [--include-logs]` | Export one recorded incident |
 | `devd export --output FILE [--include-logs]` | Save bounded live diagnostics to a new JSON file |
 | `devd export --stored --run UUID/latest --output FILE [--include-logs]` | Export one retained run after shutdown |

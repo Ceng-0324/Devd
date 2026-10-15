@@ -13,6 +13,7 @@
 - [留下有界的事故证据](#留下有界的事故证据)
 - [找到事故，并把证据带走](#找到事故并把证据带走)
 - [换台机器继续诊断](#换台机器继续诊断)
+- [离线对比两份移交报告](#离线对比两份移交报告)
 - [显式配置实例端口与路径](#显式配置实例端口与路径)
 - [检查环境漂移](#检查环境漂移)
 - [执行审阅过的恢复配方](#执行审阅过的恢复配方)
@@ -248,6 +249,21 @@ devd start --record-incidents
 ```
 
 终端 B 进入该目录，先执行 `devd wait --timeout 30s`，再执行 `rm ./target.txt`。监测事件产生后，`devd incidents list` 给出 UUID，`devd incidents show UUID` 展示当时保存的悬空链接链。窗口在 5 秒后结束，停止/重载/换代也可能提前结束。执行 `devd stop` 后即可使用上面的 `--stored` 命令；后来补回 `target.txt`，也不会改写已有事故证据。
+
+### 离线对比两份移交报告
+
+两次事故看起来相似，证据却可能完全不同。把比较也做成显式的离线动作：
+
+```bash
+devd compare before.json after.json
+devd compare before.json after.json --json
+```
+
+两份文件都会先经过 `diagnose` 使用的同一套有界校验器。它不需要 YAML、状态目录、原始路径或运行中的 supervisor，不跟随报告里的路径和 URL，不执行命令，不写文件，也不提供控制或 Agent/MCP 操作。
+
+JSON 输出是 schema 1。它先分别说明两侧的采集范围，再把配置/profile/instance/platform/范围标为 `comparable`、`different` 或 `unknown`。资源按报告里保存的选择器匹配，请求路径和观察到的目标只输出哈希，同时保留观察区间和证据来源；链接目标或声明变化是留存的观察，不是文件正文变化证明。关系边、服务状态、重新计算的历史解释、事故触发事件数据哈希和证据缺口分别比较。触发事件正文不会输出，触发差异也不代表共同根因。字段缺失、截断、不支持或不可比时返回 `unknown`，不会硬凑成差异；症状相似也不会被说成同一根因、复发或恢复效果。
+
+日志附件只作为元数据。数量和归属可以不同，但日志正文永远不进入事故窗口事实。输出最多保留 2048 项变化、16 MiB；每个输入沿用 16 MiB 普通文件限制。采集和输出分别限 30 秒、5 秒，Ctrl+C 只取消本次比较。退出 `0` 表示已生成报告（即使存在未知），输入损坏、不支持、身份/顺序不一致、超限或不可读取退出 `1`，参数错误退出 `2`。
 
 ### 换台机器继续诊断
 
@@ -568,6 +584,7 @@ devd reload --apply --plan 'sha256:<64位十六进制摘要>' --candidate devd.n
 | `devd instances [--json]` | 发现当前仓库及其 worktree 中已登记的实例 |
 | `devd incidents list/show [UUID] [--stored] [--json]` | 查询当前运行或离线保留的事故证据 |
 | `devd diagnose REPORT.json [--json]` | 无需原项目，直接诊断移交报告 |
+| `devd compare LEFT.json RIGHT.json [--json]` | 离线比较两份移交历史报告 |
 | `devd export --incident UUID [--stored] --output FILE [--include-logs]` | 导出单事故报告 |
 | `devd export --output FILE [--include-logs]` | 导出有界的活实例诊断报告到新 JSON 文件 |
 | `devd export --stored --run UUID/latest --output FILE [--include-logs]` | 停止后导出指定历史运行 |

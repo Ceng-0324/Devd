@@ -221,6 +221,35 @@ fn test_export_live_report_is_bounded_private_and_never_overwrites() {
     assert_eq!(logs["logs"].as_array().unwrap().len(), 200);
     assert!(!with_logs.contains("EARLIEST-LOG-VALUE"));
     assert!(!logs.to_string().contains("SECRET-ENV-VALUE"));
+    let recipient = temporary();
+    fs::copy(
+        root.path().join("diagnostic.json"),
+        recipient.path().join("left.json"),
+    )
+    .unwrap();
+    fs::copy(
+        root.path().join("with-logs.json"),
+        recipient.path().join("right.json"),
+    )
+    .unwrap();
+    let compared = invoke(
+        recipient.path(),
+        &["compare", "left.json", "right.json", "--json"],
+    );
+    assert!(
+        compared.status.success(),
+        "{}",
+        String::from_utf8_lossy(&compared.stderr)
+    );
+    let comparison: Value = serde_json::from_slice(&compared.stdout).unwrap();
+    assert_eq!(comparison["source"], "offline-report-comparison");
+    assert_eq!(comparison["left"]["input_schema_version"], 1);
+    assert!(comparison["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|change| change["category"] == "log-attachment"));
+    assert!(!comparison.to_string().contains("/missing"));
     assert!(invoke(root.path(), &["stop"]).status.success());
     let deadline = Instant::now() + Duration::from_secs(15);
     while supervisor.0.try_wait().unwrap().is_none() {

@@ -91,6 +91,14 @@ pub(in crate::cli) async fn run(args: Args) -> Result<()> {
 pub(in crate::cli) async fn load_json(path: &Path) -> Result<serde_json::Value> {
     let control = Control::new();
     let _cancel = CancelOnDrop(control.clone());
+    load_json_with_control(path, control).await
+}
+
+/// Load a report while sharing the caller's cancellation/deadline state.
+pub(in crate::cli) async fn load_json_with_control(
+    path: &Path,
+    control: Control,
+) -> Result<serde_json::Value> {
     let work = tokio::task::spawn_blocking({
         let path = path.to_owned();
         let control = control.clone();
