@@ -47,27 +47,34 @@ action after the source revision, checks, and artifacts have been reviewed.
    readiness and transfer to an empty recipient directory. Record fixed-version
    comparison and independent feedback separately, as described in VALIDATION.md;
    synthetic engineering success is not user-value evidence.
-4. Trigger **Release artifacts** from main with the full source commit SHA in
+   v1.0 additionally requires `python scripts/stable-smoke.py` for integrated
+   task/coverage/comparison/Agent behavior, frozen v0.9 report compatibility,
+   and `python scripts/mcp-smoke.py` for official-client opt-in/retry behavior.
+   Review `docs/COMPATIBILITY.md` and its Chinese version for stable interfaces,
+   exit meanings and upgrade boundaries. Record independent feedback as unverified
+   when absent. Rerun the fixed Process Compose v1.122.0 comparison for native task
+   gates; keep unsuccessful/unknown observations in its output.
+4. Trigger **Release artifacts** from `dev` for a candidate (or `main` for a release) with the full source commit SHA in
    its required `revision` input. The workflow verifies the checkout and tests
    the archived release binary on each target platform.
    The packaging entry point is `python scripts/package-release.py <target>`;
    it requires committed tracked sources and an already-built native release
    binary, checks its version against Cargo.toml, writes archives/checksums under
-   `target/release-artifacts/`, then verifies the archive and runs the stack, incident and reviewed-recovery
-   smokes using its extracted binary. Python 3.11 or newer is required.
-   It never publishes them. The eleven-file allowlist excludes local-only design
+   `target/release-artifacts/`, then verifies the archive and runs the stack, incident, reviewed-recovery, v1 workflow and MCP
+   smokes using its extracted binary. Python 3.11+ and Node 22.19+ with npm are required.
+   It never publishes them. The thirteen-file allowlist excludes local-only design
    and agent documents.
 5. Download the Linux x86_64 and macOS arm64 `.tar.gz` artifacts and Windows
    x86_64 MSVC `.zip`. Verify each archive with `shasum -a 256 -c <file>.sha256`
    (or compare PowerShell `Get-FileHash -Algorithm SHA256` against its checksum).
-   Inspect the contents: binary (`devd.exe` on Windows), license, both READMEs, bilingual command guides and usage notes under `docs/`,
+   Inspect the contents: binary (`devd.exe` on Windows), license, both READMEs, bilingual command guides, usage notes and compatibility contracts under `docs/`,
    `THIRD_PARTY_LICENSES.md`, `VERSION`, and `REVISION`; confirm the latter two match the intended release.
    Local macOS testing does not replace validation of the other artifacts.
    Automate these checks for downloaded archives with:
 
    ```bash
    python3 scripts/verify-release.py <archive> [<archive> ...] \
-     --version 0.9.0-alpha.1 --revision <full-40-character-SHA>
+     --version 1.0.0 --revision <full-40-character-SHA>
    ```
 
    Keep each checksum beside its archive. Add `--smoke` for a single native

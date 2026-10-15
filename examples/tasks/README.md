@@ -19,3 +19,13 @@ when repeating the command is appropriate for your application. For a mixed
 stack, declare the consumer as a regular service and use `devd wait` before the
 next external step. See the [task guide](../../docs/COMMANDS.md#one-shot-tasks)
 for rerun, timeout, and reload semantics.
+
+For the complete build-to-service workflow, run from the repository root:
+
+```bash
+python3 scripts/stable-smoke.py --binary target/debug/devd
+```
+
+It uses disposable synthetic data to exercise rerun/reload, coverage blind spots,
+explicit Agent budgets and retry keys, then transfers reports for offline comparison.
+It is a reproducible engineering example, not independent project feedback.

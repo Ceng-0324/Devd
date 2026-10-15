@@ -91,6 +91,8 @@ jobs:
         run: python scripts/incident-smoke.py
       - name: Exercise drift, reviewed recovery and transferred evidence
         run: python scripts/recovery-smoke.py
+      - name: Exercise stable task, evidence and Agent workflow
+        run: python scripts/stable-smoke.py
       - name: Install Node for MCP interoperability
         uses: actions/setup-node@v4
         with:

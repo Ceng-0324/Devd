@@ -386,3 +386,19 @@ runs native CLI fixtures on every supported platform: success/failure ordering,
 opt-in retries, timeout/stop/spawn failure, descendant cleanup, manual rerun with
 stale-success rejection, selective reload and failed reload, and transferred
 completion evidence. The ignored task fixture is launched only by these tests.
+
+### Stable compatibility and integrated workflow
+
+`cargo test --locked --test compatibility` verifies unmodified v0.9 exports
+from `tests/fixtures/compat/v0.9` and legacy YAML aliases/profiles. The fixture
+manifest records hashes, native platform, released binary and source SHA;
+`capture-compat-fixtures.py` regenerates into a new directory from an independently
+verified old binary. Never regenerate golden data with today's writer to make a
+reader regression disappear. Existing schema tests cover older/partial forms.
+
+`python scripts/stable-smoke.py --binary PATH` runs task success/rerun/reload,
+stale-output rejection, default coverage gaps, bounded Agent retries and stop,
+and offline comparison with missing/incomparable evidence. Task/control unit and
+process tests supply deterministic cancellation, unknown-outcome and race checks.
+CI and release packaging run the smoke natively; packaging also runs official MCP
+clients against the extracted binary. See VALIDATION.md for evidence boundaries.

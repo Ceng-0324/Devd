@@ -4,7 +4,32 @@ This document describes repeatable engineering validation for the current source
 Published results belong to their release revision; new source scenarios must be rerun. It is not a user study and does not measure productivity, resource
 use, diagnosis time, or adoption.
 
-## Native scenario
+## Stable candidate workflow
+
+```bash
+python3 scripts/stable-smoke.py --binary target/debug/devd
+cargo test --locked --test compatibility
+python3 scripts/mcp-smoke.py --binary target/debug/devd
+```
+
+The native workflow combines a finite producer and long-running consumer, task
+rerun with old output present, default coverage gaps, a session restart budget,
+same-key retries, fresh reload, authorized stop after exhausted allowance, and
+offline report comparison after removing the original configuration/resource.
+It also checks failure blocking and CLI exit codes. Deterministic Rust suites
+cover cancellation, competing requests, lost replies, unknown outcomes, stale
+plan/generation rejection and shutdown races; the smoke does not replace them.
+The official MCP client script exercises the selected binary too.
+
+The [compatibility contract](docs/COMPATIBILITY.md) links frozen v0.9 exports and
+legacy YAML/profile regression coverage. Release packaging runs these native
+workflows against the **extracted archive binary**, along with earlier incident
+and recovery scenarios. CI and artifact runs must identify the same full SHA;
+results for an earlier candidate do not validate later changes. The final
+candidate, run links, checksum verification and limitations are recorded in
+[M5 acceptance](https://github.com/Ceng-0324/Devd/issues/42).
+
+## Native incident/recovery scenario
 
 Run the selected native binary through the complete scenario:
 
@@ -33,7 +58,9 @@ that privilege is a validation failure.
 `scripts/compare-process-compose.py` compares devd with Process Compose
 v1.122.0 and a small Python composition using synthetic task, dangling-link and
 two-worktree inputs. It records tool version, platform, exit status, produced files, and
-configuration/script line counts. It does not record author setup time as user
+configuration/script line counts, binary hashes and checkout revision/dirty state.
+Failed scenarios remain in the output with remaining observations marked unknown;
+the script exits nonzero after writing the report. It does not record author setup time as user
 time or turn a successful run into a performance claim.
 
 Run it with an independently verified Process Compose binary:
@@ -75,6 +102,6 @@ scenario and regression suites cover all supported release platforms.
 
 As of this candidate there is no independent developer feedback from a separate
 project. Engineering checks, synthetic comparison, and maintainer demonstration
-do not prove usability or sustained value. Recruiting 3–5 independent users is
-the next validation activity; feedback should record project shape, setup
-friction, outcome, and whether continued use is wanted.
+do not prove usability or sustained value. Independent feedback remains unverified, as confirmed during v1.0.0 acceptance.
+Future feedback should record project shape, setup friction, outcome and interest
+in continued use. There is no fabricated adoption claim or fixed user-count gate.

@@ -26,8 +26,10 @@ For parallel development, find instances across worktrees, wait for real readine
 
 Profiles, configuration snapshots, dependency diagrams, filtered logs, optional disk history and a live terminal view support the same workflow. `doctor` checks the environment, `events` shows the timeline, and `explain` connects service failures to recorded evidence.
 
-v0.9 adds transferred-report diagnosis, stdio MCP, selected
-resource baselines and reviewed recovery recipes. See [validation scope](VALIDATION.md)
+The `dev` branch is preparing v1.0.0: native task completion gates, diagnostic
+coverage, offline report comparison and independently authorized Agent limits.
+The latest published binary remains v0.9.0-alpha.1. See the
+[compatibility and upgrade contract](docs/COMPATIBILITY.md). See [validation scope](VALIDATION.md)
 for reproducible checks and remaining user-value evidence. To contribute or
 report a vulnerability, use [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 

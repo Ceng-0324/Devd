@@ -1,5 +1,6 @@
 """Fixed-version synthetic orchestration comparison, not a user or performance study."""
 import argparse
+import hashlib
 from contextlib import ExitStack
 import json
 import os
@@ -242,9 +243,21 @@ def main():
         parser.error("comparison requires Process Compose v1.122.0")
     with tempfile.TemporaryDirectory(prefix="dc-", dir="/tmp") as directory:
         root = Path(directory)
-        results = {"task_gate": tasks(root, binaries), "resource_loss": loss(root, binaries),
-                   "worktrees": worktrees(root, binaries)}
+        results = {}
+        # Keep unsuccessful scenarios in the output, and still attempt the
+        # independent ones. A missing report must not masquerade as success.
+        for name, scenario in [("task_gate", tasks), ("resource_loss", loss), ("worktrees", worktrees)]:
+            try:
+                results[name] = {"outcome": "passed", "observations": scenario(root, binaries)}
+            except (AssertionError, OSError, ValueError, subprocess.SubprocessError) as error:
+                results[name] = {"outcome": "failed", "error": str(error),
+                                 "stdout": str(getattr(error, "stdout", None)),
+                                 "stderr": str(getattr(error, "stderr", None)),
+                                 "remaining_observations": "unknown"}
     report = {"schema": 1, "platform": sys.platform, "tools": versions,
+              "source_revision": invoke(["git", "rev-parse", "HEAD"], FIXTURE.parent.parent).stdout.strip(),
+              "source_dirty": bool(invoke(["git", "status", "--porcelain"], FIXTURE.parent.parent).stdout.strip()),
+              "binary_sha256": {name: hashlib.sha256(Path(binary).read_bytes()).hexdigest() for name, binary in binaries.items()},
               "fixture_lines": len(FIXTURE.read_text().splitlines()), "results": results,
               "limitations": ["Synthetic fixtures, not independent user feedback.",
                               "Configuration line counts depend on formatting; common fixture/harness glue also have cost.",
@@ -254,6 +267,8 @@ def main():
     with args.output.open("x", encoding="utf-8") as output:
         json.dump(report, output, indent=2)
         output.write("\n")
+    if any(result["outcome"] != "passed" for result in results.values()):
+        raise SystemExit(f"Comparison has failed/unknown observations; retained them in {args.output}")
     print(f"Passed all three synthetic comparisons; wrote {args.output}")
 
 

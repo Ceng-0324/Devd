@@ -60,8 +60,9 @@ public documentation. Release packaging verifies this boundary.
 
 ## Maintenance scope
 
-devd is an alpha project. Issues and pull requests are the public planning
-record; an accepted issue is not a promise of a release date, support response,
-or compatibility commitment. Keep proposals concrete enough to reproduce and
+The latest published release is still alpha; the `dev` branch is preparing v1.0.0.
+Compatibility expectations are defined in [the stability contract](docs/COMPATIBILITY.md).
+Issues and pull requests remain the public planning record; an accepted issue
+is not a promise of a release date or support response. Keep proposals concrete enough to reproduce and
 review. For security-sensitive reports, follow `SECURITY.md` instead of opening
 a public issue.

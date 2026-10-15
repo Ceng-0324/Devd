@@ -1,0 +1,12 @@
+{
+  "version": "devd 0.9.0-alpha.1",
+  "revision": "58a3e71a1f8c37c2cac245d68536201bbce0f777",
+  "platform": "darwin",
+  "binary_sha256": "f86e0d9ce86beb0c88a911c1ab03fc38e7aaabcad08071347f86978acef1dddb",
+  "reports": {
+    "incident.json": "5ef6fa5902eca5ebb6fb4ae428491c7cf21ff075cac9630614c87c389e8ae18f",
+    "live.json": "e8db871176d55ed5ac7edbef7b9fd0985c439e1c307b2b60c39ad1b251d423d9",
+    "stored.json": "a908e1222488459940e1740e0439961b3b0a2d3ee049bc6c07c9df462796d07e"
+  },
+  "notes": "Unmodified exports from a synthetic temporary project; source paths and PIDs are historical, not executable inputs."
+}

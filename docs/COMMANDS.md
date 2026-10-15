@@ -1,5 +1,7 @@
 # Command guide
 
+Compatibility, exit codes and upgrades are covered in [the stability contract](COMPATIBILITY.md).
+
 **English** · [简体中文](COMMANDS.zh-CN.md) · [Back to README](../README.md)
 
 The stack is running. Now what? Find the task you need below; the examples get you started, and the details explain what happens when things go wrong.

@@ -1,5 +1,9 @@
 # devd - 架构设计文档
 
+## 稳定接口与验收
+
+1.x 的公开边界见 docs/COMPATIBILITY.md 及中文版：CLI、YAML、Agent/MCP 与导出证据各自版本化，内部 Rust API、进程间 wire protocol 与状态布局不作稳定接入接口。旧发布二进制生成的固定报告独立于当前 writer 验证读取兼容；stable-smoke 串联任务门控、覆盖、受限控制、重载与离线对比。CI 和发布归档共用这些场景，后者明确使用解压二进制。工程验收、固定版本对照与独立使用反馈分开记录。
+
 ## 控制与实例接口
 
 ### Agent 与 MCP 适配
