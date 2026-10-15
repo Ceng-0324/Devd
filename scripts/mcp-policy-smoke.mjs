@@ -1,17 +1,14 @@
 // Real official TypeScript client, pinned separately from Inspector's one-call CLI.
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
-import { delimiter, resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-const root = process.env.PATH.split(delimiter)
-  .map(path => resolve(path, '..', '@modelcontextprotocol/client'))
-  .find(path => existsSync(resolve(path, 'package.json'))
-    && JSON.parse(readFileSync(resolve(path, 'package.json'))).version === '2.2.0');
-assert(root, 'run with npx -y --package @modelcontextprotocol/client@2.2.0 node');
+const [binary, cwd, config, root] = process.argv.slice(2);
+assert(root, 'run through scripts/mcp-smoke.py with an explicit client package');
+assert.equal(JSON.parse(readFileSync(resolve(root, 'package.json'))).version, '2.2.0');
 const { Client } = await import(pathToFileURL(resolve(root, 'dist/index.mjs')));
 const { StdioClientTransport } = await import(pathToFileURL(resolve(root, 'dist/stdio.mjs')));
-const [binary, cwd, config] = process.argv.slice(2);
 const client = new Client({ name: 'devd-policy-acceptance', version: '1' });
 const transport = new StdioClientTransport({ command: binary, cwd,
   args: ['mcp', '--stdio', '--config', config, '--allow', 'restart,stop',

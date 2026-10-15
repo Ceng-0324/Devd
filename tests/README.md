@@ -369,7 +369,10 @@ of replacement runs even after their endpoint disappears.
 
 Inspector CLI ends its adapter after one call. `mcp-smoke.py` therefore additionally
 runs `mcp-policy-smoke.mjs` using pinned `@modelcontextprotocol/client@2.2.0` in
-one live stdio session. It discards the first restart result, retries with the same
+one live stdio session. Both clients are installed into the temporary fixture
+with lifecycle scripts disabled before protocol calls begin. Node invokes their
+entrypoints directly; npm installation and protocol calls have separate deadlines,
+and protocol timeouts include captured output. It discards the first restart result, retries with the same
 operation key, checks one generation change, and verifies conflict/exhaustion
 responses. This is same-session interoperability evidence, not a claim of durable
 retry identity across reconnections. Adapter cancellation/unknown cases remain
