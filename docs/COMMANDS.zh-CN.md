@@ -421,7 +421,7 @@ devd clean --apply --plan sha256:... --json  # 使用预览返回的 plan_id
 }
 ```
 
-有 profile 或自定义状态目录时，加上与 supervisor 一致的 `--profile` / `--state-dir`。需要控制时，在 `args` 中追加 `"--allow", "restart,stop,reload,clean"`，只保留愿意授予的项。会话固定绑定一个 instance/run；从 `devd_identity` 取得两个 ID，每个控制传入 `"target": {"instance_id": "…", "run_id": "…"}`。supervisor 换代后必须重新建会话，客户端确认和工具描述不能代替服务端授权。
+有 profile 或自定义状态目录时，加上与 supervisor 一致的 `--profile` / `--state-dir`。需要控制时，在 `args` 中追加 `"--allow", "restart,stop,reload,clean"`，只保留愿意授予的项。可独立增加 `--restart-budget SERVICE=COUNT` 限制本次 adapter 会话内各服务可受理的重启次数，也可增加 `--deduplicate` 启用控制请求去重；两者默认关闭，不会增加 grant。会话固定绑定一个 instance/run；从 `devd_identity` 取得两个 ID，每个控制传入 `"target": {"instance_id": "…", "run_id": "…"}`。supervisor 换代后必须重新建会话，客户端确认和工具描述不能代替服务端授权。
 
 | 工具 | 参数与行为 |
 | --- | --- |
@@ -431,7 +431,7 @@ devd clean --apply --plan sha256:... --json  # 使用预览返回的 plan_id
 | `devd_wait` | 可选 `services`（默认全栈）、`timeout_ms`（1–3600000，默认 30000） |
 | `devd_export` | 可选 `include_logs`（默认 false），返回 JSON，不写文件 |
 | `devd_incidents_list`、`devd_incidents_show` | 列出本次运行留存事故；show 必填事故 UUID `id` |
-| `devd_restart`、`devd_stop` | 必填 `target`，restart 还需 `service`；须分别授权 |
+| `devd_restart`、`devd_stop` | 必填 `target`，restart 还需 `service`；须分别授权。启用去重后所有控制还须传 `operation_key`（1–128 字节） |
 | `devd_reload_preview`、`devd_reload_apply` | 可选 `candidate`；apply 还需 `target`、新鲜 `plan_id` 和 `reload` 授权 |
 | `devd_clean_preview`、`devd_clean_apply` | 沿用同一会话，正常停栈后使用；apply 还需 `target`、新鲜 `plan_id` 和 `clean` 授权 |
 
@@ -439,7 +439,7 @@ devd clean --apply --plan sha256:... --json  # 使用预览返回的 plan_id
 
 拿到移交报告时，把客户端参数改为 `["mcp", "--stdio", "--report", "/absolute/path/report.json"]`。此时只开放无参数的 `devd_diagnose`，复用 `devd diagnose` 的验证器，只加载启动者指定的报告，所有证据标为历史。无需原项目或 supervisor，拒绝在线选择参数和控制授权，也不能通过工具参数读取另一条路径。
 
-支持 MCP `2025-06-18` 与 `2025-11-25`。输入每行 16 KiB、输出 8 MiB，内部 supervisor 请求仍限 4096 字节；最多八个未完成请求、一个控制处理器。输入超限、未完成请求 ID 重复或并发超限会关闭 adapter，输出超限返回对应请求的错误。初始化和普通调用限 30 秒，wait 沿用所选期限；输出阻塞限 5 秒。取消、EOF、Ctrl+C 只结束 adapter 工作，不停止服务；已受理控制可能继续，重试前查状态和事件，ID 不负责动作去重。这是接口能力限制，不是同用户沙箱。固定版本官方 Inspector 验证见 [tests/README.md](../tests/README.md)，不冒充模型驱动的客户端对话验收。
+支持 MCP `2025-06-18` 与 `2025-11-25`。输入每行 16 KiB、输出 8 MiB，内部 supervisor 请求仍限 4096 字节；最多八个未完成请求、一个控制处理器。输入超限、未完成请求 ID 重复或并发超限会关闭 adapter，输出超限返回对应请求的错误。初始化和普通调用限 30 秒，wait 沿用所选期限；输出阻塞限 5 秒。取消、EOF、Ctrl+C 只结束 adapter 工作，不停止服务；已受理控制可能继续，重试前查状态和事件，传输 ID 不负责动作去重。启用 `--deduplicate` 后应使用相同 `operation_key` 重试；同键不同请求被拒绝，未知结果不重放。每会话最多保留 128 条：活动条目不过期，完成／unknown 结果保留 10 分钟；容量满时拒绝新键。重启预算耗尽不妨碍已授权 stop。这是接口能力限制，不是同用户沙箱。固定版本官方 Inspector 验证见 [tests/README.md](../tests/README.md)，不冒充模型驱动的客户端对话验收。
 
 ### 给 Agent 的实例接口
 
@@ -448,10 +448,11 @@ devd clean --apply --plan sha256:... --json  # 使用预览返回的 plan_id
 ```bash
 devd agent --stdio                                   # 默认只读
 devd agent --stdio --allow restart,stop               # 只开放指定控制
-devd agent --stdio --allow restart,stop,reload,clean   # 开放四种控制
+devd agent --stdio --allow restart --restart-budget worker=3
+devd agent --stdio --allow restart,stop --deduplicate
 ```
 
-权限由启动者一次确定，请求不能自行增加权限或改变 config/profile/state。每个会话绑定一个**活实例及其本次运行**，supervisor 换代后会拒绝，不能悄悄跟过去。停止全栈后保持这个会话打开，即可预览／执行清理；新会话需要活 supervisor，独立离线清理仍用 `devd clean`。普通 CLI 保持原有权限。这是接口能力限制，不是同用户进程沙箱；不新增远程守护进程、多用户 RBAC 或自动启动。
+权限由启动者一次确定，请求不能自行增加权限或改变 config/profile/state。每个会话绑定一个**活实例及其本次运行**，supervisor 换代后会拒绝，不能悄悄跟过去。停止全栈后保持这个会话打开，即可预览／执行清理；新会话需要活 supervisor，独立离线清理仍用 `devd clean`。`--restart-budget SERVICE=COUNT` 按服务限制本会话可受理的重启次数，只在已有 restart grant 生效，未列出的服务会被拒绝。`--deduplicate` 独立开启后，控制请求必须带 `operation_key`。普通 CLI 保持原有权限。这是接口能力限制，不是同用户进程沙箱；不新增远程守护进程、多用户 RBAC 或自动启动。
 
 stdin 每行一个 UTF-8 JSON 对象，stdout 只输出 JSON 回复；启动或 I/O 失败写 stderr 并非零退出：
 
@@ -459,7 +460,7 @@ stdin 每行一个 UTF-8 JSON 对象，stdout 只输出 JSON 回复；启动或 
 {"schema_version":1,"id":"inspect-1","operation":{"method":"status"}}
 ```
 
-每条回复包含 `schema_version`、`id`、`instance_id`、`run_id`、`ok`。成功返回 `data`，拒绝返回 `error: {code, message}`；非法请求外壳的 `id` 为 null。ID 为 1–128 字节、不含控制字符，**只关联请求，不负责去重**。未知请求字段和方法会拒绝；客户端应接受回复新增字段，并检查 schema 1。`ok: true` 只表示拿到了报告，wait/reload/clean 仍要检查 `data.outcome`；等待超时、部分清理都不能当成功。
+每条回复包含 `schema_version`、`id`、`instance_id`、`run_id`、`ok`。成功返回 `data`，拒绝返回 `error: {code, message}`；非法请求外壳的 `id` 为 null。ID 为 1–128 字节、不含控制字符，默认只关联请求。启用去重时控制请求另带独立的 `operation_key`；同键同摘要返回原操作状态/结果，同键不同摘要拒绝。未知请求字段和方法会拒绝；客户端应接受回复新增字段，并检查 schema 1。`ok: true` 只表示拿到了报告，wait/reload/clean 仍要检查 `data.outcome`；等待超时、部分清理都不能当成功。
 
 | method | operation 内的其他字段 | 权限 |
 | --- | --- | --- |
@@ -480,9 +481,19 @@ stdin 每行一个 UTF-8 JSON 对象，stdout 只输出 JSON 回复；启动或 
 
 从 `describe` 或 `identity` 取得身份，每个控制请求都带两个标识。接口在 I/O 前检查授权，supervisor 在实际操作前再次核对作用域；离线清理在状态锁内核对运行。
 
+下面的控制示例要求会话已用 `--allow restart --deduplicate` 启动：
+
 ```json
-{"schema_version":1,"id":"restart-1","operation":{"method":"restart","service":"api","target":{"instance_id":"<instance_id>","run_id":"<run_id>"}}}
+{"schema_version":1,"id":"restart-1","operation":{"method":"restart","service":"api","operation_key":"restart-api-1","target":{"instance_id":"<instance_id>","run_id":"<run_id>"}}}
 ```
+
+开启策略后，`describe` 和在线 `identity` 的 `control_policy` 会报告限制与剩余额度；默认 identity 格式不变。预算每服务允许 1–100 次，最多声明 64 个服务。校验失败或 supervisor 明确拒绝不扣次数；结果不确定时保留预留额度，取消或丢回复不会返还。它只限制 Agent 手动重启，不会主动触发恢复。
+
+启用去重后，四种控制都要求独立 `operation_key`（1–128 个 UTF-8 字节，无控制字符），摘要绑定方法、目标及请求内容，传输 ID 不参与；重试时 candidate 的路径写法也要相同。`data`（MCP 为文本块内 JSON）变为 `{operation_key, operation_status, result?}`。`accepted` 表示 adapter 已登记待转发，`executing` 表示正在转发／等待用例，`completed` 表示已有报告，`unknown` 表示结果无法确定。这是 adapter 对操作的认知，不冒充 supervisor 的原子受理回执。重载／清理完成仍要查 `result.outcome`，stop 的 `stopping` 也只说明已请求停栈；`ok: true` 搭配 unknown 不等于操作成功。
+
+每个 adapter 会话最多保留 128 条操作，accepted／executing 不过期；completed／unknown 从完成或转为未知时起保留 10 分钟，查询不续期，满额拒绝新键。单条结果最多 256 KiB，合计最多 8 MiB；超限结果首次仍可返回，随后只保留 unknown 记录以阻止重放。缓存命中也重验 grant 与 instance/run，停止后的核验只读证据，不重跑清理。明确拒绝会释放键。过期或 adapter 重启后，同键会被视为新操作，新会话也会重置预算；这里没有跨会话、跨 adapter 或崩溃后 exactly-once 保证。遇到 unknown 应先核对证据，别靠换键或重连蒙混过去。
+
+策略错误码包括 `operation-key-required`、`operation-key-conflict`、`budget-out-of-scope`、`budget-exhausted`、`deduplication-capacity`、`busy` 和 `outcome-unknown`。
 
 相对 candidate 按 Agent 进程工作目录解析，普通诊断不重读 YAML。status 和重启回复复用导出的状态白名单，省略自由文本错误；export 沿用已有隐私边界。事件、解释、等待和错误消息保留原有诊断细节，可能包含本地路径或命令文本，不承诺通用脱敏。应用日志仅在显式 export 请求中附带。
 

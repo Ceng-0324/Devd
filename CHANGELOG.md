@@ -5,6 +5,8 @@ Release assets, source revisions and validation evidence are on
 
 ## v1.0.0 — Unreleased
 
+- Add independently authorized Agent/MCP session restart budgets and control request deduplication. Both remain disabled by default; budgets are scoped per named service and session, operation keys are required only when deduplication is enabled, and unknown results are never replayed.
+
 - Add offline `compare LEFT RIGHT [--json]` for two explicitly selected, transferred reports. Reuse the untrusted-report validator, distinguish comparable/different/unknown configuration, scope, state, relationship, resource and evidence-gap fields, hash sensitive resource identities, and keep log attachments separate without inferring common causes or recovery effects.
 
 - Add read-only `coverage [--online] [--json]` explanations of declared resources,

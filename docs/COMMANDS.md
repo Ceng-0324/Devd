@@ -897,7 +897,11 @@ a read-only configuration looks like this (replace both absolute paths):
 
 Add the supervisor's `--profile` / `--state-dir` selectors when needed. To grant
 controls, append `"--allow", "restart,stop,reload,clean"` to `args`, selecting only
-the required permissions. The session binds to one instance and run. Get both
+the required permissions. Optional `--restart-budget SERVICE=COUNT` entries cap
+accepted restarts for named services in this adapter session. Add
+`--deduplicate` independently when the client can send a stable `operation_key`
+for every control. Neither option grants a control; both are off unless the
+launcher supplies them. The session binds to one instance and run. Get both
 IDs from `devd_identity`; each control takes
 `"target": {"instance_id": "…", "run_id": "…"}`. A replacement supervisor requires
 a new session. Client confirmations and tool annotations do not grant permission.
@@ -910,7 +914,7 @@ a new session. Client confirmations and tool annotations do not grant permission
 | `devd_wait` | Optional `services` (default all), `timeout_ms` (1–3600000, default 30000) |
 | `devd_export` | Optional `include_logs` (default false); returns JSON, never writes a file |
 | `devd_incidents_list`, `devd_incidents_show` | List this run's retained incidents; show requires incident UUID `id` |
-| `devd_restart`, `devd_stop` | Required `target`; restart also requires `service`; corresponding grant required |
+| `devd_restart`, `devd_stop` | Required `target`; restart also requires `service`; corresponding grant required. With deduplication, controls also require `operation_key` (1–128 bytes) |
 | `devd_reload_preview`, `devd_reload_apply` | Optional `candidate`; apply also requires `target`, fresh `plan_id`, and `reload` grant |
 | `devd_clean_preview`, `devd_clean_apply` | Same session after normal stop; apply requires `target`, fresh `plan_id`, and `clean` grant |
 
@@ -935,7 +939,13 @@ output returns a correlated error. Initialization and ordinary calls have a
 30-second deadline; wait follows its requested timeout. Output stalls time out
 in five seconds. Cancellation, EOF and Ctrl+C end adapter work without stopping
 the stack. Accepted controls may continue, so inspect status/events before retrying;
-request IDs do not deduplicate actions. This is an adapter capability boundary,
+request IDs do not deduplicate actions. When `--deduplicate` is enabled, retry
+the same control with the same `operation_key`; the server checks the request
+digest, returns conflicts for reused keys with different payloads, and never
+replays an unknown result. Entries are session-local, with up to 128 keys. Active entries do not expire;
+completed/unknown entries remain for 10 minutes. New keys are rejected while
+capacity is full. When a
+restart budget is exhausted, authorized stop remains available. This is an adapter capability boundary,
 not a same-user sandbox. The fixed-version official Inspector check is documented
 in [tests/README.md](../tests/README.md); it does not claim model-driven client acceptance.
 
@@ -947,7 +957,8 @@ stack first, then launch a JSON-lines session with the same instance selectors:
 ```bash
 devd agent --stdio                                   # read-only
 devd agent --stdio --allow restart,stop               # selected controls
-devd agent --stdio --allow restart,stop,reload,clean   # all four controls
+devd agent --stdio --allow restart --restart-budget worker=3
+devd agent --stdio --allow restart,stop --deduplicate
 ```
 
 The launcher grants permissions once. Requests cannot add permissions or change
@@ -955,6 +966,10 @@ config/profile/state selectors. Each session attaches to one **live instance and
 run**; it never silently follows a replacement supervisor. Keep that session open
 after stopping the stack to preview/apply cleanup. A new session needs a live
 supervisor; standalone offline cleanup remains available through `devd clean`.
+`--restart-budget SERVICE=COUNT` counts accepted restarts per named service in
+this adapter session; it only applies after the normal restart grant and
+rejects services outside the declared set. `--deduplicate` is independent and
+makes `operation_key` mandatory on controls. Both policies are described below.
 Ordinary CLI commands keep their existing permissions. These grants constrain
 this adapter, not other programs running as the same OS user. No network daemon,
 multi-user RBAC or automatic start is added.
@@ -995,9 +1010,43 @@ Get the identity from `describe` or `identity`, and put both identifiers in ever
 control request. Permission is checked before I/O; the supervisor checks scope
 again before execution. Offline cleanup checks the run under its state lock.
 
+For a session launched with `--allow restart --deduplicate`:
+
 ```json
-{"schema_version":1,"id":"restart-1","operation":{"method":"restart","service":"api","target":{"instance_id":"<instance_id>","run_id":"<run_id>"}}}
+{"schema_version":1,"id":"restart-1","operation":{"method":"restart","service":"api","operation_key":"restart-api-1","target":{"instance_id":"<instance_id>","run_id":"<run_id>"}}}
 ```
+
+`describe` and live `identity` expose `control_policy` limits and remaining
+restarts when enabled (default `identity` is unchanged). Budgets allow 1–100
+restarts per service, with at most 64 service entries. Validation and definite
+supervisor refusal consume no allowance. A reserved allowance is not refunded
+while its result is uncertain; cancellation or a lost reply cannot buy another
+restart. The policy restricts manual Agent restarts and never initiates recovery.
+
+With deduplication enabled, all four controls require `operation_key` (1–128
+UTF-8 bytes, no control characters). The digest binds method, target and payload;
+transport IDs are excluded. Keep candidate path spelling unchanged on retries.
+Successful dispatch returns `{operation_key, operation_status, result?}` inside
+`data` (or MCP's JSON text block). Status is `accepted` while queued in the
+adapter, `executing` while forwarding/awaiting the use case, `completed` when a
+report exists, or `unknown` when the result cannot be established. These states
+describe the adapter's knowledge, not an atomic supervisor acknowledgement.
+For completed reload/cleanup, inspect `result.outcome`; completed stop only means
+`result.outcome: stopping`, never proof of shutdown. An unknown status may be
+returned with `ok: true`: it is evidence availability, not success.
+
+Each adapter session retains at most 128 operations. Accepted/executing entries
+do not expire. Completed/unknown entries expire 10 minutes after finishing or
+becoming unknown; queries do not extend retention. Capacity rejects new keys,
+without evicting active operations. Results are capped at 256 KiB each and 8 MiB
+total. An oversized result can be returned once but only an unknown tombstone
+is retained, preventing replay without retaining the body. Every cache hit
+rechecks grants and the attached instance/run; stopped-run verification is
+read-only and does not execute cleanup. Definitive refusals release the key.
+After expiry or adapter restart, a key is new again; budgets also reset on a
+new session. There is no durable, cross-session or cross-adapter exactly-once
+guarantee. Reconcile unknown effects using evidence, rather than submitting a
+new key or reconnecting to bypass that uncertainty.
 
 Relative candidate paths use the Agent process's working directory. Ordinary
 diagnostics do not reread YAML. `status` and restart replies use the export state
@@ -1018,6 +1067,9 @@ Use a separate session when a long wait must not delay another request.
 Stable rejection codes are `invalid-request`, `unsupported-version`,
 `permission-denied`, `wrong-instance`, `stale-run`, `operation-failed`,
 `invalid-response`, `request-too-large`, `response-too-large`, and `input-failed`.
+Control policies additionally return `operation-key-required`,
+`operation-key-conflict`, `budget-out-of-scope`, `budget-exhausted`,
+`deduplication-capacity`, `busy`, and `outcome-unknown`.
 Messages provide detail but are not a parsing contract. Operation reports retain
 their existing history gaps, stale-plan checks and partial-progress semantics.
 

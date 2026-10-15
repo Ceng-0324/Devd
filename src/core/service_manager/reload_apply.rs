@@ -4,7 +4,7 @@ use crate::core::reload::{self, ChangeKind, ReloadOutcome, ReloadPlan, ReloadRep
 pub(super) struct ReloadRequest {
     pub candidate: DevdConfig,
     pub plan_id: String,
-    pub reply: oneshot::Sender<Result<ReloadReport, String>>,
+    pub reply: oneshot::Sender<Result<ReloadReport, ControlError>>,
 }
 
 enum Phase {
@@ -25,13 +25,13 @@ pub(super) struct ReloadExecution {
     prepared: PreparedConfig,
     plan: ReloadPlan,
     report: ReloadReport,
-    reply: oneshot::Sender<Result<ReloadReport, String>>,
+    reply: oneshot::Sender<Result<ReloadReport, ControlError>>,
     cause: u64,
     phase: Phase,
     pub failure: Option<String>,
 }
 
-type Reply = oneshot::Sender<Result<ReloadReport, String>>;
+type Reply = oneshot::Sender<Result<ReloadReport, ControlError>>;
 
 impl ReloadExecution {
     pub fn begin(

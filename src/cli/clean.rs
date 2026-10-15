@@ -38,32 +38,41 @@ pub(super) async fn execute(
     let state = state.to_path_buf();
     let profile = profile.map(str::to_owned);
     tokio::task::spawn_blocking(move || {
-        let mut bytes = Vec::new();
-        crate::platform::files::open_regular(&config, false, true)?
-            .take(1024 * 1024 + 1)
-            .read_to_end(&mut bytes)?;
-        if bytes.len() > 1024 * 1024 {
-            bail!("cleanup configuration exceeds 1 MiB");
-        }
-        let fingerprint = format!("sha256:{:x}", Sha256::digest(&bytes));
-        let mut configuration = ConfigLoader::from_str_profile(
-            std::str::from_utf8(&bytes)?,
-            &config,
-            profile.as_deref(),
-        )?;
-        configuration.validate()?;
-        // Shared mappings must have exactly the same meaning as during start,
-        // regardless of the CLI or Agent launcher's current directory.
-        super::resolve_working_directories(&mut configuration, &config);
-        owned_paths::clean(
-            &configuration,
-            &config,
-            &fingerprint,
-            &state,
-            profile.as_deref(),
-            plan.as_deref(),
-            expected_run.as_deref(),
-        )
+        let result = (|| {
+            let mut bytes = Vec::new();
+            crate::platform::files::open_regular(&config, false, true)?
+                .take(1024 * 1024 + 1)
+                .read_to_end(&mut bytes)?;
+            if bytes.len() > 1024 * 1024 {
+                bail!("cleanup configuration exceeds 1 MiB");
+            }
+            let fingerprint = format!("sha256:{:x}", Sha256::digest(&bytes));
+            let mut configuration = ConfigLoader::from_str_profile(
+                std::str::from_utf8(&bytes)?,
+                &config,
+                profile.as_deref(),
+            )?;
+            configuration.validate()?;
+            // Shared mappings must have exactly the same meaning as during start,
+            // regardless of the CLI or Agent launcher's current directory.
+            super::resolve_working_directories(&mut configuration, &config);
+            owned_paths::clean(
+                &configuration,
+                &config,
+                &fingerprint,
+                &state,
+                profile.as_deref(),
+                plan.as_deref(),
+                expected_run.as_deref(),
+            )
+        })();
+        // Core cleanup returns a partial report after any possible mutation.
+        // Only a failed blocking task has an unknown acceptance/result.
+        result.map_err(|error: anyhow::Error| {
+            error.context(super::protocol::ControlRejected(
+                "cleanup rejected before effects".into(),
+            ))
+        })
     })
     .await
     .context("cleanup task failed")?

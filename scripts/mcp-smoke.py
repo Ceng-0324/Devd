@@ -11,6 +11,7 @@ import tempfile
 import time
 
 INSPECTOR = "@modelcontextprotocol/inspector@2.10.1"
+POLICY_CLIENT = "@modelcontextprotocol/client@2.2.0"
 
 
 def exercise(binary):
@@ -93,6 +94,20 @@ def exercise(binary):
                 configure("--config", str(config), "--allow", "restart")
                 data(inspector("tools/call", "devd_restart", {"target":target,"service":"worker"}))
                 assert data(inspector("tools/call", "devd_status"))["services"]["worker"]["pid"] != before_restart
+                configure("--config", str(config), "--allow", "restart", "--deduplicate")
+                missing_key = payload(inspector("tools/call", "devd_restart", {"target":target,"service":"worker"}, allow_error=True))
+                assert missing_key["isError"]
+                assert json.loads(missing_key["content"][0]["text"])["code"] == "operation-key-required"
+                configure("--config", str(config), "--allow", "restart", "--restart-budget", "other=1")
+                out_of_scope = payload(inspector("tools/call", "devd_restart", {"target":target,"service":"worker"}, allow_error=True))
+                assert out_of_scope["isError"]
+                assert json.loads(out_of_scope["content"][0]["text"])["code"] == "budget-out-of-scope"
+                # Inspector CLI closes after one call. Use the pinned official
+                # client for retries in one adapter, never fake cross-session dedup.
+                subprocess.run([npx, "-y", "--package", POLICY_CLIENT, "node",
+                                str(script.with_name("mcp-policy-smoke.mjs")), binary, str(root), str(config)],
+                               cwd=root, check=True, timeout=120)
+                configure("--config", str(config))
                 report = root / "report.json"
                 report.write_text(json.dumps(data(inspector("tools/call", "devd_export"))), encoding="utf-8")
                 cli("stop")

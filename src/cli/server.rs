@@ -319,24 +319,25 @@ pub(super) async fn start(
                         }
                         Ok(Request::ApplyReload { candidate, plan_id }) => {
                             if let Err(error) = super::reload::plan_id(&plan_id) {
-                                return protocol::write(&mut stream, &Response::Error(error)).await;
+                                return protocol::write(&mut stream, &Response::ControlRejected(error)).await;
                             }
                             let Ok(permit) = previews.try_acquire_owned() else {
-                                return protocol::write(&mut stream, &Response::Error("too many configuration reads (maximum 2)".into())).await;
+                                return protocol::write(&mut stream, &Response::ControlRejected("too many configuration reads (maximum 2)".into())).await;
                             };
                             let mut stopping = shutdown.subscribe();
-                            if *stopping.borrow() { Response::Error("supervisor is stopping".into()) }
+                            if *stopping.borrow() { Response::ControlRejected("supervisor is stopping".into()) }
                             else {
                                 let candidate = tokio::select! {
                                     biased;
-                                    _ = stopping.changed() => return protocol::write(&mut stream, &Response::Error("supervisor is stopping".into())).await,
+                                    _ = stopping.changed() => return protocol::write(&mut stream, &Response::ControlRejected("supervisor is stopping".into())).await,
                                     result = super::reload::load_candidate(candidate, profile, permit) => result,
                                 };
                                 match candidate {
-                                    Err(error) => Response::Error(format!("cannot read candidate configuration: {error:#}")),
+                                    Err(error) => Response::ControlRejected(format!("cannot read candidate configuration: {error:#}")),
                                     Ok(config) => match controller.reload(config, plan_id).await {
                                         Ok(report) => Response::Reloaded(report),
-                                        Err(error) => Response::Error(error),
+                                        Err(error) if !error.accepted => Response::ControlRejected(error.message),
+                                        Err(error) => Response::Error(error.message),
                                     },
                                 }
                             }
@@ -453,7 +454,8 @@ pub(super) async fn start(
                         Ok(Request::Restart { service, .. }) => {
                             match tokio::time::timeout(Duration::from_secs(55), controller.restart(service)).await {
                                 Ok(Ok(state)) => Response::Restarted(state),
-                                Ok(Err(error)) => Response::Error(error),
+                                Ok(Err(error)) if !error.accepted => Response::ControlRejected(error.message),
+                                Ok(Err(error)) => Response::Error(error.message),
                                 Err(_) => Response::Error("restart is still pending; inspect 'devd status' before retrying".into()),
                             }
                         }

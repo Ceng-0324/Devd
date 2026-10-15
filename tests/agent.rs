@@ -275,6 +275,161 @@ fn test_agent_default_reads_and_denied_controls_leave_lifecycle_unchanged() {
 }
 
 #[test]
+fn test_agent_restart_budget_is_session_scoped_and_does_not_block_stop() {
+    let mut project = Project::new(true);
+    let mut agent = project.spawn(&[
+        "agent",
+        "--stdio",
+        "--allow",
+        "restart,stop",
+        "--restart-budget",
+        "worker=1",
+    ]);
+    let identity = data(agent.request(json!({"method":"identity"})));
+    let target = target(&identity);
+    let before =
+        project.cli(&["status", "--json"])["services"]["worker"]["event_generation"].clone();
+    data(agent.request(json!({"method":"restart","service":"worker","target":target})));
+    let after =
+        project.cli(&["status", "--json"])["services"]["worker"]["event_generation"].clone();
+    assert_ne!(before, after);
+    denied(
+        agent.request(json!({"method":"restart","service":"worker","target":target})),
+        "budget-exhausted",
+    );
+    data(agent.request(json!({"method":"stop","target":target})));
+    assert!(project.supervisor.as_mut().unwrap().finish());
+    project.supervisor = None;
+    drop(agent.child.stdin.take());
+    assert!(agent.finish());
+}
+
+#[test]
+fn test_agent_deduplication_requires_key_and_reuses_one_control_result() {
+    let project = Project::new(true);
+    let mut agent = project.spawn(&["agent", "--stdio", "--allow", "restart", "--deduplicate"]);
+    let identity = data(agent.request(json!({"method":"identity"})));
+    let target = target(&identity);
+    denied(
+        agent.request(json!({"method":"restart","service":"worker","target":target})),
+        "operation-key-required",
+    );
+    let before =
+        project.cli(&["status", "--json"])["services"]["worker"]["event_generation"].clone();
+    let request = json!({"method":"restart","service":"worker","target":target,"operation_key":"restart-worker-1"});
+    let first = data(agent.request(request.clone()));
+    assert_eq!(first["operation_status"], "completed");
+    let after_first =
+        project.cli(&["status", "--json"])["services"]["worker"]["event_generation"].clone();
+    let duplicate = data(agent.request(request));
+    assert_eq!(duplicate, first);
+    denied(
+        agent.request(json!({"method":"restart","service":"missing","target":target,"operation_key":"restart-worker-1"})),
+        "operation-key-conflict",
+    );
+    let after =
+        project.cli(&["status", "--json"])["services"]["worker"]["event_generation"].clone();
+    assert_ne!(after, before);
+    assert_eq!(after, after_first);
+    drop(agent.child.stdin.take());
+    assert!(agent.finish());
+}
+
+#[test]
+fn test_agent_opt_in_policies_never_add_grants_and_validation_does_not_spend_budget() {
+    let project = Project::new(false);
+    let mut readonly = project.spawn(&[
+        "agent",
+        "--stdio",
+        "--restart-budget",
+        "worker=1",
+        "--deduplicate",
+    ]);
+    let identity = data(readonly.request(json!({"method":"identity"})));
+    assert_eq!(
+        identity["control_policy"]["remaining_restarts"]["worker"],
+        1
+    );
+    denied(
+        readonly.raw(b"{\"schema_version\":1,\"id\":\"inject\",\"operation\":{\"method\":\"describe\",\"deduplicate\":true}}\n"),
+        "invalid-request",
+    );
+    denied(
+        readonly.raw(b"{\"schema_version\":1,\"id\":\"inject\",\"operation\":{\"method\":\"describe\",\"restart_budgets\":{\"worker\":100}}}\n"),
+        "invalid-request",
+    );
+    denied(readonly.request(json!({"method":"restart","service":"worker","target":target(&identity),"operation_key":"one"})), "permission-denied");
+    let mut agent = project.spawn(&[
+        "agent",
+        "--stdio",
+        "--allow",
+        "restart",
+        "--restart-budget",
+        "worker=1",
+        "--deduplicate",
+    ]);
+    for key in ["", "bad\nkey"] {
+        denied(agent.request(json!({"method":"restart","service":"worker","target":target(&identity),"operation_key":key})), "invalid-request");
+    }
+    denied(agent.request(json!({"method":"restart","service":"missing","target":target(&identity),"operation_key":"valid"})), "invalid-request");
+    let original = json!({"method":"restart","service":"worker","target":target(&identity),"operation_key":"valid"});
+    let result = data(agent.request(original.clone()));
+    assert_eq!(data(agent.request(original)), result);
+    let policy = data(agent.request(json!({"method":"identity"})));
+    assert_eq!(policy["control_policy"]["remaining_restarts"]["worker"], 0);
+    let mut fresh = project.spawn(&[
+        "agent",
+        "--stdio",
+        "--allow",
+        "restart",
+        "--restart-budget",
+        "worker=1",
+    ]);
+    let identity = data(fresh.request(json!({"method":"identity"})));
+    assert_eq!(
+        identity["control_policy"]["remaining_restarts"]["worker"],
+        1
+    );
+    denied(fresh.request(json!({"method":"restart","service":"worker","target":target(&identity),"operation_key":"one"})), "invalid-request");
+}
+
+#[test]
+fn test_agent_cached_stop_and_clean_are_readonly_and_cannot_follow_replacement_runs() {
+    let mut project = Project::new(false);
+    let mut agent = project.spawn(&["agent", "--stdio", "--allow", "stop,clean", "--deduplicate"]);
+    let identity = data(agent.request(json!({"method":"identity"})));
+    let target = target(&identity);
+    let stop = json!({"method":"stop","target":target,"operation_key":"stop-one"});
+    let stopped = data(agent.request(stop.clone()));
+    assert!(project.supervisor.as_mut().unwrap().finish());
+    project.supervisor = None;
+    assert_eq!(data(agent.request(stop.clone())), stopped);
+    let preview = data(agent.request(json!({"method":"clean-preview"})));
+    let clean = json!({"method":"clean-apply","target":target,"plan_id":preview["plan_id"],"operation_key":"clean-one"});
+    let cleaned = data(agent.request(clean.clone()));
+    assert_eq!(cleaned["result"]["outcome"], "applied");
+    let cache = Path::new(identity["state_dir"].as_str().unwrap()).join("runtime/cache");
+    fs::create_dir(&cache).unwrap();
+    fs::write(cache.join("new-user-data"), "keep").unwrap();
+    assert_eq!(data(agent.request(clean.clone())), cleaned);
+    assert_eq!(
+        fs::read_to_string(cache.join("new-user-data")).unwrap(),
+        "keep"
+    );
+    fs::remove_file(cache.join("new-user-data")).unwrap();
+    fs::remove_dir(cache).unwrap();
+    project.start();
+    denied(agent.request(stop), "stale-run");
+    denied(agent.request(clean), "stale-run");
+    project.stop();
+    // Even with the replacement endpoint gone, old cached evidence cannot pass.
+    denied(
+        agent.request(json!({"method":"stop","target":target,"operation_key":"stop-one"})),
+        "stale-run",
+    );
+}
+
+#[test]
 fn test_agent_explicit_controls_plans_and_stopped_cleanup_share_existing_rules() {
     let mut project = Project::new(false);
     let identity = project.cli(&["identity", "--json"]);
@@ -859,6 +1014,41 @@ fn test_mcp_grants_stale_targets_reload_plans_and_stopped_clean() {
         ),
         "stale-run",
     );
+    drop(mcp.child.stdin.take());
+    assert!(mcp.finish());
+}
+
+#[test]
+fn test_mcp_deduplication_reuses_control_result_and_rejects_key_conflicts() {
+    let project = Project::new(true);
+    let mut mcp = project.spawn(&["mcp", "--stdio", "--allow", "restart", "--deduplicate"]);
+    mcp.initialize("2025-11-25");
+    let identity = mcp_data(mcp.tool("devd_identity", json!({})));
+    let target = target(&identity);
+    let missing = mcp.tool("devd_restart", json!({"target":target,"service":"worker"}));
+    let missing_text = missing["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(missing_text.contains("operation-key-required"), "{missing}");
+    let before =
+        project.cli(&["status", "--json"])["services"]["worker"]["event_generation"].clone();
+    let request = json!({"target":target,"service":"worker","operation_key":"mcp-restart-1"});
+    let first = mcp_data(mcp.tool("devd_restart", request.clone()));
+    assert_eq!(first["operation_status"], "completed");
+    let after_first =
+        project.cli(&["status", "--json"])["services"]["worker"]["event_generation"].clone();
+    assert_eq!(mcp_data(mcp.tool("devd_restart", request)), first);
+    let conflict = mcp.tool(
+        "devd_restart",
+        json!({"target":target,"service":"missing","operation_key":"mcp-restart-1"}),
+    );
+    let conflict_text = conflict["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        conflict_text.contains("operation-key-conflict"),
+        "{conflict}"
+    );
+    let after =
+        project.cli(&["status", "--json"])["services"]["worker"]["event_generation"].clone();
+    assert_ne!(after, before);
+    assert_eq!(after, after_first);
     drop(mcp.child.stdin.take());
     assert!(mcp.finish());
 }

@@ -319,7 +319,7 @@ replacement is exercised with both a new run and a different configuration at
 the same state path. Unix additionally sends SIGTERM while stdin is idle.
 Unit tests reject unknown fields, duplicate JSON fields (including `id`) and
 privilege injection, verify per-operation grants before any I/O, and bound stalled
-output. Reusing an ID across requests does not deduplicate controls. The ignored
+output. Reusing a transport ID does not deduplicate controls. The ignored
 worker is a subprocess fixture. Existing readiness, reload and cleanup suites remain
 the source of their lifecycle/partial-progress semantics.
 
@@ -350,11 +350,30 @@ python3 scripts/mcp-smoke.py
 
 The script pins `@modelcontextprotocol/inspector@2.10.1`, checks tool discovery,
 live identity/status/events, incident list/show after an actual worker crash,
-denied stop, explicitly granted restart,
+denied stop, explicitly granted restart, opt-in missing-key/out-of-scope rejection,
 export and offline diagnosis with the original YAML removed. It uses temporary
 files and cleans up its supervisor. Native Linux/macOS/Windows CI runs this same
 exercise with Node 24. This proves Inspector protocol interoperability; it does
 not claim a model-driven Codex or Claude conversation was accepted.
+
+### Opt-in Agent control policies
+
+Policy unit tests use a real protocol endpoint with explicit reply barriers to
+verify concurrent duplicate lookup, cancellation after dispatch, definite refusal
+and allowance refund, unknown-result retention, capacity and byte limits, and
+active-entry retention under a virtual clock. Native `agent.rs` tests cover both
+adapters, independent opt-in flags and grants, validation without budget loss,
+remaining counts, session reset, stop after exhausted restart allowance, cached
+stop/cleanup after shutdown, preservation of newly created user data, and rejection
+of replacement runs even after their endpoint disappears.
+
+Inspector CLI ends its adapter after one call. `mcp-smoke.py` therefore additionally
+runs `mcp-policy-smoke.mjs` using pinned `@modelcontextprotocol/client@2.2.0` in
+one live stdio session. It discards the first restart result, retries with the same
+operation key, checks one generation change, and verifies conflict/exhaustion
+responses. This is same-session interoperability evidence, not a claim of durable
+retry identity across reconnections. Adapter cancellation/unknown cases remain
+covered by the deterministic protocol tests.
 
 ### One-shot task gates
 
