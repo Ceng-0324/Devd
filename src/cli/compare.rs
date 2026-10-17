@@ -350,35 +350,53 @@ fn compare_states(left: &Value, right: &Value, changes: &mut Vec<Change>) -> Res
     let names: BTreeSet<_> = left_state.keys().chain(right_state.keys()).collect();
     let left_observed = captured_to(left);
     let right_observed = captured_to(right);
+    const LIFECYCLE_FIELDS: &[&str] = &[
+        "kind",
+        "status",
+        "restart_count",
+        "consecutive_failures",
+        "last_exit_code",
+        "last_exit_signal",
+        "event_generation",
+    ];
     for name in names {
-        let l = left_state
-            .get(name)
-            .and_then(|v| v.get("status"))
-            .and_then(Value::as_str);
-        let r = right_state
-            .get(name)
-            .and_then(|v| v.get("status"))
-            .and_then(Value::as_str);
-        if l == r && l.is_some() {
-            continue;
-        }
-        changes.push(Change {
-            category: "state",
-            key: name.clone(),
-            status: if l.is_some() && r.is_some() {
+        let left_service = left_state.get(name);
+        let right_service = right_state.get(name);
+        for field in LIFECYCLE_FIELDS {
+            let l = left_service.and_then(|state| state.get(*field));
+            let r = right_service.and_then(|state| state.get(*field));
+            if l.is_none() && r.is_none() {
+                continue;
+            }
+            if l.is_some() && r.is_some() && l == r {
+                continue;
+            }
+            let status = if l.is_some() && r.is_some() {
                 "different"
             } else {
                 "unknown"
-            },
-            left: l.map(str::to_owned),
-            right: r.map(str::to_owned),
-            observed_left: left_observed.clone(),
-            observed_right: right_observed.clone(),
-            evidence: vec!["captured-state-observation"],
-        });
+            };
+            changes.push(Change {
+                category: "state",
+                key: format!("{name}.{field}"),
+                status,
+                left: l.map(value_text),
+                right: r.map(value_text),
+                observed_left: left_observed.clone(),
+                observed_right: right_observed.clone(),
+                evidence: vec!["captured-state-observation", "bounded-lifecycle-field"],
+            });
+        }
     }
     compare_explanations(left, right, changes);
     Ok(())
+}
+
+fn value_text(value: &Value) -> String {
+    value
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| value.to_string())
 }
 
 fn compare_incident_triggers(left: &Value, right: &Value, changes: &mut Vec<Change>) -> Result<()> {
@@ -1060,6 +1078,51 @@ mod tests {
             .any(|c| c.category == "state" && c.status == "different"));
         assert!(serde_json::to_string(&result).unwrap().contains("sha256:"));
         assert!(!serde_json::to_string(&result).unwrap().contains("/secret"));
+    }
+
+    #[test]
+    fn test_compare_reports_bounded_lifecycle_field_changes() {
+        let mut left = diagnosis();
+        left["recorded_state"]["api"] = json!({
+            "status": "running",
+            "restart_count": 0,
+            "event_generation": 1,
+            "consecutive_failures": 0
+        });
+        let mut right = left.clone();
+        right["recorded_state"]["api"]["restart_count"] = json!(2);
+        right["recorded_state"]["api"]["event_generation"] = json!(3);
+        let result = compare(&left, &right, &Control::new()).unwrap();
+        assert!(result.changes.iter().any(|change| {
+            change.category == "state"
+                && change.key == "api.restart_count"
+                && change.status == "different"
+                && change.left.as_deref() == Some("0")
+                && change.right.as_deref() == Some("2")
+        }));
+        assert!(result.changes.iter().any(|change| {
+            change.category == "state"
+                && change.key == "api.event_generation"
+                && change.status == "different"
+        }));
+        assert!(!result
+            .changes
+            .iter()
+            .any(|change| change.key == "api.consecutive_failures"));
+    }
+
+    #[test]
+    fn test_compare_missing_lifecycle_field_is_unknown() {
+        let mut left = diagnosis();
+        left["recorded_state"]["api"] = json!({"status":"running"});
+        let mut right = left.clone();
+        right["recorded_state"]["api"]["restart_count"] = json!(1);
+        let result = compare(&left, &right, &Control::new()).unwrap();
+        assert!(result.changes.iter().any(|change| {
+            change.category == "state"
+                && change.key == "api.restart_count"
+                && change.status == "unknown"
+        }));
     }
 
     #[test]

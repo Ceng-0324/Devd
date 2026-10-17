@@ -83,7 +83,7 @@ devd explain api --json
 devd explain api --stored --json
 ```
 
-在线模式连接正在运行的 supervisor，不重新读取 YAML。`--stored` 在 writer 停止后读取保留的事件文件，即使 YAML 已删除也可用；报告会标记 `source: stored`，历史 PID 只作为证据。报告中的 `complete: false` 表示存在明确缺口或被省略的缺口，结论只对保留下来的历史负责。没有匹配事件时会明确说无法确定原因，并给出下一步只读检查。任何模式都不会自动修复。
+在线模式连接正在运行的 supervisor，不重新读取 YAML。`--stored` 在 writer 停止后读取保留的事件文件，即使 YAML 已删除也可用；报告会标记 `source: stored`，历史 PID 只作为证据。报告中的 `complete: false` 表示存在明确缺口、被省略的缺口或解释引用的事件内容被截断，结论只对保留下来的历史负责。没有匹配事件时会明确说无法确定原因，并给出下一步只读检查。任何模式都不会自动修复。
 
 解释以当前服务代次为准；没有活服务时使用保留下来的最新代次，离线 `status` 仍为 null。CPU 与内存的恢复分别解除对应告警。正在重启时可以沿明确的 cause 引用旧代原因，但旧故障不会覆盖新代的运行或健康状态。导出和 Agent 报告沿用同一规则。
 
