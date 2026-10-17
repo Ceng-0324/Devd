@@ -139,6 +139,11 @@ fn render(plan: &ReloadPlan, json: bool) -> Result<String> {
     }
     let mut text = format!("Configuration impact preview (no changes applied)\nRun: {}  Profile: {}\nBase: {}\nCandidate: {}\nPlan: {}\n",
         plan.run_id, plan.profile.as_deref().unwrap_or("(base)"), plan.base_config_id, plan.candidate_config_id, plan.plan_id);
+    writeln!(
+        text,
+        "Configuration fields: [{}]",
+        plan.config_changed_fields.join(", ")
+    )?;
     for (name, impact) in &plan.services {
         writeln!(
             text,

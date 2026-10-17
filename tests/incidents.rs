@@ -390,8 +390,6 @@ fn test_incidents_failure_storm_retention_and_incomplete_killed_capture() {
     );
     let mut child = start(root.path(), true);
     wait(|| (artifacts(root.path()).len() == 20).then_some(()));
-    thread::sleep(Duration::from_millis(300));
-    assert_eq!(artifacts(root.path()).len(), 20);
     success(invoke(root.path(), &["status", "--json"]));
     let coverage = wait(|| {
         let report = success(invoke(root.path(), &["coverage", "--online", "--json"]));
@@ -408,10 +406,14 @@ fn test_incidents_failure_storm_retention_and_incomplete_killed_capture() {
         .iter()
         .any(|f| f["code"] == "incident-retention-evicted"));
     stop(root.path(), &mut child);
+    // Rotation removes the oldest artifact before creating its replacement.
+    // Assert the settled count after shutdown drains the writer, not in that
+    // valid 19-file window while the failure storm is still running.
     let records: Vec<_> = artifacts(root.path())
         .iter()
         .map(|p| read_records(p))
         .collect();
+    assert_eq!(records.len(), 20);
     assert!(records.iter().all(|r| r.last().unwrap()["record"] == "end"));
     assert!(records
         .iter()

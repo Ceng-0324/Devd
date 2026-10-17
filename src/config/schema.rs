@@ -11,8 +11,20 @@ use serde::{de::Deserializer, Deserialize, Serialize};
 #[serde(deny_unknown_fields)]
 pub struct DevdConfig {
     pub version: String,
+    #[serde(
+        default = "default_dependency_timeout",
+        rename = "dependency-timeout",
+        alias = "dependency_timeout",
+        deserialize_with = "deserialize_duration",
+        serialize_with = "serialize_duration"
+    )]
+    pub dependency_timeout: Duration,
     #[serde(default)]
     pub services: HashMap<String, ServiceConfig>,
+}
+
+pub(crate) fn default_dependency_timeout() -> Duration {
+    Duration::from_secs(30)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -514,7 +526,7 @@ where
     serializer.serialize_str(&format!("{}ms", duration.as_millis()))
 }
 
-fn deserialize_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
+pub(super) fn deserialize_duration<'de, D>(deserializer: D) -> Result<Duration, D::Error>
 where
     D: Deserializer<'de>,
 {

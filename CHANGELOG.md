@@ -3,6 +3,42 @@
 Release assets, source revisions and validation evidence are on
 [GitHub Releases](https://github.com/Ceng-0324/Devd/releases).
 
+## v1.1.0 — 2026-10-17
+
+This release combines the verified v1.0.1 patch fixes with the project
+scanning, reviewable init, and explicit long-task dependency readiness work
+tracked in the v1.1.0 milestone. No standalone v1.0.1 release is planned.
+
+- Add bounded, read-only Node.js project scanning to `init`, with npm/pnpm/yarn/bun
+  detection, reviewable task-to-consumer generation, interactive selection, JSON
+  output, no-clobber publication and regular-file checks for `package.json`.
+- Add configurable `dependency-timeout` with profile overrides and reload-plan
+  change reporting. Generated scan configurations use a 5-minute task timeout
+  and reject shorter dependency windows so a consumer cannot time out while its
+  build task is still within its configured deadline.
+
+- Generate Windows npm, pnpm and yarn invocations with their `.cmd` entrypoints
+  so doctor checks and process startup resolve the same executable.
+
+- Render task readiness requirements as `completed-successfully` in `wait`
+  text output, preserving service labels, JSON and exit codes.
+- Compare event gaps by their published reasons, payload fingerprints and
+  counts, and report changes in omitted gap diagnostics separately.
+- Mark comparison evidence incomplete when retained timeline events are
+  truncated, even when capture is stable and no gaps were recorded.
+- Compare bounded retained lifecycle fields, including restart counts and event
+  generations, while treating absent fields as unknown.
+- Mark explanations incomplete when referenced event content is truncated.
+- Reject unsafe state lock paths before open, including Unix FIFOs, so a
+  pre-positioned special file cannot block supervisor startup.
+
+- Reject symlinked state temporary files before publication so state writes do
+  not overwrite external targets.
+- Reject non-regular `env-file` paths before reading, preventing FIFOs from
+  blocking supervisor startup and shutdown.
+- Compare retained historical explanations even when both reports lack state
+  snapshots.
+
 ## v1.0.0 — 2026-10-17
 
 - Establish SemVer 2.0.0 release rules for public compatibility, prerelease

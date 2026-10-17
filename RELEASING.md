@@ -93,6 +93,10 @@ dimensions; changing their numbers does not exempt a public break from MAJOR.
    exit meanings and upgrade boundaries. Record independent feedback as unverified
    when absent. Rerun the fixed Process Compose v1.122.0 comparison for native task
    gates; keep unsuccessful/unknown observations in its output.
+   v1.1 additionally requires `python scripts/init-smoke.py` with Node/npm for
+   bounded read-only scanning, reviewed/no-clobber generation and real task
+   completion/failure gates. Run the shared timeout/reload regressions too;
+   archive validation invokes the same init smoke against the extracted binary.
 4. Trigger **Release artifacts** from `dev` for a candidate (or `main` for a release) with the full source commit SHA in
    its required `revision` input. The workflow verifies the checkout and tests
    the archived release binary on each target platform.

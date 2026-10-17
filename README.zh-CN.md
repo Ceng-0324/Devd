@@ -16,12 +16,13 @@
 
 ## 它能做什么
 
-v1.0.0 提供原生任务完成门控、诊断盲区、离线报告对比，以及分别显式开启的 Agent 操作限制。
+v1.1.0 提供有界 Node.js 项目扫描、可审阅的 task → consumer init、可配置依赖就绪期限，
+以及原生任务完成门控、诊断盲区、离线报告对比和分别显式开启的 Agent 操作限制。
 公共接口按 SemVer 管理，升级边界见[兼容与升级](docs/COMPATIBILITY.zh-CN.md)。
 [验收说明](VALIDATION.md) 记录可复现检查与尚缺的用户价值证据；参与开发与安全报告分别见
 [贡献指南](CONTRIBUTING.md) 和 [安全政策](SECURITY.md)。
 
-devd 是用 Rust 编写的本地开发服务管理器。**v1.0.0 已发布，支持 Linux、macOS 和 Windows。** [下载二进制及 SHA-256 校验文件](https://github.com/Ceng-0324/Devd/releases/tag/v1.0.0)，提供 Linux x86_64、macOS arm64 和 Windows x86_64 MSVC 归档。
+devd 是用 Rust 编写的本地开发服务管理器。**v1.1.0 已发布，支持 Linux、macOS 和 Windows。** [下载二进制及 SHA-256 校验文件](https://github.com/Ceng-0324/Devd/releases/tag/v1.1.0)，提供 Linux x86_64、macOS arm64 和 Windows x86_64 MSVC 归档。
 
 当初那场事故，现在有了一条能查下去的线：声明服务需要哪些文件和软链接，看清解析在哪一环断了、哪些声明服务在下游。重现问题前显式开启事故记录，supervisor 停止后仍能查看和导出证据。后来把目标补回来，也不会改写当时留下的记录。
 
@@ -48,7 +49,23 @@ devd 是用 Rust 编写的本地开发服务管理器。**v1.0.0 已发布，支
 cargo install --path . --locked
 ```
 
-在项目目录运行 `devd init`，可生成一个能直接启动的配置：Unix 使用 `sh`，Windows 使用系统 PowerShell；已有文件不会被覆盖。下面用两个 Unix 演示进程展示完整流程：
+在项目目录运行 `devd init`，可生成一个能直接启动的配置：Unix 使用 `sh`，Windows 使用系统 PowerShell；已有文件不会被覆盖。
+
+Node.js 项目可以先用 `devd init --scan node --json` 对有界的
+`package.json` 做只读扫描，列出候选脚本，再选择构建脚本和消费者脚本生成需要审阅的
+task → consumer 配置：
+
+```bash
+devd init --scan node --build-script build --consumer-script dev --json
+devd init --scan node --build-script build --consumer-script dev --yes
+```
+
+扫描不会安装依赖、执行脚本或覆盖已有配置。生成任务最多运行 5 分钟，依赖就绪期限默认
+为 10 分钟；用 `--dependency-timeout` 调整依赖期限。构建超过 5 分钟时，启动前还需修改生成的
+`task-timeout`。
+Windows 生成的 npm、pnpm 和 yarn 调用会使用对应的 `.cmd` 入口。
+
+下面用两个 Unix 演示进程展示完整流程：
 
 ```yaml
 version: "1"

@@ -79,6 +79,8 @@ def verify_archive(archive, version, revision, smoke=False):
                             "--binary", str(executable)], cwd=root, check=True, timeout=120)
             subprocess.run([sys.executable, str(root / "scripts/stable-smoke.py"),
                             "--binary", str(executable)], cwd=root, check=True, timeout=180)
+            subprocess.run([sys.executable, str(root / "scripts/init-smoke.py"),
+                            "--binary", str(executable)], cwd=root, check=True, timeout=120)
             subprocess.run([sys.executable, str(root / "scripts/mcp-smoke.py"),
                             "--binary", str(executable)], cwd=root, check=True, timeout=600)
     return target

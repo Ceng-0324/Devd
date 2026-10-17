@@ -11,6 +11,7 @@ use nix::{
     unistd::Pid,
 };
 use thiserror::Error;
+use tokio::io::AsyncReadExt;
 use tokio::process::{Child, ChildStderr, ChildStdout, Command};
 
 use crate::config::ServiceConfig;
@@ -440,14 +441,22 @@ pub(crate) async fn load_environment_file(
     let Some(path) = environment_file_path(config) else {
         return Ok(Vec::new());
     };
-    let contents =
-        tokio::fs::read(&path)
-            .await
-            .map_err(|source| ProcessError::EnvironmentRead {
-                service: service.to_owned(),
-                path: path.clone(),
-                source,
-            })?;
+    let file = crate::platform::files::open_regular(&path, false, false).map_err(|source| {
+        ProcessError::EnvironmentRead {
+            service: service.to_owned(),
+            path: path.clone(),
+            source,
+        }
+    })?;
+    let mut contents = Vec::new();
+    tokio::fs::File::from_std(file)
+        .read_to_end(&mut contents)
+        .await
+        .map_err(|source| ProcessError::EnvironmentRead {
+            service: service.to_owned(),
+            path: path.clone(),
+            source,
+        })?;
     let mut environment = Vec::new();
     for entry in dotenvy::from_read_iter(contents.as_slice()) {
         let (key, value) = entry.map_err(|source| ProcessError::EnvironmentParse {

@@ -59,6 +59,7 @@ pub struct ReloadPlan {
     pub profile: Option<String>,
     pub base_config_id: String,
     pub candidate_config_id: String,
+    pub config_changed_fields: Vec<String>,
     pub plan_id: String,
     pub runtime: BTreeMap<String, ProcessIdentity>,
     pub services: BTreeMap<String, ServiceImpact>,
@@ -206,6 +207,11 @@ pub fn preview(
         run_id: snapshot.event_run_id.clone().context("supervisor has no run identity")?,
         profile: profile.map(str::to_owned),
         base_config_id: fingerprint(&old)?, candidate_config_id: fingerprint(&new)?,
+        config_changed_fields: if base.dependency_timeout != candidate.dependency_timeout {
+            vec!["dependency-timeout".into()]
+        } else {
+            Vec::new()
+        },
         plan_id: String::new(), runtime, services, stop_layers, start_layers,
         apply_available: true,
         unsupported_changes: Vec::new(),

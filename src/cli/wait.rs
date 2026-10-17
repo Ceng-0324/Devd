@@ -187,7 +187,9 @@ fn render(report: &Report, json: bool) -> Result<String> {
             evidence.status,
             evidence.pid,
             evidence.generation,
-            if evidence.requires_healthy {
+            if evidence.requires_completed {
+                "completed-successfully"
+            } else if evidence.requires_healthy {
                 "healthy"
             } else {
                 "running"
@@ -578,6 +580,43 @@ mod tests {
             Outcome::Ready
         );
         task.await.unwrap().unwrap();
+    }
+
+    #[test]
+    fn test_wait_text_requirements_match_task_and_service_evidence() {
+        for (completed, healthy, label) in [
+            (true, false, "completed-successfully"),
+            (false, true, "healthy"),
+            (false, false, "running"),
+        ] {
+            let mut report = Report::empty(Outcome::Ready);
+            report.observation.services.insert(
+                "build".into(),
+                crate::core::readiness::Evidence {
+                    requires_completed: completed,
+                    requires_healthy: healthy,
+                    status: Some(if completed {
+                        ServiceState::Succeeded
+                    } else if healthy {
+                        ServiceState::Healthy
+                    } else {
+                        ServiceState::Running
+                    }),
+                    pid: if completed { None } else { Some(42) },
+                    generation: Some(1),
+                    ready: true,
+                    restart_pending: false,
+                    last_error: None,
+                },
+            );
+            assert!(render(&report, false)
+                .unwrap()
+                .contains(&format!("requires={label},")));
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(&render(&report, true).unwrap()).unwrap(),
+                serde_json::to_value(&report).unwrap()
+            );
+        }
     }
 
     #[test]

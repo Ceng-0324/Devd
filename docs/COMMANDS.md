@@ -7,6 +7,7 @@ Compatibility, exit codes and upgrades are covered in [the stability contract](C
 The stack is running. Now what? Find the task you need below; the examples get you started, and the details explain what happens when things go wrong.
 
 - [One-shot tasks](#one-shot-tasks)
+- [Project scanning and reviewed init](#project-scanning-and-reviewed-init)
 - [File prerequisites and path rules](#file-prerequisites-and-path-rules)
 - [Instance discovery](#instance-discovery)
 - [Wait for readiness](#wait-for-readiness)
@@ -64,12 +65,15 @@ timeout never count as task success, even if termination returns exit code 0.
 
 `task-timeout` (alias `task_timeout`) is positive, defaults to `5m`, and starts
 after the process is spawned. Timeout initiates normal process-tree shutdown;
-cleanup may take additional time. Dependency waiting currently has a fixed
-`30s` deadline; the CLI exposes no override. `wait --timeout` changes only the
-client's deadline. A longer task timeout does not extend its consumers' wait,
-so consumers can time out while a long build is still within its task deadline.
+cleanup may take additional time. Dependency readiness uses the top-level
+`dependency-timeout` (alias `dependency_timeout`), which defaults to `30s` and
+accepts a positive duration such as `10m` or an integer number of seconds;
+zero and values that overflow the runtime timer are rejected.
+Profiles can override it; `null` restores the default. `wait --timeout` changes
+only the client's deadline. A longer task timeout does not extend its
+consumers' wait, so choose a dependency timeout that covers the task window.
 `task-timeout` is rejected on services. Profiles replace `kind` and
-`task-timeout`; `null` clears the timeout override. Restart fields still merge
+`task-timeout`; `null` clears the task timeout override. Restart fields still merge
 by key, so an explicitly inherited policy remains explicit when a profile
 changes the kind.
 
@@ -95,6 +99,88 @@ State/export reports include `kind`, and wait evidence includes
 New `succeeded`, `completed-successfully`, and `task-timed-out` enum values require
 a reader that supports tasks; older binaries are not forward-compatible readers.
 For a runnable example, see [examples/tasks](../examples/tasks/README.md).
+
+### Project scanning and reviewed init
+
+`init --scan node` reads the configuration directory's `package.json` and
+proposes a task that runs a selected build script before a long-running
+consumer. The scan is bounded to a 1 MiB manifest, 128 scripts and 128
+workspace entries. It recognizes npm, pnpm, yarn and bun without installing
+dependencies, loading `.env`, or executing scripts. The manifest must be a
+regular non-symlink file; FIFOs and other special files are rejected.
+
+Review the proposal before writing it:
+
+```bash
+devd init --scan node --json
+devd init --scan node --build-script build --consumer-script dev --json
+devd init --scan node --build-script build --consumer-script dev --yes
+```
+
+The first command prints scan metadata and candidates. The second prints the
+generated YAML with `published: false`; the last writes it only when the target
+configuration does not already exist. `--json --yes` emits only the JSON report.
+Use `--interactive` to choose scripts and confirm publication from stdin. A
+generated task uses `task-timeout: 5m`, so `--dependency-timeout` must be at
+least `5m` (the default is `10m`).
+
+Only the root manifest is scanned. Workspace array/object declarations are
+reported in stable order as unconfirmed; their patterns are not expanded and
+child manifests are not read. Explicit `packageManager` wins over lockfile
+metadata (conflicts warn); conflicting lockfiles without an explicit manager
+and unsupported managers fail. Scripts are passed as quoted arguments to
+`<manager> run`; no implicit shell is added. On Windows, generated npm, pnpm
+and yarn commands use their `.cmd` entrypoints so `doctor` and process startup
+resolve the same executable. Empty/non-string scripts and
+option-like/control-character names are omitted with counts. Names such as
+`build` or `dev` are role suggestions; selecting them explicitly establishes
+the task/consumer recipe. devd does not infer ports, probes, env files, or
+workspace dependencies. Review commands, script bodies, cwd, success semantics
+and both timeouts before `--yes`. The chosen consumer uses `--service` (default
+`app`); a collision with the generated task name is rejected.
+
+Example output after selecting `build` and `dev`:
+
+```yaml
+version: "1"
+dependency-timeout: 600s
+services:
+  build-task:
+    kind: task
+    cwd: .
+    command: npm run build
+    task-timeout: 300s
+  app:
+    cwd: .
+    command: npm run dev
+    depends-on: [{service: build-task, condition: completed-successfully}]
+    restart: {policy: never}
+```
+
+Scan-only JSON uses `schema_version: 1`, source/manager metadata, `scripts`
+(name, invocation, script body, source, cwd, role hint), workspace declarations,
+omitted counts, `unconfirmed`, `warnings` and `complete`. `complete` describes
+scan coverage, not confirmed lifecycle semantics. Selection JSON wraps that
+report as `scan` with `configuration`, `published` and `next_steps`; `published`
+is true only after successful publication. `--interactive` displays the same
+candidate/YAML before confirmation, and conflicts with `--yes` and `--json`.
+`--command` is only for the original starter path. Invalid selections and
+manifest/config/I/O failures exit 1; clap argument conflicts exit 2. Scanning
+has a 30-second deadline, publication its own 30-second deadline, output is
+limited to 2 MiB and five seconds, and each interactive input to 8 KiB. Ctrl+C
+cancels; a publication already accepted may complete, while cancellation before
+acceptance prevents a late file. Temporary files are removed on failure; existing
+files, links and special-file destinations are never overwritten. A single OS
+file call cannot be forcibly interrupted. Reports can contain paths and script
+bodies; review them before sharing.
+
+A timeout-only reload updates the policy without restarting services. Each
+future attempt, including an unchanged actor's manual/automatic restart, reads
+the committed policy; an already-running dependency wait keeps its original
+deadline. Reload JSON lists the change in `config_changed_fields`, and text
+lists configuration fields. Timeout events/errors retain the actual duration;
+client deadlines and control grants remain independent.
+
 
 ### File prerequisites and path rules
 
@@ -571,6 +657,12 @@ not a shared-cause claim. Missing, truncated,
 unsupported or incomparable fields become `unknown`, never a fabricated
 change. Similar symptoms do not become a shared root cause, recurrence or
 recovery-effect conclusion.
+
+Event gaps are grouped by their published `reason`; record counts and payload
+fingerprints are compared separately, independent of record order. Omitted gap
+diagnostic counts are also compared. Each side's `complete` requires a stable
+capture, no gaps or omitted gap diagnostics, and no truncated retained events.
+This flag describes evidence coverage, not current health or operation success.
 
 Log attachments remain metadata only. Their counts and attribution may differ,
 but log text is never used as incident-window evidence. The output keeps at
@@ -1152,7 +1244,7 @@ devd reload --apply --plan 'sha256:<64-hex-digits>' --candidate devd.next.yml
 
 Application re-reads and validates the candidate, then recomputes the plan against the live instance. Changed configuration, process generations, or lifecycle states invalidate the ID; preview again. Services must be in stable states. `apply_available: true` describes support, not a guarantee that a later application will succeed. Instance/profile, state-directory, and supervisor logging options stay fixed. The candidate is an in-memory configuration update; neither source YAML nor the default candidate path is rewritten.
 
-Only affected services are stopped, in old reverse dependency order. After they finish, the supervisor commits the candidate baseline and starts new forward layers. Each affected task must succeed; long-running services must start and, when configured, pass their health check; each layer has the existing dependency timeout (30 seconds). Unchanged services retain their processes. No-op configurations restart nothing. Manual restart and a second reload are rejected while application is active. Affected services pause automatic recovery until application completes; unrelated services keep their existing policies. `stop` can interrupt any phase.
+Only affected services are stopped, in old reverse dependency order. After they finish, the supervisor commits the candidate baseline and starts new forward layers. Each affected task must succeed; long-running services must start and, when configured, pass their health check; each layer uses the candidate configuration's `dependency-timeout` (default 30 seconds). Unchanged services retain their processes. No-op configurations restart nothing. Manual restart and a second reload are rejected while application is active. Affected services pause automatic recovery until application completes; unrelated services keep their existing policies. `stop` can interrupt any phase.
 
 A failure stops the whole stack, including unrelated services. There is no automatic rollback: once committed, the new in-memory baseline remains until the supervisor exits. The execution report lists completed stops, observed starts, ready layers, and `config_committed`; it returns a nonzero exit code on failure or interruption. Lifecycle events record the plan and outcome, with progress available through `events` (and `--stored` when event persistence was enabled). Client disconnect or the 60-second response timeout does not cancel an accepted reload; inspect status/events before retrying.
 
@@ -1193,6 +1285,7 @@ Choose exactly one of `--dry-run` or `--apply`. Preview validates YAML, quoting,
 | `devd check` | Validate configuration, command quoting, dependencies, and supported settings |
 | `devd graph [--format text|dot|mermaid]` | Show dependency edges and startup layers, or export a diagram |
 | `devd init [--service NAME] [--command CMD]` | Create a checked starter configuration without overwriting an existing file |
+| `devd init --scan node [--build-script NAME] [--consumer-script NAME] [--json] [--yes]` | Review a bounded Node.js scan and optionally publish a task-to-consumer configuration |
 | `devd snapshot save <NAME>` | Save the complete on-disk YAML under the project state directory |
 | `devd snapshot restore <NAME> --output <FILENAME>` | Restore it to a new file beside the original configuration |
 

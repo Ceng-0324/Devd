@@ -79,6 +79,15 @@ fn test_task_completion_wait_restart_and_stale_success() {
     let first = outcome(&mut project.spawn(&["wait", "--json"]), "ready");
     assert_eq!(first["services"]["build"]["status"], "succeeded");
     assert!(first["services"]["build"]["pid"].is_null());
+    let text = project.invoke(&["wait", "build", "worker"]);
+    assert!(text.status.success());
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(
+        text.lines().any(|line| line.starts_with("\"build\": ready")
+            && line.contains("requires=completed-successfully,")),
+        "{text}"
+    );
+    assert!(text.lines().any(|line| line.starts_with("\"worker\": ready") && line.contains("requires=running,")), "{text}");
     assert_eq!(
         project.json(&["explain", "build", "--json"])["conclusion"],
         "task-succeeded"
@@ -418,4 +427,62 @@ fn test_task_fixture() {
     {
         std::process::exit(7);
     }
+}
+
+#[test]
+fn test_task_reload_timeout_policy_reaches_retained_consumer_attempts() {
+    let (mut project, mut document) = project("gated");
+    document["dependency-timeout"] = json!("2m");
+    write(&project, &document);
+    project.supervisor = Some(project.spawn(&["start"]));
+    await_state(&project, |s| s["services"]["build"]["pid"].is_number());
+    let events = project.json(&["events", "api", "--json"]);
+    assert!(
+        events["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["data"]["type"] == "dependency-waiting"
+                && event["data"]["timeout"] == json!({"secs":120,"nanos":0})),
+        "{events}"
+    );
+    release(&project);
+    outcome(&mut project.spawn(&["wait", "--json"]), "ready");
+    let before = project.json(&["status", "--json"]);
+    document["dependency-timeout"] = json!("3m");
+    write(&project, &document);
+    let plan = project.json(&["reload", "--dry-run", "--json"]);
+    assert_eq!(plan["config_changed_fields"], json!(["dependency-timeout"]));
+    assert_eq!(plan["stop_layers"], json!([]));
+    project.json(&[
+        "reload",
+        "--apply",
+        "--plan",
+        plan["plan_id"].as_str().unwrap(),
+        "--json",
+    ]);
+    let after = project.json(&["status", "--json"]);
+    assert_eq!(
+        before["services"]["api"]["pid"],
+        after["services"]["api"]["pid"]
+    );
+    fs::remove_file(project.root.path().join("release-build")).unwrap();
+    assert!(project.invoke(&["restart", "build"]).status.success());
+    let mut restart = project.spawn(&["restart", "api"]);
+    await_state(&project, |s| s["services"]["api"]["pid"].is_null());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let events = project.json(&["events", "api", "--json"]);
+        if events["entries"].as_array().unwrap().iter().any(|event| {
+            event["data"]["type"] == "dependency-waiting"
+                && event["data"]["timeout"] == json!({"secs":180,"nanos":0})
+        }) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "missing new timeout: {events}");
+        thread::sleep(Duration::from_millis(10));
+    }
+    release(&project);
+    assert!(restart.finish().status.success());
+    project.stop();
 }

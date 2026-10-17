@@ -442,9 +442,19 @@ pub fn explain(
                 .into(),
         );
     }
-    let complete = batch.gaps.is_empty() && batch.omitted_gaps == 0;
+    let truncated_evidence = evidence.iter().any(|reference| {
+        events
+            .iter()
+            .any(|event| event.sequence == reference.sequence && event.truncated)
+    });
+    let complete = batch.gaps.is_empty() && batch.omitted_gaps == 0 && !truncated_evidence;
     if !complete {
-        details.push("事件历史存在缺口，以上结论只覆盖保留下来的证据".into());
+        if !batch.gaps.is_empty() || batch.omitted_gaps != 0 {
+            details.push("事件历史存在缺口，以上结论只覆盖保留下来的证据".into());
+        }
+        if truncated_evidence {
+            details.push("解释引用的事件内容被截断，以上结论只覆盖保留下来的证据".into());
+        }
     }
 
     ExplainReport {
@@ -886,6 +896,20 @@ mod tests {
             .details
             .iter()
             .any(|detail| detail.contains("历史存在缺口")));
+    }
+
+    #[test]
+    fn test_explain_truncated_referenced_event_marks_report_incomplete() {
+        let recorder = EventRecorder::new("state".into(), None);
+        recorder.record(Some("api"), Some(1), None, EventData::Starting);
+        let mut batch = batch(&recorder);
+        batch.entries[0].truncated = true;
+        let report = explain("api", None, &batch);
+        assert!(!report.complete);
+        assert!(report
+            .details
+            .iter()
+            .any(|detail| detail.contains("内容被截断")));
     }
 
     #[test]

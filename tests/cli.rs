@@ -861,6 +861,175 @@ fn test_cli_init_creates_valid_config_and_preserves_existing_file() {
 }
 
 #[test]
+fn test_cli_init_scans_node_and_requires_review_before_publication() {
+    let project = Project::new("services:\n  old:\n    command: sleep 60\n");
+    fs::write(
+        project.path().join("package.json"),
+        r#"{
+          "name": "sample-app",
+          "packageManager": "npm@10.0.0",
+          "scripts": {"dev": "vite", "build": "vite build", "test": "vitest"},
+          "workspaces": ["packages/*"]
+        }"#,
+    )
+    .unwrap();
+    let output = success(project.invoke(&[
+        "init",
+        "--config",
+        "generated.yml",
+        "--scan",
+        "node",
+        "--build-script",
+        "build",
+        "--consumer-script",
+        "dev",
+        "--json",
+    ]));
+    let report: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(report["published"], false);
+    assert_eq!(report["scan"]["package_manager"], "npm");
+    assert_eq!(report["scan"]["workspaces"][0], "packages/*");
+    assert!(!project.path().join("generated.yml").exists());
+
+    let output = success(project.invoke(&[
+        "init",
+        "--config",
+        "generated.yml",
+        "--scan",
+        "node",
+        "--build-script",
+        "build",
+        "--consumer-script",
+        "dev",
+        "--yes",
+    ]));
+    assert!(output.contains("Created"));
+    let generated = fs::read_to_string(project.path().join("generated.yml")).unwrap();
+    assert!(generated.contains("dependency-timeout: 600s"));
+    assert!(generated.contains("kind: task"));
+    assert!(generated.contains("condition: completed-successfully"));
+    assert!(generated.contains("npm run build"));
+    assert!(generated.contains("npm run dev"));
+    assert!(
+        success(project.invoke(&["check", "--config", "generated.yml"]))
+            .contains("Configuration valid")
+    );
+}
+
+#[test]
+fn test_cli_init_scan_json_yes_publishes_only_json() {
+    let project = Project::new("services:\n  old: {command: sleep 60}\n");
+    fs::write(
+        project.path().join("package.json"),
+        r#"{"scripts":{"build":"vite build","dev":"vite"}}"#,
+    )
+    .unwrap();
+    let output = success(project.invoke(&[
+        "init",
+        "--config",
+        "generated.yml",
+        "--scan",
+        "node",
+        "--build-script",
+        "build",
+        "--consumer-script",
+        "dev",
+        "--yes",
+        "--json",
+    ]));
+    let report: serde_json::Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(report["published"], true);
+    assert!(project.path().join("generated.yml").is_file());
+    assert!(!output.contains("Created "));
+}
+
+#[test]
+fn test_cli_init_scan_rejects_dependency_timeout_shorter_than_generated_task() {
+    let project = Project::new("services:\n  old: {command: sleep 60}\n");
+    fs::write(
+        project.path().join("package.json"),
+        r#"{"scripts":{"build":"vite build","dev":"vite"}}"#,
+    )
+    .unwrap();
+    failure(
+        project.invoke(&[
+            "init",
+            "--config",
+            "generated.yml",
+            "--scan",
+            "node",
+            "--build-script",
+            "build",
+            "--consumer-script",
+            "dev",
+            "--dependency-timeout",
+            "1m",
+            "--yes",
+        ]),
+        "must be at least 300s",
+    );
+    assert!(!project.path().join("generated.yml").exists());
+}
+
+#[test]
+fn test_cli_init_scan_rejects_generated_service_name_collision() {
+    let project = Project::new("services:\n  old: {command: sleep 60}\n");
+    fs::write(
+        project.path().join("package.json"),
+        r#"{"scripts":{"build":"vite build","dev":"vite"}}"#,
+    )
+    .unwrap();
+    failure(
+        project.invoke(&[
+            "init",
+            "--scan",
+            "node",
+            "--build-script",
+            "build",
+            "--consumer-script",
+            "dev",
+            "--service",
+            "build-task",
+            "--yes",
+        ]),
+        "conflicts with the consumer service name",
+    );
+    assert!(fs::read_to_string(project.path().join("devd.yml"))
+        .unwrap()
+        .contains("old:"));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_cli_init_scan_rejects_package_fifo_without_blocking() {
+    let project = Project::new("services:\n  old: {command: sleep 60}\n");
+    nix::unistd::mkfifo(
+        &project.path().join("package.json"),
+        nix::sys::stat::Mode::S_IRUSR | nix::sys::stat::Mode::S_IWUSR,
+    )
+    .unwrap();
+    failure(project.invoke(&["init", "--scan", "node"]), "regular file");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_cli_init_scan_rejects_package_symlink_without_reading_target() {
+    let project = Project::new("services:\n  old: {command: sleep 60}\n");
+    fs::write(
+        project.path().join("outside-package.json"),
+        r#"{"scripts":{"build":"vite build","dev":"vite"}}"#,
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(
+        project.path().join("outside-package.json"),
+        project.path().join("package.json"),
+    )
+    .unwrap();
+    failure(project.invoke(&["init", "--scan", "node"]), "regular file");
+    assert!(!project.path().join("generated.yml").exists());
+}
+
+#[test]
 fn test_cli_lifecycle_logs_restart_duplicate_and_config_changes() {
     let project = Project::new(RUNNING);
     let mut supervisor = project.start();

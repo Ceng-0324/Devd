@@ -132,7 +132,6 @@ pub struct ManagerOptions {
     /// Original configuration identity for explicitly owned cleanup directories.
     pub config_path: Option<PathBuf>,
     pub grace_period: Duration,
-    pub dependency_timeout: Duration,
     pub logging: LogOptions,
     /// Selected configuration profile, for lifecycle provenance.
     pub profile: Option<String>,
@@ -145,7 +144,6 @@ impl ManagerOptions {
             state_path: state_path.into(),
             config_path: None,
             grace_period: Duration::from_secs(5),
-            dependency_timeout: Duration::from_secs(30),
             logging: LogOptions::default(),
             profile: None,
         }
@@ -174,8 +172,6 @@ pub enum ServiceManagerError {
     },
     #[error("{field} duration {duration:?} does not fit the runtime timer")]
     InvalidDuration { field: String, duration: Duration },
-    #[error("dependency timeout must be positive")]
-    ZeroDependencyTimeout,
     #[error("state-file operation failed for {path}: {source}")]
     StateIo {
         path: PathBuf,
@@ -286,15 +282,7 @@ impl ServiceController {
 impl ServiceManager {
     /// Validate every service before any child or state file is created.
     pub fn new(config: DevdConfig, options: ManagerOptions) -> Result<Self, ServiceManagerError> {
-        if options.dependency_timeout.is_zero() {
-            return Err(ServiceManagerError::ZeroDependencyTimeout);
-        }
-        for (field, duration) in [
-            ("grace-period", options.grace_period),
-            ("dependency-timeout", options.dependency_timeout),
-        ] {
-            validate_duration(field.into(), duration)?;
-        }
+        validate_duration("grace-period".into(), options.grace_period)?;
         let PreparedConfig {
             layers,
             checkers,
@@ -755,6 +743,7 @@ impl ServiceManager {
             service,
             self.checkers[name].clone(),
             self.options.clone(),
+            self.configurations.subscribe(),
             receiver,
             self.snapshots.clone(),
             self.logs.clone(),

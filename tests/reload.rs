@@ -122,6 +122,25 @@ fn test_cli_reload_preview_uses_running_baseline_and_changes_nothing() {
 }
 
 #[test]
+fn test_cli_reload_preview_reports_dependency_timeout_change() {
+    let project = Project::from_document(
+        "version: '1'\ndependency-timeout: 30s\nservices:\n  worker: {command: sleep 60, restart: {policy: never}}\n",
+    );
+    let mut supervisor = project.start();
+    project.running();
+    fs::write(
+        project.path().join("devd.yml"),
+        "version: '1'\ndependency-timeout: 45s\nservices:\n  worker: {command: sleep 60, restart: {policy: never}}\n",
+    )
+    .unwrap();
+    let preview = plan(&project, &[]);
+    assert_eq!(preview.config_changed_fields, ["dependency-timeout"]);
+    assert_eq!(preview.services["worker"].change, ChangeKind::Unchanged);
+    success(project.invoke(&["stop"]));
+    supervisor.finish(true);
+}
+
+#[test]
 fn test_cli_reload_preview_invalid_candidate_and_boundaries_preserve_services() {
     let project =
         Project::new("services:\n  worker: {command: sleep 60, restart: {policy: never}}\n");
@@ -807,7 +826,6 @@ async fn test_reload_readiness_deadline_cleans_stack_and_pending_services() {
     )
     .unwrap();
     let mut options = ManagerOptions::new(root.path().join("state.json"));
-    options.dependency_timeout = Duration::from_millis(150);
     options.grace_period = Duration::from_millis(50);
     let manager = ServiceManager::new(base.clone(), options).unwrap();
     let controller = manager.controller();
@@ -823,7 +841,8 @@ async fn test_reload_readiness_deadline_cleans_stack_and_pending_services() {
     })
     .await
     .unwrap();
-    let candidate: DevdConfig = serde_yaml::from_str("version: '1'\nservices:\n  worker:\n    command: sleep 60\n    healthcheck: {type: script, command: \"sh -c 'sleep 60'\", timeout: 10s}\n    restart: {policy: never}\n  child: {command: sleep 60, depends-on: [worker], restart: {policy: never}}\n").unwrap();
+    let mut candidate: DevdConfig = serde_yaml::from_str("version: '1'\nservices:\n  worker:\n    command: sleep 60\n    healthcheck: {type: script, command: \"sh -c 'sleep 60'\", timeout: 10s}\n    restart: {policy: never}\n  child: {command: sleep 60, depends-on: [worker], restart: {policy: never}}\n").unwrap();
+    candidate.dependency_timeout = Duration::from_millis(150);
     let preview =
         devd::core::reload::preview(&base, &candidate, &snapshots.borrow(), None).unwrap();
     let report = tokio::time::timeout(

@@ -109,9 +109,9 @@ impl Drop for CompletionGuard {
     }
 }
 
-pub(super) struct Stdio {
+pub(super) struct Stdio<W = super::super::stdout::Stdout> {
     input: mpsc::Receiver<io::Result<Vec<u8>>>,
-    output: Arc<tokio::sync::Mutex<super::super::stdout::Stdout>>,
+    output: Arc<tokio::sync::Mutex<W>>,
     pub(super) admissions: Admissions,
     shutdown: CancellationToken,
     initialized: bool,
@@ -157,7 +157,7 @@ fn read(mut reader: impl BufRead, sender: mpsc::Sender<io::Result<Vec<u8>>>) {
     }
 }
 
-impl Transport<RoleServer> for Stdio {
+impl<W: AsyncWrite + Unpin + Send + 'static> Transport<RoleServer> for Stdio<W> {
     type Error = io::Error;
     fn send(
         &mut self,
@@ -323,6 +323,10 @@ async fn send_bytes(
         }) => result.unwrap_or_else(|_| Err(io::Error::new(io::ErrorKind::TimedOut, "MCP output stalled"))),
     }
 }
+
+#[cfg(test)]
+#[path = "transport/lifecycle_tests.rs"]
+mod lifecycle_tests;
 
 #[cfg(test)]
 mod tests {

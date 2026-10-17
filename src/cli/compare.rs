@@ -302,6 +302,14 @@ fn completeness(value: &Value) -> bool {
         .unwrap_or(false)
         && gaps == 0
         && omitted == 0
+        && value
+            .pointer("/timeline/entries")
+            .and_then(Value::as_array)
+            .is_some_and(|entries| {
+                entries
+                    .iter()
+                    .all(|event| event.get("truncated").and_then(Value::as_bool) == Some(false))
+            })
 }
 
 fn field<T: ToString + Clone>(
@@ -336,40 +344,59 @@ fn compare_states(left: &Value, right: &Value, changes: &mut Vec<Change>) -> Res
             "recorded-state",
             "neither report scope contains a comparable service-state snapshot",
         ));
+        compare_explanations(left, right, changes);
         return Ok(());
     }
     let names: BTreeSet<_> = left_state.keys().chain(right_state.keys()).collect();
     let left_observed = captured_to(left);
     let right_observed = captured_to(right);
+    const LIFECYCLE_FIELDS: &[&str] = &[
+        "kind",
+        "status",
+        "restart_count",
+        "consecutive_failures",
+        "last_exit_code",
+        "last_exit_signal",
+        "event_generation",
+    ];
     for name in names {
-        let l = left_state
-            .get(name)
-            .and_then(|v| v.get("status"))
-            .and_then(Value::as_str);
-        let r = right_state
-            .get(name)
-            .and_then(|v| v.get("status"))
-            .and_then(Value::as_str);
-        if l == r && l.is_some() {
-            continue;
-        }
-        changes.push(Change {
-            category: "state",
-            key: name.clone(),
-            status: if l.is_some() && r.is_some() {
+        let left_service = left_state.get(name);
+        let right_service = right_state.get(name);
+        for field in LIFECYCLE_FIELDS {
+            let l = left_service.and_then(|state| state.get(*field));
+            let r = right_service.and_then(|state| state.get(*field));
+            if l.is_none() && r.is_none() {
+                continue;
+            }
+            if l.is_some() && r.is_some() && l == r {
+                continue;
+            }
+            let status = if l.is_some() && r.is_some() {
                 "different"
             } else {
                 "unknown"
-            },
-            left: l.map(str::to_owned),
-            right: r.map(str::to_owned),
-            observed_left: left_observed.clone(),
-            observed_right: right_observed.clone(),
-            evidence: vec!["captured-state-observation"],
-        });
+            };
+            changes.push(Change {
+                category: "state",
+                key: format!("{name}.{field}"),
+                status,
+                left: l.map(value_text),
+                right: r.map(value_text),
+                observed_left: left_observed.clone(),
+                observed_right: right_observed.clone(),
+                evidence: vec!["captured-state-observation", "bounded-lifecycle-field"],
+            });
+        }
     }
     compare_explanations(left, right, changes);
     Ok(())
+}
+
+fn value_text(value: &Value) -> String {
+    value
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| value.to_string())
 }
 
 fn compare_incident_triggers(left: &Value, right: &Value, changes: &mut Vec<Change>) -> Result<()> {
@@ -566,25 +593,62 @@ fn compare_explanations(left: &Value, right: &Value, changes: &mut Vec<Change>) 
 }
 
 fn compare_gaps(left: &Value, right: &Value, changes: &mut Vec<Change>) -> Result<()> {
-    let l = gap_counts(left)?;
-    let r = gap_counts(right)?;
+    let l = gap_summaries(left)?;
+    let r = gap_summaries(right)?;
     let keys: BTreeSet<_> = l.keys().chain(r.keys()).collect();
     for key in keys {
-        let a = l.get(key).copied().unwrap_or(0);
-        let b = r.get(key).copied().unwrap_or(0);
-        if a == b {
-            continue;
+        let a = l.get(key);
+        let b = r.get(key);
+        let count_a = a.map_or(0, |gap| gap.count);
+        let count_b = b.map_or(0, |gap| gap.count);
+        if count_a != count_b {
+            changes.push(Change {
+                category: "evidence-gap",
+                key: key.clone(),
+                status: if a.is_some() && b.is_some() {
+                    "different"
+                } else {
+                    "unknown"
+                },
+                left: Some(count_a.to_string()),
+                right: Some(count_b.to_string()),
+                observed_left: captured_to(left),
+                observed_right: captured_to(right),
+                evidence: vec!["retained-event-gap-metadata"],
+            });
         }
+        if let (Some(a), Some(b)) = (a, b) {
+            if a.payloads != b.payloads {
+                changes.push(Change {
+                    category: "evidence-gap",
+                    key: format!("{key}/payload"),
+                    status: "different",
+                    left: Some(fingerprint(&serde_json::to_string(&a.payloads)?)),
+                    right: Some(fingerprint(&serde_json::to_string(&b.payloads)?)),
+                    observed_left: captured_to(left),
+                    observed_right: captured_to(right),
+                    evidence: vec!["retained-event-gap-metadata"],
+                });
+            }
+        }
+    }
+    let omitted = |report: &Value| {
+        report
+            .pointer("/timeline/omitted_gaps")
+            .and_then(Value::as_u64)
+    };
+    let (a, b) = (omitted(left), omitted(right));
+    if a != b {
         changes.push(Change {
             category: "evidence-gap",
-            key: key.clone(),
-            status: if a > 0 && b > 0 {
+            key: "omitted-gaps".into(),
+            status: if a.is_some() && b.is_some() {
                 "different"
             } else {
                 "unknown"
             },
-            left: Some(a.to_string()),
-            right: Some(b.to_string()),
+            left: a.map(|n| n.to_string()),
+            right: b.map(|n| n.to_string()),
             observed_left: captured_to(left),
             observed_right: captured_to(right),
             evidence: vec!["retained-event-gap-metadata"],
@@ -600,17 +664,32 @@ fn captured_to(value: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
-fn gap_counts(value: &Value) -> Result<BTreeMap<String, usize>> {
-    let mut result = BTreeMap::new();
+#[derive(Default)]
+struct GapSummary {
+    count: usize,
+    payloads: BTreeMap<String, usize>,
+}
+
+fn gap_summaries(value: &Value) -> Result<BTreeMap<String, GapSummary>> {
+    use crate::core::events::query::EventGap;
+    let mut result: BTreeMap<String, GapSummary> = BTreeMap::new();
     let Some(gaps) = value.pointer("/timeline/gaps").and_then(Value::as_array) else {
         return Ok(result);
     };
     for gap in gaps {
-        let name = gap
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown-gap");
-        *result.entry(name.to_owned()).or_insert(0) += 1;
+        // Use the published enum to normalize payloads and bound reason keys.
+        // Compare a multiset rather than record order; identifiers stay hashed.
+        let gap: EventGap = serde_json::from_value(gap.clone())?;
+        let mut payload = serde_json::to_value(gap)?;
+        let reason = payload.as_object_mut().unwrap().remove("reason").unwrap();
+        let summary = result
+            .entry(reason.as_str().unwrap().to_owned())
+            .or_default();
+        summary.count += 1;
+        *summary
+            .payloads
+            .entry(fingerprint(&payload.to_string()))
+            .or_default() += 1;
     }
     Ok(result)
 }
@@ -1002,9 +1081,54 @@ mod tests {
     }
 
     #[test]
+    fn test_compare_reports_bounded_lifecycle_field_changes() {
+        let mut left = diagnosis();
+        left["recorded_state"]["api"] = json!({
+            "status": "running",
+            "restart_count": 0,
+            "event_generation": 1,
+            "consecutive_failures": 0
+        });
+        let mut right = left.clone();
+        right["recorded_state"]["api"]["restart_count"] = json!(2);
+        right["recorded_state"]["api"]["event_generation"] = json!(3);
+        let result = compare(&left, &right, &Control::new()).unwrap();
+        assert!(result.changes.iter().any(|change| {
+            change.category == "state"
+                && change.key == "api.restart_count"
+                && change.status == "different"
+                && change.left.as_deref() == Some("0")
+                && change.right.as_deref() == Some("2")
+        }));
+        assert!(result.changes.iter().any(|change| {
+            change.category == "state"
+                && change.key == "api.event_generation"
+                && change.status == "different"
+        }));
+        assert!(!result
+            .changes
+            .iter()
+            .any(|change| change.key == "api.consecutive_failures"));
+    }
+
+    #[test]
+    fn test_compare_missing_lifecycle_field_is_unknown() {
+        let mut left = diagnosis();
+        left["recorded_state"]["api"] = json!({"status":"running"});
+        let mut right = left.clone();
+        right["recorded_state"]["api"]["restart_count"] = json!(1);
+        let result = compare(&left, &right, &Control::new()).unwrap();
+        assert!(result.changes.iter().any(|change| {
+            change.category == "state"
+                && change.key == "api.restart_count"
+                && change.status == "unknown"
+        }));
+    }
+
+    #[test]
     fn test_compare_missing_resources_and_gaps_are_unknown_not_changes() {
         let mut right = diagnosis();
-        right["timeline"]["gaps"] = json!([{"type":"incomplete-run","run_id":"r"}]);
+        right["timeline"]["gaps"] = json!([{"reason":"incomplete-run","run_id":"r"}]);
         right["historical_identity"] = Value::Null;
         let result = compare(&diagnosis(), &right, &Control::new()).unwrap();
         assert!(result
@@ -1019,6 +1143,106 @@ mod tests {
             .comparability
             .iter()
             .any(|f| f.field == "instance" && f.status == "unknown"));
+    }
+
+    #[test]
+    fn test_compare_gap_reasons_payloads_counts_and_omissions() {
+        let mut left = diagnosis();
+        left["timeline"]["gaps"] = json!([{"reason":"recovered-tail","bytes":12}]);
+        for (gaps, omitted, key) in [
+            (
+                json!([{"reason":"unfinished-record","bytes":12}]),
+                0,
+                "unfinished-record",
+            ),
+            (
+                json!([{"reason":"recovered-tail","bytes":24}]),
+                0,
+                "recovered-tail/payload",
+            ),
+            (
+                json!([{"reason":"recovered-tail","bytes":12}, {"reason":"recovered-tail","bytes":12}]),
+                0,
+                "recovered-tail",
+            ),
+            (left["timeline"]["gaps"].clone(), 4, "omitted-gaps"),
+        ] {
+            let mut right = left.clone();
+            right["timeline"]["gaps"] = gaps;
+            right["timeline"]["omitted_gaps"] = json!(omitted);
+            let result = compare(&left, &right, &Control::new()).unwrap();
+            assert!(
+                result
+                    .changes
+                    .iter()
+                    .any(|c| c.category == "evidence-gap" && c.key == key),
+                "missing {key}: {:?}",
+                result.changes
+            );
+        }
+    }
+
+    #[test]
+    fn test_compare_gap_payloads_are_order_independent_and_private() {
+        let gaps = json!([
+            {"reason":"subscriber-lag","run_id":"private-run","skipped":3},
+            {"reason":"subscriber-lag","run_id":"private-run","skipped":5}
+        ]);
+        let mut left = diagnosis();
+        left["timeline"]["gaps"] = gaps;
+        let mut right = left.clone();
+        right["timeline"]["gaps"].as_array_mut().unwrap().reverse();
+        for (a, b) in [(&left, &right), (&diagnosis(), &diagnosis())] {
+            assert!(!compare(a, b, &Control::new())
+                .unwrap()
+                .changes
+                .iter()
+                .any(|c| c.category == "evidence-gap"));
+        }
+        right["timeline"]["gaps"][0]["skipped"] = json!(6);
+        let result = compare(&left, &right, &Control::new()).unwrap();
+        let change = result
+            .changes
+            .iter()
+            .find(|c| c.key == "subscriber-lag/payload")
+            .unwrap();
+        assert_eq!(change.status, "different");
+        assert!(change.left.as_ref().unwrap().starts_with("sha256:"));
+        assert_ne!(change.left, change.right);
+        assert!(!serde_json::to_string(&result)
+            .unwrap()
+            .contains("private-run"));
+    }
+
+    #[test]
+    fn test_compare_completeness_requires_untruncated_retained_events() {
+        let mut left = diagnosis();
+        left["timeline"]["entries"] = json!([{"truncated":false}]);
+        let mut right = left.clone();
+        right["timeline"]["entries"][0]["truncated"] = json!(true);
+        let result = compare(&left, &right, &Control::new()).unwrap();
+        assert!(result.left.complete);
+        assert!(!result.right.complete);
+    }
+
+    #[test]
+    fn test_compare_explanations_when_recorded_state_is_absent() {
+        let mut left = diagnosis();
+        left["recorded_state"] = json!({});
+        let mut right = left.clone();
+        right["explanations"]["api"]["conclusion"] = json!("startup-failed");
+
+        let result = compare(&left, &right, &Control::new()).unwrap();
+        assert!(result
+            .changes
+            .iter()
+            .any(|change| change.category == "state" && change.key == "recorded-state"));
+        assert!(result.changes.iter().any(|change| {
+            change.category == "historical-explanation"
+                && change.key == "api"
+                && change.left.as_deref() == Some("running")
+                && change.right.as_deref() == Some("startup-failed")
+        }));
     }
 
     #[test]

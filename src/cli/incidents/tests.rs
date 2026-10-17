@@ -243,6 +243,7 @@ async fn test_incident_four_slots_and_cancellation_before_queued_publication() {
         }),
         config: Arc::new(DevdConfig {
             version: "1".into(),
+            dependency_timeout: std::time::Duration::from_secs(30),
             services: Default::default(),
         }),
         permit: Arc::new(permits.clone().try_acquire_owned().unwrap()),
@@ -349,6 +350,7 @@ async fn test_incident_saturation_reports_dropped_triggers_and_drains_pending() 
     });
     let (_, configurations) = watch::channel(Arc::new(DevdConfig {
         version: "1".into(),
+        dependency_timeout: std::time::Duration::from_secs(30),
         services: Default::default(),
     }));
     let (statistics, observed_statistics) = watch::channel(Statistics::default());
@@ -399,6 +401,7 @@ async fn test_incident_subscriber_lag_and_shutdown_are_visible() {
     });
     let (_, configurations) = watch::channel(Arc::new(DevdConfig {
         version: "1".into(),
+        dependency_timeout: std::time::Duration::from_secs(30),
         services: Default::default(),
     }));
     let (statistics, observed_statistics) = watch::channel(Statistics::default());
