@@ -1,5 +1,5 @@
 use std::{
-    io,
+    io::{self, Write},
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -53,7 +53,9 @@ impl StateStore {
         // until atomic replacement completes, including after its caller drops.
         tokio::task::spawn_blocking(move || {
             let _lease = lease;
-            std::fs::write(&temporary, bytes)?;
+            let mut file = crate::platform::files::open_regular(&temporary, true, true)?;
+            file.set_len(0)?;
+            file.write_all(&bytes)?;
             std::fs::rename(&temporary, &path)
         })
         .await
@@ -66,5 +68,38 @@ fn state_error(path: &Path, source: io::Error) -> ServiceManagerError {
     ServiceManagerError::StateIo {
         path: path.into(),
         source,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::service_manager::RuntimeSnapshot;
+
+    #[tokio::test]
+    async fn test_write_rejects_temporary_symlink_without_touching_target() {
+        #[cfg(unix)]
+        use std::os::unix::fs::symlink;
+        #[cfg(windows)]
+        use std::os::windows::fs::symlink_file as symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let state = root.path().join("services.json");
+        let target = root.path().join("outside.json");
+        std::fs::write(&target, "keep me").unwrap();
+        symlink(&target, root.path().join("services.json.tmp")).unwrap();
+        let store = StateStore::open(&state).await.unwrap();
+
+        let error = store
+            .write(&RuntimeSnapshot {
+                supervisor_pid: 1,
+                event_run_id: None,
+                services: Default::default(),
+            })
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("not a regular file"));
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "keep me");
     }
 }
