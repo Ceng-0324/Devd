@@ -3,7 +3,11 @@
 Release assets, source revisions and validation evidence are on
 [GitHub Releases](https://github.com/Ceng-0324/Devd/releases).
 
-## v1.0.1 — Unreleased
+## v1.1.0 — Unreleased
+
+This release will combine the verified v1.0.1 patch fixes with the project
+scanning, reviewable init, and explicit long-task dependency readiness work
+tracked in the v1.1.0 milestone. No standalone v1.0.1 release is planned.
 
 - Render task readiness requirements as `completed-successfully` in `wait`
   text output, preserving service labels, JSON and exit codes.
