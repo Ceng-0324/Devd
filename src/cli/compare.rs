@@ -336,6 +336,7 @@ fn compare_states(left: &Value, right: &Value, changes: &mut Vec<Change>) -> Res
             "recorded-state",
             "neither report scope contains a comparable service-state snapshot",
         ));
+        compare_explanations(left, right, changes);
         return Ok(());
     }
     let names: BTreeSet<_> = left_state.keys().chain(right_state.keys()).collect();
@@ -1019,6 +1020,26 @@ mod tests {
             .comparability
             .iter()
             .any(|f| f.field == "instance" && f.status == "unknown"));
+    }
+
+    #[test]
+    fn test_compare_explanations_when_recorded_state_is_absent() {
+        let mut left = diagnosis();
+        left["recorded_state"] = json!({});
+        let mut right = left.clone();
+        right["explanations"]["api"]["conclusion"] = json!("startup-failed");
+
+        let result = compare(&left, &right, &Control::new()).unwrap();
+        assert!(result
+            .changes
+            .iter()
+            .any(|change| change.category == "state" && change.key == "recorded-state"));
+        assert!(result.changes.iter().any(|change| {
+            change.category == "historical-explanation"
+                && change.key == "api"
+                && change.left.as_deref() == Some("running")
+                && change.right.as_deref() == Some("startup-failed")
+        }));
     }
 
     #[test]

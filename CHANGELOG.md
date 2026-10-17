@@ -3,6 +3,15 @@
 Release assets, source revisions and validation evidence are on
 [GitHub Releases](https://github.com/Ceng-0324/Devd/releases).
 
+## v1.0.1 — 2026-10-17
+
+- Reject symlinked state temporary files before publication so state writes do
+  not overwrite external targets.
+- Reject non-regular `env-file` paths before reading, preventing FIFOs from
+  blocking supervisor startup and shutdown.
+- Compare retained historical explanations even when both reports lack state
+  snapshots.
+
 ## v1.0.0 — 2026-10-17
 
 - Establish SemVer 2.0.0 release rules for public compatibility, prerelease

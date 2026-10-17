@@ -221,6 +221,28 @@ async fn test_process_environment_file_errors_are_actionable() {
     );
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn test_process_environment_file_rejects_fifo_without_waiting_for_writer() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("blocked.env");
+    nix::unistd::mkfifo(&path, nix::sys::stat::Mode::S_IRUSR).unwrap();
+    let mut config = shell_config("exit 0");
+    config.env_file = Some(path.clone());
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(1),
+        ManagedProcess::spawn("environment", &config),
+    )
+    .await
+    .expect("FIFO env-file must not block process startup");
+    assert!(matches!(
+        result,
+        Err(ProcessError::EnvironmentRead { path: actual, source, .. })
+            if actual == path && source.kind() == std::io::ErrorKind::InvalidData
+    ));
+}
+
 #[tokio::test]
 async fn test_process_exit_status_is_cached_and_stop_is_idempotent() {
     let mut process = ManagedProcess::spawn("exit", &shell_config("exit 7"))
