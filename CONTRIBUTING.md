@@ -70,7 +70,7 @@ public documentation. Release packaging verifies this boundary.
 
 ## Maintenance scope
 
-The latest published release is still alpha; the `dev` branch is preparing v1.0.0.
+v1.0.0 begins the stable public contract; development continues on `dev`.
 Compatibility expectations are defined in [the stability contract](docs/COMPATIBILITY.md).
 Releases follow [SemVer and the version policy](RELEASING.md#version-policy):
 public breaks require MAJOR, compatible features or deprecations MINOR, and

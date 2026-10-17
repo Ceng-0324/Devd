@@ -3,7 +3,7 @@
 Release assets, source revisions and validation evidence are on
 [GitHub Releases](https://github.com/Ceng-0324/Devd/releases).
 
-## v1.0.0 — Unreleased
+## v1.0.0 — 2026-10-17
 
 - Establish SemVer 2.0.0 release rules for public compatibility, prerelease
   numbering, synchronized version metadata and immutable published versions.

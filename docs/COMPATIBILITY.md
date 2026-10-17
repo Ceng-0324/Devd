@@ -3,8 +3,7 @@
 [简体中文](COMPATIBILITY.zh-CN.md)
 
 A stable version should let you upgrade without relearning how your project
-starts. This is the compatibility contract for the v1.0.0 candidate and subsequent
-1.x releases. It does not claim that v1.0.0 has already been published.
+starts. This is the compatibility contract for v1.0.0 and subsequent 1.x releases.
 
 ## Version numbers
 

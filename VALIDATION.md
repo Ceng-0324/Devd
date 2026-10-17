@@ -4,7 +4,7 @@ This document describes repeatable engineering validation for the current source
 Published results belong to their release revision; new source scenarios must be rerun. It is not a user study and does not measure productivity, resource
 use, diagnosis time, or adoption.
 
-## Stable candidate workflow
+## Stable workflow
 
 ```bash
 python3 scripts/stable-smoke.py --binary target/debug/devd
@@ -25,9 +25,11 @@ The [compatibility contract](docs/COMPATIBILITY.md) links frozen v0.9 exports an
 legacy YAML/profile regression coverage. Release packaging runs these native
 workflows against the **extracted archive binary**, along with earlier incident
 and recovery scenarios. CI and artifact runs must identify the same full SHA;
-results for an earlier candidate do not validate later changes. The final
-candidate, run links, checksum verification and limitations are recorded in
-[M5 acceptance](https://github.com/Ceng-0324/Devd/issues/42).
+results for an earlier candidate do not validate later changes. Published source
+revisions, run links, checksum verification and limitations are recorded in
+[GitHub Releases](https://github.com/Ceng-0324/Devd/releases).
+[M5 acceptance](https://github.com/Ceng-0324/Devd/issues/42) retains the earlier
+engineering candidate evidence.
 
 ## Native incident/recovery scenario
 
