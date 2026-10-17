@@ -83,7 +83,11 @@ pub(super) fn node(root: &Path, control: &Control) -> Result<ScanReport> {
                 }
                 scripts.push(ScriptCandidate {
                     name: name.clone(),
-                    command: shell_words::join([package_manager, "run", name.as_str()]),
+                    command: shell_words::join([
+                        package_manager_executable(package_manager),
+                        "run",
+                        name.as_str(),
+                    ]),
                     script_body: command.to_owned(),
                     source: package_json.clone(),
                     cwd: root.to_owned(),
@@ -124,6 +128,19 @@ pub(super) fn node(root: &Path, control: &Control) -> Result<ScanReport> {
         complete: warnings.is_empty() && omitted_scripts == 0 && omitted_workspaces == 0,
         warnings,
     })
+}
+
+fn package_manager_executable(manager: &'static str) -> &'static str {
+    if cfg!(windows) {
+        match manager {
+            "npm" => "npm.cmd",
+            "pnpm" => "pnpm.cmd",
+            "yarn" => "yarn.cmd",
+            _ => manager,
+        }
+    } else {
+        manager
+    }
 }
 
 fn package_manager(

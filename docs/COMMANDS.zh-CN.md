@@ -73,7 +73,7 @@ devd init --scan node --build-script build --consumer-script dev --yes
 
 第一条只输出扫描元数据和候选脚本；第二条输出带 `published: false` 的生成 YAML；第三条仅在目标配置不存在时写入。`--json --yes` 只输出 JSON 报告。需要从 stdin 选择脚本并确认时使用 `--interactive`。生成任务固定为 `task-timeout: 5m`，因此 `--dependency-timeout` 不能小于 `5m`（默认 `10m`）。
 
-只扫描根 manifest。workspace 的数组／对象声明按稳定顺序输出并标为未确认，不展开 glob、不读取子包 manifest。显式 `packageManager` 优先于锁文件元数据，冲突给警告；没有显式字段且锁文件提示冲突、或包管理器不受支持时失败。脚本名以带引号参数传给 `<manager> run`，不增加隐式 shell。空值、非字符串、以 `-` 开头或含控制字符的脚本名省略并计数。`build`、`dev` 等名称仅是角色建议，用户显式选择后才建立 task／consumer 配方，不推断端口、健康探测、环境文件或 workspace 依赖。写入前审阅调用命令、脚本正文、cwd、成功语义和两类超时。消费者名由 `--service` 指定（默认 `app`），与生成任务名冲突会拒绝。
+只扫描根 manifest。workspace 的数组／对象声明按稳定顺序输出并标为未确认，不展开 glob、不读取子包 manifest。显式 `packageManager` 优先于锁文件元数据，冲突给警告；没有显式字段且锁文件提示冲突、或包管理器不受支持时失败。脚本名以带引号参数传给 `<manager> run`，不增加隐式 shell；Windows 生成的 npm/pnpm/yarn 命令使用对应的 `.cmd` 入口，保证 `doctor` 与实际启动使用同一个可执行文件。空值、非字符串、以 `-` 开头或含控制字符的脚本名省略并计数。`build`、`dev` 等名称仅是角色建议，用户显式选择后才建立 task／consumer 配方，不推断端口、健康探测、环境文件或 workspace 依赖。写入前审阅调用命令、脚本正文、cwd、成功语义和两类超时。消费者名由 `--service` 指定（默认 `app`），与生成任务名冲突会拒绝。
 
 选择 `build` 和 `dev` 后的结果示例：
 

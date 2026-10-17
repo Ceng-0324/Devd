@@ -20,9 +20,10 @@ fn test_scan_manager_precedence_and_literal_script_arguments() {
     let report = scan::node(root.path(), &Control::new()).unwrap();
     assert_eq!(report.package_manager, "npm");
     assert!(!report.complete);
+    let expected_program = if cfg!(windows) { "npm.cmd" } else { "npm" };
     assert_eq!(
         shell_words::split(&report.scripts[0].command).unwrap(),
-        ["npm", "run", "build assets"]
+        [expected_program, "run", "build assets"]
     );
     assert_eq!(report.scripts[0].script_body, "touch must-not-exist");
     assert!(!root.path().join("must-not-exist").exists());

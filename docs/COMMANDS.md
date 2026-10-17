@@ -129,7 +129,9 @@ reported in stable order as unconfirmed; their patterns are not expanded and
 child manifests are not read. Explicit `packageManager` wins over lockfile
 metadata (conflicts warn); conflicting lockfiles without an explicit manager
 and unsupported managers fail. Scripts are passed as quoted arguments to
-`<manager> run`; no implicit shell is added. Empty/non-string scripts and
+`<manager> run`; no implicit shell is added. On Windows, generated npm, pnpm
+and yarn commands use their `.cmd` entrypoints so `doctor` and process startup
+resolve the same executable. Empty/non-string scripts and
 option-like/control-character names are omitted with counts. Names such as
 `build` or `dev` are role suggestions; selecting them explicitly establishes
 the task/consumer recipe. devd does not infer ports, probes, env files, or

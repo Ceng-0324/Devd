@@ -68,6 +68,8 @@ does not overwrite an existing configuration. The generated task runs for up
 to 5 minutes and defaults to a 10-minute dependency readiness timeout; use
 `--dependency-timeout` to choose another readiness window. For builds longer
 than 5 minutes, also edit the generated `task-timeout` before starting.
+On Windows, generated npm, pnpm and yarn invocations use their `.cmd`
+entrypoints.
 
 For a two-service Unix example, use this configuration:
 

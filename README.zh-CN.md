@@ -62,6 +62,7 @@ devd init --scan node --build-script build --consumer-script dev --yes
 扫描不会安装依赖、执行脚本或覆盖已有配置。生成任务最多运行 5 分钟，依赖就绪期限默认
 为 10 分钟；用 `--dependency-timeout` 调整依赖期限。构建超过 5 分钟时，启动前还需修改生成的
 `task-timeout`。
+Windows 生成的 npm、pnpm 和 yarn 调用会使用对应的 `.cmd` 入口。
 
 下面用两个 Unix 演示进程展示完整流程：
 
