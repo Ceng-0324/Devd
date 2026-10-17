@@ -184,6 +184,8 @@ devd recover --recipe recipe.yml --apply --plan PLAN_ID
 
 想试一个完整项目，可以从 [API + 网页 + worker 示例](examples/local-stack/README.md) 开始，里面有可重复执行的故障恢复脚本。
 
+准备拿自己的项目试？[真实项目试用指南](https://github.com/Ceng-0324/Devd/blob/dev/docs/FIELD_TESTING.zh-CN.md)说明如何在自己的项目里试用，试完只留一份记录，没跑顺的地方也算结果。
+
 参与开发见[贡献指南](CONTRIBUTING.md)，专项检查见[测试与手动验证](tests/README.md)。发布流程见[发布清单](RELEASING.md)，漏洞报告见[安全政策](SECURITY.md)。
 
 [变更记录](CHANGELOG.md) · [MIT 许可证](LICENSE) · [架构设计](ARCHITECTURE.md)

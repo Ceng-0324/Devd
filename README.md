@@ -188,6 +188,8 @@ Full options and examples live in the [command guide](docs/COMMANDS.md). Platfor
 
 Try the [API, web and worker example](examples/local-stack/README.md) for a complete stack with repeatable failure-recovery exercises.
 
+Trying it on your own project? The [field guide](https://github.com/Ceng-0324/Devd/blob/dev/docs/FIELD_TESTING.md) explains how to try your existing workflow and keep feedback to one record, including the parts that did not work.
+
 Start with [contributing](CONTRIBUTING.md); specific checks live in [tests and manual validation](tests/README.md). See the [release checklist](RELEASING.md) for publishing and the [security policy](SECURITY.md) for vulnerability reports.
 
 [Changelog](CHANGELOG.md) · [MIT license](LICENSE) · [Architecture (中文)](ARCHITECTURE.md)

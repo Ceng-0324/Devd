@@ -50,7 +50,7 @@ services:
 
 任务默认 `restart.policy: never`，即使写了 restart 块却没写 policy，也不会自动重试。需要时显式设为 `on-failure`，沿用已有退避和累计 `max-attempts`。但迁移执行一半失败，再试一次可能重复外部副作用，devd 不会替你回滚数据库。失败且没有剩余重试次数时停止全栈；停止、取消和超时都不会算成功，即使程序在被终止时返回了 0。
 
-`task-timeout`（别名 `task_timeout`）须为正值，默认 `5m`，从进程启动后开始计时。超时会触发正常进程树关闭，清理还可能需要额外时间。依赖等待仍由 `start --dependency-timeout` 控制（默认 `30s`），`wait --timeout` 又是单独的客户端期限；构建时间较长时，记得一起调大等待期限。长驻服务不能设置 task-timeout。profile 整体替换 kind 和 task-timeout，`null` 清除超时覆盖；restart 仍按字段合并，因此基础配置明确写出的 policy 会继续被继承。
+`task-timeout`（别名 `task_timeout`）须为正值，默认 `5m`，从进程启动后开始计时。超时会触发正常进程树关闭，清理还可能需要额外时间。当前依赖等待固定为 `30s`，CLI 没有调整参数；`wait --timeout` 只改变客户端期限。调大 task-timeout 不会延长下游等待，因此长构建尚未超过自身期限，下游也可能已经等待超时。长驻服务不能设置 task-timeout。profile 整体替换 kind 和 task-timeout，`null` 清除超时覆盖；restart 仍按字段合并，因此基础配置明确写出的 policy 会继续被继承。
 
 重启消费者会复用本次 supervisor 运行内已经成功的任务。`restart generate` 才是明确重跑：受理时立即作废旧成功结果，命令在新进程启动或快速任务完成后返回，需要等完成再用 `wait generate`。已放行的消费者不会因此被追溯停掉；长驻消费者可以显式开启 `restart-on-dep-recovery`，等任务新代次成功后联动重启。新启动尝试必须等新结果。重新启动 supervisor 则会重新执行任务，不采信旧状态或完成标记文件。
 

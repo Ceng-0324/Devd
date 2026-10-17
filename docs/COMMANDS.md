@@ -64,12 +64,14 @@ timeout never count as task success, even if termination returns exit code 0.
 
 `task-timeout` (alias `task_timeout`) is positive, defaults to `5m`, and starts
 after the process is spawned. Timeout initiates normal process-tree shutdown;
-cleanup may take additional time. Dependency waiting has its own existing
-`start --dependency-timeout` (default `30s`), and `wait --timeout` is separate.
-For a long build, increase those waiting deadlines too. `task-timeout` is
-rejected on services. Profiles replace `kind` and `task-timeout`; `null` clears
-the timeout override. Restart fields still merge by key, so an explicitly
-inherited policy remains explicit when a profile changes the kind.
+cleanup may take additional time. Dependency waiting currently has a fixed
+`30s` deadline; the CLI exposes no override. `wait --timeout` changes only the
+client's deadline. A longer task timeout does not extend its consumers' wait,
+so consumers can time out while a long build is still within its task deadline.
+`task-timeout` is rejected on services. Profiles replace `kind` and
+`task-timeout`; `null` clears the timeout override. Restart fields still merge
+by key, so an explicitly inherited policy remains explicit when a profile
+changes the kind.
 
 Restarting a consumer reuses a completed task in the same supervisor run.
 `restart generate` explicitly reruns the task and invalidates its old success

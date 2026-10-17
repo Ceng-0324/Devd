@@ -100,8 +100,16 @@ scenario and regression suites cover all supported release platforms.
 
 ## Value evidence
 
-As of this candidate there is no independent developer feedback from a separate
-project. Engineering checks, synthetic comparison, and maintainer demonstration
-do not prove usability or sustained value. Independent feedback remains unverified, as confirmed during v1.0.0 acceptance.
-Future feedback should record project shape, setup friction, outcome and interest
-in continued use. There is no fabricated adoption claim or fixed user-count gate.
+Use the shared [field testing contract](docs/FIELD_TESTING.md)
+([简体中文](docs/FIELD_TESTING.zh-CN.md)) and its single feedback record.
+Engineering validation, maintainer field trials in real projects, and independent
+developer trials are distinct evidence categories. The two field categories
+record the same environment, actual work, assistance, friction, outcomes, and
+continued-use observations; retain failures and unknowns. There is no fixed
+user count, duration, success requirement, or all-features gate.
+
+No completed human-led maintainer field trial has been reported yet; independent
+feedback remains **unverified**, as it was at v1.0.0 engineering acceptance.
+Agent-driven integration exercises remain engineering evidence and do not
+establish human usability or sustained value. Link actual field records here
+when available, keeping intent to continue separate from observed repeated use.

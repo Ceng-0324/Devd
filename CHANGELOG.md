@@ -5,6 +5,14 @@ Release assets, source revisions and validation evidence are on
 
 ## v1.0.0 — Unreleased
 
+- Establish SemVer 2.0.0 release rules for public compatibility, prerelease
+  numbering, synchronized version metadata and immutable published versions.
+
+- Add a shared bilingual field-testing guide and feedback template, keeping
+  engineering exercises, maintainer trials and independent feedback distinct.
+  Correct task documentation to describe the fixed 30-second dependency deadline;
+  `wait --timeout` does not extend it and no CLI override is currently available.
+
 - Define bilingual compatibility, upgrade and exit-code contracts. Add frozen
   v0.9 export regressions and an integrated task/evidence/Agent workflow to native
   CI and extracted release-binary checks, including official MCP clients. Preserve

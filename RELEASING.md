@@ -4,8 +4,43 @@ The release workflow is manual and uploads run-scoped artifacts. It does not
 create a tag, GitHub Release, or crates.io publication. Publishing is a separate
 action after the source revision, checks, and artifacts have been reviewed.
 
+## Version policy
+
+devd follows [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
+Classify the release against the public interfaces in the bilingual
+[compatibility contract](docs/COMPATIBILITY.md), using the highest-impact change
+since the previous release:
+
+| Change | Next stable version after `1.2.3` |
+| --- | --- |
+| Incompatible change to a documented public interface or removal of a deprecated interface | `2.0.0` (MAJOR; reset MINOR and PATCH) |
+| Backward-compatible functionality or public-interface deprecation | `1.3.0` (MINOR; reset PATCH) |
+| Backward-compatible bug fix | `1.2.4` (PATCH) |
+
+Before `1.0.0`, interfaces were experimental; `1.0.0` starts the stable public
+contract. Internal refactoring, tests and documentation corrections do not by
+themselves require a version bump. Conventional Commit types describe commits;
+choose one version for the combined release, not one bump per commit.
+
+Use `X.Y.Z-alpha.N`, `X.Y.Z-beta.N` or `X.Y.Z-rc.N` when publishing a prerelease,
+and mark it as a prerelease on GitHub. Increment the numeric suffix within each
+stage; a prerelease sorts below its corresponding stable version. Unpublished
+candidate builds may use the intended stable version but must identify their
+full source SHA and must not be described as a published release.
+
+`Cargo.toml` is the version source; keep the root package entry in `Cargo.lock`,
+CLI version, changelog, release notes, archive `VERSION` and tag `vX.Y.Z` (with
+any prerelease suffix) consistent. Build metadata such as `+sha` does not change
+SemVer precedence; record provenance in `REVISION` instead. Never replace an
+existing release tag or its published contents: publish a new version for fixes.
+YAML, evidence schemas and MCP protocol versions are separate compatibility
+dimensions; changing their numbers does not exempt a public break from MAJOR.
+
+## Release steps
+
 1. Confirm the Cargo version, changelog, and both READMEs describe the intended
-   release. Alpha versions must be marked as prereleases on GitHub.
+   release and follow the version policy above. All prereleases must be marked
+   as prereleases on GitHub.
 2. Run `cargo fmt --all -- --check`,
    `cargo clippy --locked --all-targets -- -D warnings`,
    `cargo test --locked --all-targets`,
@@ -45,8 +80,12 @@ action after the source revision, checks, and artifacts have been reviewed.
    Run `python scripts/recovery-smoke.py` to cover baseline drift, original
    incident evidence, shared-resource protection, replay/run guards, new-run
    readiness and transfer to an empty recipient directory. Record fixed-version
-   comparison and independent feedback separately, as described in VALIDATION.md;
-   synthetic engineering success is not user-value evidence.
+   comparison separately from field trials, as described in VALIDATION.md;
+   synthetic engineering success is not user-value evidence. Use the shared
+   [field testing contract](docs/FIELD_TESTING.md) for maintainer trials in real
+   projects and independent developer trials, labeled separately. Record failed
+   or abandoned attempts too; no fixed participant count, duration, or requirement
+   to try every feature is a release gate.
    v1.0 additionally requires `python scripts/stable-smoke.py` for integrated
    task/coverage/comparison/Agent behavior, frozen v0.9 report compatibility,
    and `python scripts/mcp-smoke.py` for official-client opt-in/retry behavior.

@@ -6,6 +6,21 @@ A stable version should let you upgrade without relearning how your project
 starts. This is the compatibility contract for the v1.0.0 candidate and subsequent
 1.x releases. It does not claim that v1.0.0 has already been published.
 
+## Version numbers
+
+devd follows [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html):
+after `1.0.0`, an incompatible change to the public contract below requires
+MAJOR, backward-compatible functionality or deprecation requires MINOR, and a
+backward-compatible bug fix requires PATCH. For example, from `1.2.3` these
+become `2.0.0`, `1.3.0` and `1.2.4`. Pure documentation, tests and internal
+refactoring do not by themselves require a bump.
+
+Published prereleases use `-alpha.N`, `-beta.N` or `-rc.N` and precede the
+corresponding stable release. Published versions are immutable. YAML, evidence
+and MCP protocol versions are separate from the application version; a schema
+bump does not permit a silent public break within 1.x. Historical 0.x releases
+were experimental. Release preparation follows the repository's version policy.
+
 ## What stays stable
 
 | Surface | Supported contract |
@@ -86,5 +101,7 @@ missing fields and schema-1 incidents, invalid/future schemas and partial data.
 Native lifecycle suites cover migration-sensitive task, reload and control behavior.
 
 The [validation guide](../VALIDATION.md) describes end-to-end and comparison
-checks. Compatibility evidence is engineering evidence; independent project
-feedback remains unverified.
+checks. Compatibility evidence is engineering evidence. Use the shared
+[field testing contract](https://github.com/Ceng-0324/Devd/blob/dev/docs/FIELD_TESTING.md)
+to record maintainer trials and independent trials separately; current field
+evidence and missing feedback are tracked in the validation guide.
