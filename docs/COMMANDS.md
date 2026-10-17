@@ -572,6 +572,12 @@ unsupported or incomparable fields become `unknown`, never a fabricated
 change. Similar symptoms do not become a shared root cause, recurrence or
 recovery-effect conclusion.
 
+Event gaps are grouped by their published `reason`; record counts and payload
+fingerprints are compared separately, independent of record order. Omitted gap
+diagnostic counts are also compared. Each side's `complete` requires a stable
+capture, no gaps or omitted gap diagnostics, and no truncated retained events.
+This flag describes evidence coverage, not current health or operation success.
+
 Log attachments remain metadata only. Their counts and attribution may differ,
 but log text is never used as incident-window evidence. The output keeps at
 most 2,048 changes and 16 MiB; each input is the existing 16 MiB regular-file

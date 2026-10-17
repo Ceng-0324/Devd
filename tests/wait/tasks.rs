@@ -79,6 +79,15 @@ fn test_task_completion_wait_restart_and_stale_success() {
     let first = outcome(&mut project.spawn(&["wait", "--json"]), "ready");
     assert_eq!(first["services"]["build"]["status"], "succeeded");
     assert!(first["services"]["build"]["pid"].is_null());
+    let text = project.invoke(&["wait", "build", "worker"]);
+    assert!(text.status.success());
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(
+        text.lines().any(|line| line.starts_with("\"build\": ready")
+            && line.contains("requires=completed-successfully,")),
+        "{text}"
+    );
+    assert!(text.lines().any(|line| line.starts_with("\"worker\": ready") && line.contains("requires=running,")), "{text}");
     assert_eq!(
         project.json(&["explain", "build", "--json"])["conclusion"],
         "task-succeeded"

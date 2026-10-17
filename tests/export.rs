@@ -72,6 +72,91 @@ fn transferred_report(root: &Path, filename: &str) -> Value {
 }
 
 #[test]
+fn test_compare_cli_preserves_gap_metadata_and_truncated_evidence() {
+    use serde_json::json;
+    let root = temporary();
+    let original: Value =
+        serde_json::from_str(include_str!("fixtures/compat/v0.9/live.json")).unwrap();
+    let compare = |left: &Value, right: &Value| {
+        for (file, report) in [("left.json", left), ("right.json", right)] {
+            fs::write(root.path().join(file), serde_json::to_vec(report).unwrap()).unwrap();
+        }
+        let output = invoke(
+            root.path(),
+            &["compare", "left.json", "right.json", "--json"],
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let baseline = compare(&original, &original);
+    assert_eq!(baseline["left"]["complete"], true);
+    assert_eq!(baseline["right"]["complete"], true);
+    assert!(!baseline["changes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|c| c["category"] == "evidence-gap"));
+
+    let mut truncated = original.clone();
+    truncated["events"]["entries"][0]["truncated"] = json!(true);
+    let result = compare(&original, &truncated);
+    assert_eq!(result["left"]["complete"], true);
+    assert_eq!(result["right"]["complete"], false);
+    assert_eq!(
+        result["changes"], baseline["changes"],
+        "truncation must not imply an operation failure"
+    );
+    let both = compare(&truncated, &truncated);
+    assert_eq!(both["left"]["complete"], false);
+    assert_eq!(both["right"]["complete"], false);
+
+    let mut left = original.clone();
+    left["events"]["gaps"] = json!([{"reason":"recovered-tail","bytes":12}]);
+    for (gaps, omitted, key) in [
+        (
+            json!([{"reason":"unfinished-record","bytes":12}]),
+            0,
+            "unfinished-record",
+        ),
+        (
+            json!([{"reason":"recovered-tail","bytes":24}]),
+            0,
+            "recovered-tail/payload",
+        ),
+        (
+            json!([{"reason":"recovered-tail","bytes":12}, {"reason":"recovered-tail","bytes":12}]),
+            0,
+            "recovered-tail",
+        ),
+        (left["events"]["gaps"].clone(), 4, "omitted-gaps"),
+    ] {
+        let mut right = left.clone();
+        right["events"]["gaps"] = gaps;
+        right["events"]["omitted_gaps"] = json!(omitted);
+        let result = compare(&left, &right);
+        assert!(
+            result["changes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|c| c["category"] == "evidence-gap" && c["key"] == key),
+            "{result}"
+        );
+        assert_eq!(result["left"]["complete"], false);
+        assert_eq!(result["right"]["complete"], false);
+    }
+    assert_eq!(
+        fs::read_dir(root.path()).unwrap().count(),
+        2,
+        "offline comparison created state"
+    );
+}
+
+#[test]
 fn test_diagnose_cli_rejects_bad_reports_and_instance_options_without_state() {
     let root = temporary();
     let path = root.path().join("report.json");

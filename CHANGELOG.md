@@ -3,7 +3,14 @@
 Release assets, source revisions and validation evidence are on
 [GitHub Releases](https://github.com/Ceng-0324/Devd/releases).
 
-## v1.0.1 — 2026-10-17
+## v1.0.1 — Unreleased
+
+- Render task readiness requirements as `completed-successfully` in `wait`
+  text output, preserving service labels, JSON and exit codes.
+- Compare event gaps by their published reasons, payload fingerprints and
+  counts, and report changes in omitted gap diagnostics separately.
+- Mark comparison evidence incomplete when retained timeline events are
+  truncated, even when capture is stable and no gaps were recorded.
 
 - Reject symlinked state temporary files before publication so state writes do
   not overwrite external targets.
