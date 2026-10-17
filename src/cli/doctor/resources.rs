@@ -293,6 +293,7 @@ mod tests {
         }
         let config = DevdConfig {
             version: "1".into(),
+            dependency_timeout: std::time::Duration::from_secs(30),
             services: [("api".into(), service)].into(),
         };
         let (checks, report) = collect(&config, root.path());

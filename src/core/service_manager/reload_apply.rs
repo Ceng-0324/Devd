@@ -317,7 +317,7 @@ impl ReloadExecution {
                                 names.insert(id, name.clone());
                             }
                             *sent = true;
-                            *deadline = Instant::now() + manager.options.dependency_timeout;
+                            *deadline = Instant::now() + manager.config.dependency_timeout;
                         }
                         let snapshot = manager.snapshots.borrow();
                         for name in self.plan.start_layers.iter().take(*layer + 1).flatten() {
@@ -335,7 +335,7 @@ impl ReloadExecution {
                         if !ready {
                             if Instant::now() >= *deadline {
                                 return Err(
-                                    "reload readiness timed out; stopping the whole stack".into()
+                                    format!("reload readiness timed out after {:?}; stopping the whole stack", manager.config.dependency_timeout)
                                 );
                             }
                             return Ok(false);

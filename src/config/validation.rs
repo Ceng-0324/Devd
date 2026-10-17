@@ -38,6 +38,21 @@ impl DevdConfig {
         if self.services.is_empty() {
             return Err(invalid("services", "at least one service is required"));
         }
+        if self.dependency_timeout.is_zero() {
+            return Err(invalid(
+                "dependency-timeout",
+                "dependency readiness timeout must be positive",
+            ));
+        }
+        if std::time::Instant::now()
+            .checked_add(self.dependency_timeout)
+            .is_none()
+        {
+            return Err(invalid(
+                "dependency-timeout",
+                "dependency readiness timeout does not fit the runtime timer",
+            ));
+        }
 
         let services: BTreeMap<_, _> = self.services.iter().collect();
         let mut claimed_ports: Vec<(&str, SocketAddr)> = Vec::new();

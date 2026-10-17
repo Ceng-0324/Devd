@@ -25,7 +25,7 @@ were experimental. Release preparation follows the repository's version policy.
 | Surface | Supported contract |
 | --- | --- |
 | CLI | Documented commands, flags, selectors and exit-code meanings remain compatible within 1.x. New optional flags/commands may be added. Human-readable wording, colors and table layout are not parsing interfaces. |
-| YAML | `version: "1"`, named profiles, documented keys and existing snake_case aliases remain readable. Omitted `kind` still means `service`; shorthand dependencies still mean `started`. Unknown or conflicting settings are rejected. |
+| YAML | `version: "1"`, named profiles, documented keys and existing snake_case aliases remain readable. Omitted `kind` still means `service`; shorthand dependencies still mean `started`. The optional `dependency-timeout` field controls readiness waits and defaults to 30 seconds. Unknown or conflicting settings are rejected. |
 | Agent | JSON-lines schema 1, method names, target/grant checks and documented error codes. Requests reject unknown fields; clients accept additional response fields and check `ok`, then the report outcome. |
 | MCP | stdio with protocol negotiation for `2025-06-18` and `2025-11-25`, documented tools and argument shapes. Protocol version is separate from devd and evidence versions. Tool success can carry an unsuccessful report outcome. |
 | Transferred reports | `diagnose`, `compare` and offline MCP accept export schemas 1 (live), 2 (stored run) and 3 (incident). Embedded incident artifacts 1/2 retain their historical limits; schema 1 has no retained relationship graph. Unsupported artifact versions remain unknown evidence; unsupported outer export versions are rejected. |
@@ -81,6 +81,13 @@ explicitly use `kind: task` and `condition: completed-successfully`; tasks defau
 to no automatic retry and must not use service-only health/recovery settings.
 A prior output file does not satisfy a new task generation. See the
 [task guide](COMMANDS.md#one-shot-tasks).
+
+`init --scan node` is an additive CLI workflow. It reads a bounded regular
+`package.json`, prints a reviewable candidate by default, and only writes with
+`--yes` when the destination does not exist. It does not change existing
+`init` behavior or execute package scripts. Generated task stacks use the
+`dependency-timeout` field; choose a value at least as long as the generated
+5-minute task timeout.
 
 Existing Agent controls keep their default response shape. `--restart-budget`
 and `--deduplicate` are independently opt-in launcher choices and do not grant

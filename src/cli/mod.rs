@@ -11,6 +11,7 @@ mod export;
 mod graph;
 mod impact;
 mod incidents;
+mod init;
 mod instances;
 mod mcp;
 mod protocol;
@@ -35,7 +36,6 @@ use std::{
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use clap::{Parser, Subcommand, ValueEnum};
-use tokio::fs::OpenOptions;
 use tokio::io::AsyncWriteExt;
 
 use crate::{
@@ -180,21 +180,7 @@ enum Command {
         format: graph::GraphFormat,
     },
     /// Create a starter configuration without replacing an existing file.
-    Init {
-        /// Name of the first service.
-        #[arg(long, default_value = "app")]
-        service: String,
-        /// Command to start the first service.
-        #[arg(long)]
-        #[cfg_attr(unix, arg(default_value = "sh -c 'echo app-ready; exec sleep 3600'"))]
-        #[cfg_attr(
-            windows,
-            arg(
-                default_value = "powershell.exe -NoLogo -NoProfile -Command 'Write-Output app-ready; Start-Sleep -Seconds 3600'"
-            )
-        )]
-        command: String,
-    },
+    Init(init::Args),
     /// Save a copy of the YAML configuration or restore it to a new file.
     Snapshot {
         #[command(subcommand)]
@@ -258,7 +244,7 @@ impl Cli {
         if let Some(profile) = &self.profile {
             validate_profile_name(profile)?;
             match self.command {
-                Command::Init { .. } => {
+                Command::Init(_) => {
                     bail!("--profile is not supported by init; add profiles to the generated YAML");
                 }
                 Command::Snapshot { .. } => {
@@ -320,28 +306,7 @@ impl Cli {
                 )
                 .await?;
             }
-            Command::Init { service, command } => {
-                let yaml = serde_yaml::to_string(&serde_json::json!({
-                    "version": "1",
-                    "services": { (service): { "command": command } },
-                }))?;
-                let config = ConfigLoader::from_str(&yaml, &config_path)?;
-                ServiceManager::new(config, options)?;
-                let mut file = OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&config_path)
-                    .await
-                    .with_context(|| {
-                        format!(
-                            "cannot create {}; an existing configuration will not be replaced",
-                            config_path.display()
-                        )
-                    })?;
-                file.write_all(yaml.as_bytes()).await?;
-                file.flush().await?;
-                output(&format!("Created {}\n", config_path.display()))?;
-            }
+            Command::Init(args) => init::run(args, &config_path, options).await?,
             Command::Snapshot { action } => match action {
                 SnapshotAction::Save { name } => {
                     let path = snapshot::save(&config_path, &state_dir, &name).await?;

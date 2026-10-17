@@ -21,7 +21,7 @@ MINOR，向后兼容的错误修复升 PATCH。例如从 `1.2.3` 分别升到 `2
 | 接口 | 支持范围 |
 | --- | --- |
 | CLI | 1.x 保持已文档化命令、参数、实例选择和退出码含义兼容，可增加可选参数与命令。终端文字、颜色和表格排版不适合拿来做解析接口。 |
-| YAML | 保留 `version: "1"`、命名 profile、已文档化字段与既有 snake_case 别名。省略 `kind` 仍是 service，简写依赖仍是 started。未知或冲突配置会拒绝。 |
+| YAML | 保留 `version: "1"`、命名 profile、已文档化字段与既有 snake_case 别名。省略 `kind` 仍是 service，简写依赖仍是 started。可选的 `dependency-timeout` 控制依赖就绪等待，默认 30 秒。未知或冲突配置会拒绝。 |
 | Agent | JSON-lines schema 1、方法、target/grant 核验与错误码。请求拒绝未知字段；客户端应容忍回复新增字段，先看 `ok`，再看报告结果。 |
 | MCP | stdio 协商 `2025-06-18`／`2025-11-25`，保留已文档化工具及参数。协议版本与 devd、证据版本是三回事；工具返回成功仍可能携带失败结果。 |
 | 移交报告 | `diagnose`、`compare` 和离线 MCP 接受 export schema 1（在线）、2（历史运行）、3（事故）。内嵌事故 artifact 1/2 保留各自限制，schema 1 没有留存完整关系图。未知 artifact 版本只作未知证据，未知外层 export 版本拒绝。 |
@@ -65,6 +65,10 @@ Agent/MCP 的单次请求错误放在 JSON 回复里，不对应一次进程退�
 旧服务 YAML 不必补 task。需要替换构建 wrapper 时，显式用 `kind: task` 与
 `condition: completed-successfully`；任务默认不自动重试，也不能混入只适用于长驻服务的
 健康／恢复设置。旧输出文件不会放行新一代任务，详见[任务指南](COMMANDS.zh-CN.md#一次性任务)。
+
+`init --scan node` 是新增的 CLI 工作流：读取有界的普通 `package.json`，默认只输出待审阅候选，
+只有 `--yes` 且目标不存在时才写入。它不改变原有 `init` 行为，也不执行 package 脚本。生成的任务栈使用
+`dependency-timeout`，其值应至少覆盖生成任务固定的 5 分钟超时。
 
 旧 Agent 控制默认回复形状保持不变。`--restart-budget` 与 `--deduplicate` 分别由启动者
 显式开启，都不增加 grant。去重开启后，客户端须传 `operation_key` 并理解

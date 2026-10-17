@@ -52,7 +52,26 @@ You'll need Rust 1.95 or newer. Install from the repository root:
 cargo install --path . --locked
 ```
 
-Run `devd init` in a project directory to create a runnable one-service starter configuration (using `sh` on Unix and Windows PowerShell on Windows). Use `--service` and `--command` to set its service name and command; `--config` chooses the output path. The command refuses to replace an existing file. For a two-service Unix example, use this configuration:
+Run `devd init` in a project directory to create a runnable one-service starter configuration (using `sh` on Unix and Windows PowerShell on Windows). Use `--service` and `--command` to set its service name and command; `--config` chooses the output path. The command refuses to replace an existing file.
+
+For a Node.js project, `devd init --scan node --json` reviews a bounded
+`package.json` and lists candidate scripts. Select a build and consumer script
+to generate a reviewed task-to-consumer configuration:
+
+```bash
+devd init --scan node --build-script build --consumer-script dev --json
+devd init --scan node --build-script build --consumer-script dev --yes
+```
+
+The scan is read-only, never installs dependencies or executes scripts, and
+does not overwrite an existing configuration. The generated task runs for up
+to 5 minutes and defaults to a 10-minute dependency readiness timeout; use
+`--dependency-timeout` to choose another readiness window. For builds longer
+than 5 minutes, also edit the generated `task-timeout` before starting.
+On Windows, generated npm, pnpm and yarn invocations use their `.cmd`
+entrypoints.
+
+For a two-service Unix example, use this configuration:
 
 ```yaml
 version: "1"

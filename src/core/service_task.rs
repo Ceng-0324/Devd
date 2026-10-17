@@ -1,12 +1,15 @@
 #[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
-use std::{collections::BTreeMap, future::pending, io, process::ExitStatus, time::Duration};
+use std::{
+    collections::BTreeMap, future::pending, io, process::ExitStatus, sync::Arc, time::Duration,
+};
 
 use chrono::Utc;
 use tokio::{sync::watch, task::JoinSet};
 
 use crate::config::{
-    BackoffType, ResourceLimitAction, RestartPolicy, RestartPolicyType, ServiceConfig, ServiceKind,
+    BackoffType, DevdConfig, ResourceLimitAction, RestartPolicy, RestartPolicyType, ServiceConfig,
+    ServiceKind,
 };
 use crate::logging::{LogCollector, LogLevel};
 
@@ -35,6 +38,7 @@ pub(super) struct ServiceTask {
     config: ServiceConfig,
     checker: Option<HealthChecker>,
     options: ManagerOptions,
+    configurations: watch::Receiver<Arc<DevdConfig>>,
     control: watch::Receiver<Control>,
     snapshots: watch::Sender<RuntimeSnapshot>,
     logs: LogCollector,
@@ -60,6 +64,7 @@ impl ServiceTask {
         config: ServiceConfig,
         checker: Option<HealthChecker>,
         options: ManagerOptions,
+        configurations: watch::Receiver<Arc<DevdConfig>>,
         control: watch::Receiver<Control>,
         snapshots: watch::Sender<RuntimeSnapshot>,
         logs: LogCollector,
@@ -72,6 +77,7 @@ impl ServiceTask {
             config,
             checker,
             options,
+            configurations,
             control,
             snapshots,
             logs,
@@ -440,7 +446,10 @@ impl ServiceTask {
 
     async fn wait_dependencies(&mut self) -> Result<Option<DependencyRecovery>, String> {
         let mut updates = self.snapshots.subscribe();
-        let deadline = tokio::time::Instant::now() + self.options.dependency_timeout;
+        // Snapshot the committed policy for this attempt. A reload updates future
+        // attempts even for retained actors, without changing an in-flight deadline.
+        let timeout = self.configurations.borrow().dependency_timeout;
+        let deadline = tokio::time::Instant::now() + timeout;
         let mut waiting = BTreeMap::new();
         loop {
             if !self.running() {
@@ -470,7 +479,7 @@ impl ServiceTask {
                             service: edge.service.clone(),
                             condition: edge.condition.clone(),
                             observed_generation: dependency.event_generation,
-                            timeout: self.options.dependency_timeout,
+                            timeout,
                             remaining: deadline
                                 .saturating_duration_since(tokio::time::Instant::now()),
                         });
@@ -498,8 +507,8 @@ impl ServiceTask {
                 biased;
                 _ = self.control.changed() => return Ok(None),
                 _ = tokio::time::sleep_until(deadline) => {
-                    self.cause = Some(self.record(EventData::DependencyTimedOut { timeout: self.options.dependency_timeout }));
-                    return Err(format!("dependency readiness timed out after {:?}", self.options.dependency_timeout));
+                    self.cause = Some(self.record(EventData::DependencyTimedOut { timeout }));
+                    return Err(format!("dependency readiness timed out after {timeout:?}"));
                 },
                 _ = updates.changed() => {},
             }
@@ -778,6 +787,13 @@ impl OutputReaders {
 mod tests {
     use super::*;
 
+    fn test_policy() -> watch::Receiver<Arc<DevdConfig>> {
+        watch::channel(Arc::new(
+            serde_yaml::from_str("version: '1'\nservices: {}").unwrap(),
+        ))
+        .1
+    }
+
     #[test]
     fn test_task_success_cannot_publish_after_control_acceptance() {
         for control in [
@@ -806,6 +822,7 @@ mod tests {
                 config,
                 None,
                 ManagerOptions::new("unused"),
+                test_policy(),
                 receiver,
                 snapshots.clone(),
                 LogCollector::new(Default::default()).unwrap(),
@@ -843,6 +860,7 @@ mod tests {
             config,
             None,
             ManagerOptions::new("unused"),
+            test_policy(),
             control,
             snapshots.clone(),
             LogCollector::new(Default::default()).unwrap(),
@@ -914,6 +932,7 @@ mod tests {
             config,
             None,
             ManagerOptions::new("unused"),
+            test_policy(),
             receiver,
             snapshots,
             LogCollector::new(Default::default()).unwrap(),
@@ -952,5 +971,58 @@ mod tests {
         }
         config.restart.max_attempts = 0;
         assert!(!should_restart(&config, true, 0));
+    }
+    #[tokio::test(start_paused = true)]
+    async fn test_dependency_timeout_allows_task_completion_after_thirty_seconds() {
+        let config: ServiceConfig = serde_yaml::from_str(
+            "command: consumer\ndepends-on: [{service: build, condition: completed-successfully}]",
+        )
+        .unwrap();
+        let (_control, receiver) = watch::channel(Control::Running);
+        let (snapshots, _) = watch::channel(RuntimeSnapshot {
+            supervisor_pid: 42,
+            event_run_id: None,
+            services: [
+                ("consumer".into(), ServiceSnapshot::default()),
+                (
+                    "build".into(),
+                    ServiceSnapshot {
+                        kind: ServiceKind::Task,
+                        status: ServiceState::Running,
+                        event_generation: Some(7),
+                        ..Default::default()
+                    },
+                ),
+            ]
+            .into(),
+        });
+        let policy = Arc::new(
+            serde_yaml::from_str("version: '1'\ndependency-timeout: 2m\nservices: {}").unwrap(),
+        );
+        let (_policy, policies) = watch::channel(policy);
+        let mut task = ServiceTask::new(
+            "consumer".into(),
+            config,
+            None,
+            ManagerOptions::new("unused"),
+            policies,
+            receiver,
+            snapshots.clone(),
+            LogCollector::new(Default::default()).unwrap(),
+            EventRecorder::new("unused".into(), None),
+            None,
+        );
+        let completion = async {
+            tokio::time::sleep(Duration::from_secs(45)).await;
+            snapshots.send_modify(|state| {
+                let build = state.services.get_mut("build").unwrap();
+                build.status = ServiceState::Succeeded;
+                build.last_exit_code = Some(0);
+            });
+        };
+        let start = tokio::time::Instant::now();
+        let (ready, _) = tokio::join!(task.wait_dependencies(), completion);
+        assert!(ready.unwrap().is_some());
+        assert_eq!(start.elapsed(), Duration::from_secs(45));
     }
 }

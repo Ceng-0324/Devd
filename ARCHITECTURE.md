@@ -6,6 +6,12 @@
 
 ## 控制与实例接口
 
+### 项目扫描与配置生成
+
+`cli::init::scan` 仅在显式 `init --scan node` 时读取配置目录的根 `package.json`，复用普通单硬链接文件读取、前后元数据复验和取消控制。单次只运行一个只读 blocking worker，manifest 限 1 MiB，候选脚本／workspace 声明各限 128 项；workspace 不递归展开，遗漏、警告和未确认语义显式输出。包管理器以显式声明优先、锁文件元数据其次，不执行包管理器、不读取 `.env` 或修改项目。交互和非交互复用同一候选／YAML 生成器，用户选择后才赋予 task 完成语义，不从脚本名推导健康或依赖。生成文档经现有 manager 预检后，用临时文件和取消／发布受理 CAS 排序，再以 no-clobber 原子发布；JSON 只在成功发布后报告 published。标准输入在有界专用线程等待，stdout 复用平台异步输出和五秒期限，不占用 supervisor 控制链。
+
+顶层 `dependency-timeout`（默认 30 秒）属于有效配置，profile 可覆盖，null 恢复默认。manager 与 actor 共用 configuration watch，actor 在每次依赖等待开始时固定有效期限；reload 提交更新后，保留 actor 的未来尝试也使用新策略，已有等待不延长。reload 层门控使用候选已提交期限，超时仍停止全栈。`ManagerOptions` 不再保存第二份等待策略。计划摘要包含配置值，预览分别列出全局配置字段和服务变更；只修改期限不重建进程。任务执行超时、依赖期限、客户端 deadline 互不替代。
+
 ### Agent 与 MCP 适配
 
 `cli::agent` 提供 schema 1 JSON-lines stdio adapter；`cli::mcp` 使用官方 rmcp SDK 提供本地 MCP stdio。两者共用 `cli::control_session` 的实例附着、逐项授权与控制用例。启动时读取活 Identity，并核对所选 config/profile/规范化 state 与实例摘要，固定整个会话的 instance/run。授权仅从启动参数 `--allow` 获取，默认空；四类控制在任何 I/O 前验证 grant 与请求 target。可选 `--restart-budget SERVICE=COUNT` 只限制本次 adapter 会话内已授权的 restart，`--deduplicate` 单独开启控制 operation_key 去重；二者默认关闭，不能由请求开启或扩大。在线操作包装成 `Request::Scoped`，supervisor 在分派前验证 instance/run，拒绝嵌套 scope；原有 CLI 请求保留兼容。adapter 不另建控制器，继续调用现有 restart/stop/reload/wait/诊断用例。离线 clean 复用 CLI 的 typed execute，core 在状态锁内、完成回执前再次比较 expected_run。status/restart 复用导出状态白名单，wait 复用严格就绪解码器，export 直接返回结构不写文件。stdin 使用独立线程与有界 channel，避免不可取消的标准输入占据 Tokio blocking pool；JSON-lines 串行分派、16 KiB 行／4096 字节内部请求／8 MiB 回复／5 秒输出超时。EOF 排空输入，信号只取消 adapter；已受理控制不回滚。机器回复的 ok 表示报告可用，具体成功由 outcome 决定；启用去重时同 key 同摘要复用完成结果，同 key 冲突拒绝，执行中、完成和 unknown 状态可见，终态保留 10 分钟，最多 128 条且不跨重连。describe 身份标注为会话建立时观测，不冒充持续在线状态。该授权约束 adapter，不构成同用户进程沙箱、多用户 RBAC。

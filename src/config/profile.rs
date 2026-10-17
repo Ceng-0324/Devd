@@ -7,7 +7,7 @@ use serde::{
 use serde_yaml::{Mapping, Value};
 use thiserror::Error;
 
-use super::{ConfigValidationError, DevdConfig, ServiceConfig};
+use super::{default_dependency_timeout, ConfigValidationError, DevdConfig, ServiceConfig};
 
 #[derive(Debug, Error)]
 pub enum ProfileError {
@@ -48,6 +48,13 @@ pub fn validate_profile_name(name: &str) -> Result<(), ProfileError> {
 #[serde(deny_unknown_fields)]
 pub(super) struct ConfigDocument {
     version: String,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_value",
+        rename = "dependency-timeout",
+        alias = "dependency_timeout"
+    )]
+    dependency_timeout: Option<Value>,
     #[serde(default, deserialize_with = "deserialize_named_maps")]
     services: BTreeMap<String, Mapping>,
     #[serde(default, deserialize_with = "deserialize_named_maps")]
@@ -57,6 +64,13 @@ pub(super) struct ConfigDocument {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Profile {
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_value",
+        rename = "dependency-timeout",
+        alias = "dependency_timeout"
+    )]
+    dependency_timeout: Option<Value>,
     #[serde(default, deserialize_with = "deserialize_named_maps")]
     services: BTreeMap<String, Mapping>,
 }
@@ -85,9 +99,22 @@ impl ConfigDocument {
             normalize_service(service)?;
         }
         // Parse the base and every override strictly, even if not selected.
-        let base = Self::decode(document.version.clone(), document.services.clone())?;
+        let base_timeout = parse_dependency_timeout(document.dependency_timeout.as_ref(), false)
+            .map_err(serde_yaml::Error::custom)?;
+        let base = Self::decode(
+            document.version.clone(),
+            base_timeout,
+            document.services.clone(),
+        )?;
         for (name, profile) in &mut document.profiles {
             validate_profile_name(name).map_err(serde_yaml::Error::custom)?;
+            parse_dependency_timeout(profile.dependency_timeout.as_ref(), true).map_err(
+                |error| {
+                    serde_yaml::Error::custom(format!(
+                        "profiles.{name}.dependency-timeout: {error}"
+                    ))
+                },
+            )?;
             for (service_name, service) in &mut profile.services {
                 let result = (|| {
                     normalize_service(service)?;
@@ -124,10 +151,18 @@ impl ConfigDocument {
 
     pub(super) fn select(self, name: &str) -> Result<DevdConfig, ProfileError> {
         validate_profile_name(name)?;
+        let base_dependency_timeout =
+            parse_dependency_timeout(self.dependency_timeout.as_ref(), false).map_err(
+                |source| ProfileError::Parse {
+                    name: name.to_owned(),
+                    source: serde_yaml::Error::custom(source),
+                },
+            )?;
         let Self {
             version,
             mut services,
             profiles,
+            ..
         } = self;
         let profile = profiles.get(name).ok_or_else(|| ProfileError::Unknown {
             name: name.to_owned(),
@@ -137,6 +172,15 @@ impl ConfigDocument {
                 profiles.keys().cloned().collect::<Vec<_>>().join(", ")
             },
         })?;
+        let dependency_timeout = match profile.dependency_timeout.as_ref() {
+            Some(value) => parse_dependency_timeout(Some(value), true).map_err(|source| {
+                ProfileError::Parse {
+                    name: name.to_owned(),
+                    source: serde_yaml::Error::custom(source),
+                }
+            })?,
+            None => base_dependency_timeout,
+        };
         for (service_name, overrides) in &profile.services {
             let service = services.entry(service_name.clone()).or_default();
             for (key, value) in overrides {
@@ -153,7 +197,7 @@ impl ConfigDocument {
                 service.insert(key.clone(), value.clone());
             }
         }
-        Self::decode(version, services).map_err(|source| ProfileError::Parse {
+        Self::decode(version, dependency_timeout, services).map_err(|source| ProfileError::Parse {
             name: name.to_owned(),
             source,
         })
@@ -161,6 +205,7 @@ impl ConfigDocument {
 
     fn decode(
         version: String,
+        dependency_timeout: std::time::Duration,
         services: BTreeMap<String, Mapping>,
     ) -> Result<DevdConfig, serde_yaml::Error> {
         let services = services
@@ -171,8 +216,33 @@ impl ConfigDocument {
                     .map_err(|error| serde_yaml::Error::custom(format!("services.{name}: {error}")))
             })
             .collect::<Result<_, _>>()?;
-        Ok(DevdConfig { version, services })
+        Ok(DevdConfig {
+            version,
+            dependency_timeout,
+            services,
+        })
     }
+}
+
+fn parse_dependency_timeout(
+    value: Option<&Value>,
+    allow_null: bool,
+) -> Result<std::time::Duration, String> {
+    match value {
+        None => Ok(default_dependency_timeout()),
+        Some(Value::Null) if allow_null => Ok(default_dependency_timeout()),
+        Some(Value::Null) => Err("dependency-timeout cannot be null".to_owned()),
+        Some(value) => {
+            super::schema::deserialize_duration(value.clone()).map_err(|error| error.to_string())
+        }
+    }
+}
+
+fn deserialize_optional_value<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Some(Value::deserialize(deserializer)?))
 }
 
 fn normalize_service(service: &mut Mapping) -> Result<(), serde_yaml::Error> {
