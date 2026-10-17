@@ -9,6 +9,14 @@ This release will combine the verified v1.0.1 patch fixes with the project
 scanning, reviewable init, and explicit long-task dependency readiness work
 tracked in the v1.1.0 milestone. No standalone v1.0.1 release is planned.
 
+- Add bounded, read-only Node.js project scanning to `init`, with npm/pnpm/yarn/bun
+  detection, reviewable task-to-consumer generation, interactive selection, JSON
+  output, no-clobber publication and regular-file checks for `package.json`.
+- Add configurable `dependency-timeout` with profile overrides and reload-plan
+  change reporting. Generated scan configurations use a 5-minute task timeout
+  and reject shorter dependency windows so a consumer cannot time out while its
+  build task is still within its configured deadline.
+
 - Render task readiness requirements as `completed-successfully` in `wait`
   text output, preserving service labels, JSON and exit codes.
 - Compare event gaps by their published reasons, payload fingerprints and

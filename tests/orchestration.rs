@@ -61,6 +61,7 @@ fn sleeper(directory: &Path) -> ServiceConfig {
 fn config(services: impl IntoIterator<Item = (&'static str, ServiceConfig)>) -> DevdConfig {
     DevdConfig {
         version: "1".into(),
+        dependency_timeout: Duration::from_secs(2),
         services: services
             .into_iter()
             .map(|(name, service)| (name.into(), service))
@@ -524,16 +525,13 @@ async fn test_dependency_recovery_coalesces_replacements_while_waiting_for_other
     .command;
     let mut settings = options(&directory);
     settings.grace_period = Duration::from_secs(5);
-    settings.dependency_timeout = Duration::from_secs(5);
-    let manager = ServiceManager::new(
-        config([
-            ("root", sleeper(directory.path())),
-            ("gate", gate),
-            ("child", child),
-        ]),
-        settings,
-    )
-    .unwrap();
+    let mut configuration = config([
+        ("root", sleeper(directory.path())),
+        ("gate", gate),
+        ("child", child),
+    ]);
+    configuration.dependency_timeout = Duration::from_secs(5);
+    let manager = ServiceManager::new(configuration, settings).unwrap();
     let controller = manager.controller();
     let mut run = RunningManager::start(manager);
     bounded(async { while run.output.recv().await.unwrap().message != "ready" {} }).await;
@@ -700,7 +698,6 @@ async fn test_dependency_recovery_does_not_resurrect_completed_services() {
 fn options(directory: &TempDir) -> ManagerOptions {
     let mut options = ManagerOptions::new(directory.path().join("state/services.json"));
     options.grace_period = Duration::from_millis(100);
-    options.dependency_timeout = Duration::from_secs(2);
     options
 }
 
@@ -1007,11 +1004,10 @@ async fn test_orchestration_dependency_timeout_rolls_back_running_stack() {
     dependent
         .depends_on
         .push(dependency("root", DependencyCondition::HttpReady));
-    let mut settings = options(&directory);
-    settings.dependency_timeout = Duration::from_millis(150);
-    let mut run = RunningManager::start(
-        ServiceManager::new(config([("root", root), ("dependent", dependent)]), settings).unwrap(),
-    );
+    let mut configuration = config([("root", root), ("dependent", dependent)]);
+    configuration.dependency_timeout = Duration::from_millis(150);
+    let mut run =
+        RunningManager::start(ServiceManager::new(configuration, options(&directory)).unwrap());
     let initial = run.until(|s| s.services["root"].pid.is_some()).await;
     assert!(
         matches!(run.finish().await, Err(ServiceManagerError::FailedServices { failures }) if failures.keys().collect::<Vec<_>>() == ["dependent"])
@@ -1675,11 +1671,11 @@ fn test_orchestration_preflight_rejects_invalid_or_unsupported_configuration() {
         ServiceManager::new(config([("child", child.clone())]), invalid),
         Err(ServiceManagerError::InvalidDuration { .. })
     ));
-    let mut invalid = settings.clone();
+    let mut invalid = config([("child", child)]);
     invalid.dependency_timeout = Duration::ZERO;
     assert!(matches!(
-        ServiceManager::new(config([("child", child)]), invalid),
-        Err(ServiceManagerError::ZeroDependencyTimeout)
+        ServiceManager::new(invalid, settings.clone()),
+        Err(ServiceManagerError::InvalidConfig(_))
     ));
     assert!(!settings.state_path.exists());
 }

@@ -79,10 +79,10 @@ class ReleaseVerificationTests(unittest.TestCase):
                 self.assertNotEqual(executable.parent, archive.parent)
                 commands = [call.args[0] for call in run.call_args_list]
                 self.assertEqual([Path(command[1]).name for command in commands],
-                                 ["smoke.py", "incident-smoke.py", "recovery-smoke.py", "stable-smoke.py", "mcp-smoke.py"])
+                                 ["smoke.py", "incident-smoke.py", "recovery-smoke.py", "stable-smoke.py", "init-smoke.py", "mcp-smoke.py"])
                 for command in commands:
                     self.assertEqual(command[command.index("--binary") + 1], str(executable))
-                run.side_effect = [None, None, None, None, subprocess.CalledProcessError(1, "mcp-smoke")]
+                run.side_effect = [None, None, None, None, None, subprocess.CalledProcessError(1, "mcp-smoke")]
                 with self.assertRaises(subprocess.CalledProcessError):
                     verify_release.verify_archive(archive, self.version, self.revision, smoke=True)
 

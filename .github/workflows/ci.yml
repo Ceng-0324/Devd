@@ -97,5 +97,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '24'
+      - name: Exercise reviewed Node init and task completion gates
+        run: python scripts/init-smoke.py
       - name: Exercise official MCP Inspector interoperability
         run: python scripts/mcp-smoke.py

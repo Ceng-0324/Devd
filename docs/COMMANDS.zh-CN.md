@@ -7,6 +7,7 @@
 服务跑起来了，接下来呢？按手头的事情往下找。每节先给用法，再说明失败、权限和证据的边界，省得出事时还要猜。
 
 - [一次性任务](#一次性任务)
+- [项目扫描与审阅式 init](#项目扫描与审阅式-init)
 - [文件前置条件与路径规则](#文件前置条件与路径规则)
 - [实例身份与发现](#实例身份与发现)
 - [等待就绪](#等待就绪)
@@ -50,13 +51,54 @@ services:
 
 任务默认 `restart.policy: never`，即使写了 restart 块却没写 policy，也不会自动重试。需要时显式设为 `on-failure`，沿用已有退避和累计 `max-attempts`。但迁移执行一半失败，再试一次可能重复外部副作用，devd 不会替你回滚数据库。失败且没有剩余重试次数时停止全栈；停止、取消和超时都不会算成功，即使程序在被终止时返回了 0。
 
-`task-timeout`（别名 `task_timeout`）须为正值，默认 `5m`，从进程启动后开始计时。超时会触发正常进程树关闭，清理还可能需要额外时间。当前依赖等待固定为 `30s`，CLI 没有调整参数；`wait --timeout` 只改变客户端期限。调大 task-timeout 不会延长下游等待，因此长构建尚未超过自身期限，下游也可能已经等待超时。长驻服务不能设置 task-timeout。profile 整体替换 kind 和 task-timeout，`null` 清除超时覆盖；restart 仍按字段合并，因此基础配置明确写出的 policy 会继续被继承。
+`task-timeout`（别名 `task_timeout`）须为正值，默认 `5m`，从进程启动后开始计时。超时会触发正常进程树关闭，清理还可能需要额外时间。依赖就绪使用顶层 `dependency-timeout`（别名 `dependency_timeout`），默认 `30s`，可写 `10m` 这样的正时长或整数秒数，零值和超出运行时计时器范围的值会拒绝；profile 可以覆盖，`null` 恢复默认值。`wait --timeout` 只改变客户端期限。调大 task-timeout 不会延长下游等待，因此应选择能覆盖构建窗口的依赖期限。长驻服务不能设置 task-timeout。profile 整体替换 kind 和 task-timeout，`null` 清除任务超时覆盖；restart 仍按字段合并，因此基础配置明确写出的 policy 会继续被继承。
 
 重启消费者会复用本次 supervisor 运行内已经成功的任务。`restart generate` 才是明确重跑：受理时立即作废旧成功结果，命令在新进程启动或快速任务完成后返回，需要等完成再用 `wait generate`。已放行的消费者不会因此被追溯停掉；长驻消费者可以显式开启 `restart-on-dep-recovery`，等任务新代次成功后联动重启。新启动尝试必须等新结果。重新启动 supervisor 则会重新执行任务，不采信旧状态或完成标记文件。
 
 reload 只重跑受影响任务及其下游，无关任务保留成功结果。每层要等任务成功才能推进，仍沿用依赖等待期限；重载期间暂停受影响任务的自动重试，失败停止全栈。纯任务栈全部成功后 `start` 退出 0，脚本直接使用这个退出码；之后 supervisor 已经结束，不能再指望在线 `wait` 回答。
 
 状态与导出报告增加 `kind`，wait 证据增加 `requires_completed`；旧报告省略这些字段仍可读取。新增 `succeeded`、`completed-successfully` 和 `task-timed-out` 枚举值需要支持任务的新版本读取，旧二进制不保证向前兼容。可运行示例见 [examples/tasks](../examples/tasks/README.md)。
+
+### 项目扫描与审阅式 init
+
+`init --scan node` 读取配置目录中的 `package.json`，生成“先完成构建任务、再启动长驻消费者”的候选配置。扫描限制为 manifest 1 MiB、脚本 128 项、workspace 128 项；只识别 npm、pnpm、yarn、bun，不安装依赖、不读取 `.env`、不执行脚本。manifest 必须是普通且非符号链接文件；FIFO 等特殊文件会拒绝。
+
+先审阅候选，再写入配置：
+
+```bash
+devd init --scan node --json
+devd init --scan node --build-script build --consumer-script dev --json
+devd init --scan node --build-script build --consumer-script dev --yes
+```
+
+第一条只输出扫描元数据和候选脚本；第二条输出带 `published: false` 的生成 YAML；第三条仅在目标配置不存在时写入。`--json --yes` 只输出 JSON 报告。需要从 stdin 选择脚本并确认时使用 `--interactive`。生成任务固定为 `task-timeout: 5m`，因此 `--dependency-timeout` 不能小于 `5m`（默认 `10m`）。
+
+只扫描根 manifest。workspace 的数组／对象声明按稳定顺序输出并标为未确认，不展开 glob、不读取子包 manifest。显式 `packageManager` 优先于锁文件元数据，冲突给警告；没有显式字段且锁文件提示冲突、或包管理器不受支持时失败。脚本名以带引号参数传给 `<manager> run`，不增加隐式 shell。空值、非字符串、以 `-` 开头或含控制字符的脚本名省略并计数。`build`、`dev` 等名称仅是角色建议，用户显式选择后才建立 task／consumer 配方，不推断端口、健康探测、环境文件或 workspace 依赖。写入前审阅调用命令、脚本正文、cwd、成功语义和两类超时。消费者名由 `--service` 指定（默认 `app`），与生成任务名冲突会拒绝。
+
+选择 `build` 和 `dev` 后的结果示例：
+
+```yaml
+version: "1"
+dependency-timeout: 600s
+services:
+  build-task:
+    kind: task
+    cwd: .
+    command: npm run build
+    task-timeout: 300s
+  app:
+    cwd: .
+    command: npm run dev
+    depends-on: [{service: build-task, condition: completed-successfully}]
+    restart: {policy: never}
+```
+
+仅扫描的 JSON 使用 `schema_version: 1`，包含来源／包管理器、scripts（名称、调用命令、脚本正文、source、cwd、角色建议）、workspace 声明、省略计数、`unconfirmed`、`warnings` 和 `complete`。`complete` 只描述扫描覆盖，不确认生命周期语义。选择模式 JSON 以 `scan` 包装扫描报告，并带 `configuration`、`published` 和 `next_steps`；只有成功发布后 `published` 才为 true。`--interactive` 在确认前展示同一候选和 YAML，与 `--yes`、`--json` 冲突；`--command` 仅用于原有 starter 模式。无效选择、manifest／配置／I/O 失败退出 1，clap 参数冲突退出 2。
+
+扫描限时 30 秒，发布另限 30 秒，输出上限 2 MiB／5 秒，单次交互输入上限 8 KiB。Ctrl+C 可取消；取消先于发布受理时阻止迟到文件，已受理发布可能完成。失败清理临时文件，已有普通文件、链接和特殊文件都不覆盖。单次 OS 文件调用不能强行打断。报告可能包含路径和脚本正文，移交前须审阅。
+
+只修改 timeout 的 reload 不重启服务；后续尝试（包括保留 actor 的手动／自动重启）读取已提交策略，进行中的依赖等待保持原期限。reload JSON 的 `config_changed_fields` 和文本配置字段显示此变化。超时事件／错误保留实际时长；客户端期限与控制授权仍独立。
+
 
 ### 文件前置条件与路径规则
 
@@ -580,7 +622,7 @@ devd reload --apply --plan 'sha256:<64位十六进制摘要>' --candidate devd.n
 
 应用时重新读取、校验候选，并对活实例重新计算计划。配置、进程代次或生命周期状态变化都会使 ID 过期，需要重新预览；实例中的服务也必须处于稳定状态。`apply_available: true` 表示支持应用，不保证稍后执行必然成功。实例/profile、状态目录和 supervisor 日志选项固定。候选只更新内存中的有效配置，不改写源 YAML，也不改变默认候选路径。
 
-先按旧图逆序停止受影响服务，等旧 actor 和进程组清理完成，再切换配置基线、按新图正序分层启动。任务须成功完成；有健康检查的长驻服务必须通过检查，其余长驻服务必须启动；每层沿用依赖超时（30 秒）。无关服务保留原进程，等价配置不会重启任何服务。执行期间拒绝手动 restart 和第二次 reload；受影响服务暂停自动恢复，成功后恢复新配置中的策略，无关服务继续按原策略运行。全栈 stop 可以抢占任意阶段。
+先按旧图逆序停止受影响服务，等旧 actor 和进程组清理完成，再切换配置基线、按新图正序分层启动。任务须成功完成；有健康检查的长驻服务必须通过检查，其余长驻服务必须启动；每层使用候选配置的 `dependency-timeout`（默认 30 秒）。无关服务保留原进程，等价配置不会重启任何服务。执行期间拒绝手动 restart 和第二次 reload；受影响服务暂停自动恢复，成功后恢复新配置中的策略，无关服务继续按原策略运行。全栈 stop 可以抢占任意阶段。
 
 失败会停止全栈，包括无关服务，不自动回滚。配置一旦切换，新的内存基线保持到 supervisor 退出。执行报告列出已完成停止、观测到的启动、已就绪的层和 `config_committed`；失败或中断返回非零退出码。生命周期事件记录计划、结果及进度，可通过 `events` 查询，启用事件持久化后也可用 `--stored`。客户端断开或等待响应超过 60 秒不会取消已受理的重载，重试前先检查 status/events。
 
@@ -621,6 +663,7 @@ devd reload --apply --plan 'sha256:<64位十六进制摘要>' --candidate devd.n
 | `devd check` | 校验配置、命令引号、依赖关系及当前支持的设置 |
 | `devd graph [--format text|dot|mermaid]` | 显示依赖边与启动层，或导出依赖图 |
 | `devd init [--service NAME] [--command CMD]` | 创建通过校验的初始配置，不覆盖现有文件 |
+| `devd init --scan node [--build-script NAME] [--consumer-script NAME] [--json] [--yes]` | 审阅有界 Node.js 扫描结果，并按需生成 task → consumer 配置 |
 | `devd snapshot save <NAME>` | 保存磁盘上整份 YAML 到项目状态目录 |
 | `devd snapshot restore <NAME> --output <FILENAME>` | 恢复成原配置目录中的新文件 |
 

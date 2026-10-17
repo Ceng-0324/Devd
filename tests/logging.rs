@@ -396,6 +396,7 @@ mod managed {
     fn config(services: impl IntoIterator<Item = (&'static str, ServiceConfig)>) -> DevdConfig {
         DevdConfig {
             version: "1".into(),
+            dependency_timeout: Duration::from_secs(30),
             services: services
                 .into_iter()
                 .map(|(name, config)| (name.into(), config))

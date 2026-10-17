@@ -8,6 +8,7 @@ use, diagnosis time, or adoption.
 
 ```bash
 python3 scripts/stable-smoke.py --binary target/debug/devd
+python3 scripts/init-smoke.py --binary target/debug/devd
 cargo test --locked --test compatibility
 python3 scripts/mcp-smoke.py --binary target/debug/devd
 ```
@@ -20,6 +21,13 @@ It also checks failure blocking and CLI exit codes. Deterministic Rust suites
 cover cancellation, competing requests, lost replies, unknown outcomes, stale
 plan/generation rejection and shutdown races; the smoke does not replace them.
 The official MCP client script exercises the selected binary too.
+
+The reviewed-init scenario requires Node/npm. It scans a synthetic project
+without running scripts or reading its FIFO `.env` on Unix, compares interactive
+and non-interactive output, rejects an existing destination without reporting
+publication, and explicitly starts the generated stack to check successful and
+failed npm build gates. The script is shared by native CI and extracted-binary
+validation; it does not constitute independent project feedback.
 
 The [compatibility contract](docs/COMPATIBILITY.md) links frozen v0.9 exports and
 legacy YAML/profile regression coverage. Release packaging runs these native

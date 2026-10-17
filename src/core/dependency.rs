@@ -210,6 +210,7 @@ mod tests {
     fn test_dependency_empty_graph() {
         let graph = DependencyGraph::from_config(&DevdConfig {
             version: "1".into(),
+            dependency_timeout: std::time::Duration::from_secs(30),
             services: HashMap::new(),
         })
         .unwrap();
@@ -399,6 +400,7 @@ mod tests {
         for mask in 0..512u16 {
             let mut config = DevdConfig {
                 version: "1".into(),
+                dependency_timeout: std::time::Duration::from_secs(30),
                 services: HashMap::new(),
             };
             let mut reachable = [[false; 3]; 3];
