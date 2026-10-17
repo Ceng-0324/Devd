@@ -83,7 +83,7 @@ devd explain api --json
 devd explain api --stored --json
 ```
 
-Online mode connects to the running supervisor and does not reread YAML. `--stored` reads retained event files after the writer has stopped, works even when the YAML has been removed, and labels the report `source: stored`; historical PIDs are evidence only. A report with `complete: false` has explicit gaps or omitted gap diagnostics, so its conclusion is bounded by retained history. Without matching events, the report says it cannot determine the cause and points to the next read-only checks. No mode performs automatic remediation.
+Online mode connects to the running supervisor and does not reread YAML. `--stored` reads retained event files after the writer has stopped, works even when the YAML has been removed, and labels the report `source: stored`; historical PIDs are evidence only. A report with `complete: false` has explicit gaps, omitted gap diagnostics, or truncated event content referenced by its explanation, so its conclusion is bounded by retained history. Without matching events, the report says it cannot determine the cause and points to the next read-only checks. No mode performs automatic remediation.
 
 Explanations follow the current service generation. Without a live service, they use the latest retained generation; stored `status` stays null. A recovered CPU or memory warning is cleared independently for that metric. Explicit causes can still explain an in-progress restart, but an old failure does not override a newer running or healthy generation. Export and Agent reports use the same rules.
 

@@ -11,6 +11,11 @@ Release assets, source revisions and validation evidence are on
   counts, and report changes in omitted gap diagnostics separately.
 - Mark comparison evidence incomplete when retained timeline events are
   truncated, even when capture is stable and no gaps were recorded.
+- Compare bounded retained lifecycle fields, including restart counts and event
+  generations, while treating absent fields as unknown.
+- Mark explanations incomplete when referenced event content is truncated.
+- Reject unsafe state lock paths before open, including Unix FIFOs, so a
+  pre-positioned special file cannot block supervisor startup.
 
 - Reject symlinked state temporary files before publication so state writes do
   not overwrite external targets.

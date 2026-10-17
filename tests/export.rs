@@ -157,6 +157,59 @@ fn test_compare_cli_preserves_gap_metadata_and_truncated_evidence() {
 }
 
 #[test]
+fn test_transferred_diagnose_and_compare_report_truncated_and_lifecycle_evidence() {
+    use serde_json::json;
+
+    let root = temporary();
+    let left: Value = serde_json::from_str(include_str!("fixtures/compat/v0.9/live.json")).unwrap();
+    let mut right = left.clone();
+    right["state"]["worker"]["restart_count"] = json!(2);
+    right["state"]["worker"]["event_generation"] = json!(3);
+    for event in right["events"]["entries"].as_array_mut().unwrap() {
+        if event["service"] == "worker" {
+            event["truncated"] = json!(true);
+        }
+    }
+
+    for (name, report) in [("left.json", &left), ("right.json", &right)] {
+        fs::write(root.path().join(name), serde_json::to_vec(report).unwrap()).unwrap();
+    }
+    let diagnosis = invoke(root.path(), &["diagnose", "right.json", "--json"]);
+    assert!(
+        diagnosis.status.success(),
+        "{}",
+        String::from_utf8_lossy(&diagnosis.stderr)
+    );
+    let diagnosis: Value = serde_json::from_slice(&diagnosis.stdout).unwrap();
+    assert_eq!(diagnosis["explanations"]["worker"]["complete"], false);
+    assert!(diagnosis["explanations"]["worker"]["details"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|detail| detail.as_str().unwrap().contains("内容被截断")));
+
+    let comparison = invoke(
+        root.path(),
+        &["compare", "left.json", "right.json", "--json"],
+    );
+    assert!(
+        comparison.status.success(),
+        "{}",
+        String::from_utf8_lossy(&comparison.stderr)
+    );
+    let comparison: Value = serde_json::from_slice(&comparison.stdout).unwrap();
+    let changes = comparison["changes"].as_array().unwrap();
+    for field in ["restart_count", "event_generation"] {
+        assert!(changes.iter().any(|change| {
+            change["category"] == "state"
+                && change["key"] == format!("worker.{field}")
+                && change["status"] == "different"
+        }));
+    }
+    assert_eq!(comparison["right"]["complete"], false);
+}
+
+#[test]
 fn test_diagnose_cli_rejects_bad_reports_and_instance_options_without_state() {
     let root = temporary();
     let path = root.path().join("report.json");
