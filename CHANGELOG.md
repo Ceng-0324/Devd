@@ -3,9 +3,9 @@
 Release assets, source revisions and validation evidence are on
 [GitHub Releases](https://github.com/Ceng-0324/Devd/releases).
 
-## v1.1.0 — Unreleased
+## v1.1.0 — 2026-10-17
 
-This release will combine the verified v1.0.1 patch fixes with the project
+This release combines the verified v1.0.1 patch fixes with the project
 scanning, reviewable init, and explicit long-task dependency readiness work
 tracked in the v1.1.0 milestone. No standalone v1.0.1 release is planned.
 
@@ -16,6 +16,9 @@ tracked in the v1.1.0 milestone. No standalone v1.0.1 release is planned.
   change reporting. Generated scan configurations use a 5-minute task timeout
   and reject shorter dependency windows so a consumer cannot time out while its
   build task is still within its configured deadline.
+
+- Generate Windows npm, pnpm and yarn invocations with their `.cmd` entrypoints
+  so doctor checks and process startup resolve the same executable.
 
 - Render task readiness requirements as `completed-successfully` in `wait`
   text output, preserving service labels, JSON and exit codes.
