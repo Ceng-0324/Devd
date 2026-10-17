@@ -76,10 +76,12 @@ mod tests {
     use super::*;
     use crate::core::service_manager::RuntimeSnapshot;
 
-    #[cfg(unix)]
     #[tokio::test]
     async fn test_write_rejects_temporary_symlink_without_touching_target() {
+        #[cfg(unix)]
         use std::os::unix::fs::symlink;
+        #[cfg(windows)]
+        use std::os::windows::fs::symlink_file as symlink;
 
         let root = tempfile::tempdir().unwrap();
         let state = root.path().join("services.json");
