@@ -3,6 +3,37 @@
 Release assets, source revisions and validation evidence are on
 [GitHub Releases](https://github.com/Ceng-0324/Devd/releases).
 
+## v1.0.0 — 2026-10-17
+
+- Establish SemVer 2.0.0 release rules for public compatibility, prerelease
+  numbering, synchronized version metadata and immutable published versions.
+
+- Add a shared bilingual field-testing guide and feedback template, keeping
+  engineering exercises, maintainer trials and independent feedback distinct.
+  Correct task documentation to describe the fixed 30-second dependency deadline;
+  `wait --timeout` does not extend it and no CLI override is currently available.
+
+- Define bilingual compatibility, upgrade and exit-code contracts. Add frozen
+  v0.9 export regressions and an integrated task/evidence/Agent workflow to native
+  CI and extracted release-binary checks, including official MCP clients. Preserve
+  failed/unknown fixed-version comparison observations and distinguish engineering
+  acceptance from still-unverified independent project feedback.
+
+- Add independently authorized Agent/MCP session restart budgets and control request deduplication. Both remain disabled by default; budgets are scoped per named service and session, operation keys are required only when deduplication is enabled, and unknown results are never replayed.
+
+- Add offline `compare LEFT RIGHT [--json]` for two explicitly selected, transferred reports. Reuse the untrusted-report validator, distinguish comparable/different/unknown configuration, scope, state, relationship, resource and evidence-gap fields, hash sensitive resource identities, and keep log attachments separate without inferring common causes or recovery effects.
+
+- Add read-only `coverage [--online] [--json]` explanations of declared resources,
+  configured monitoring and independent event/log/incident recording choices.
+  Keep static unknowns separate from live recorder failures, bounded retention
+  and observed evidence gaps; never enable monitoring or infer implicit dependencies.
+
+- Add explicit one-shot tasks with successful-completion dependency gates,
+  bounded execution, opt-in failure retries, generation-scoped manual reruns,
+  task-aware wait/reload, and retained completion/timeout diagnostics.
+  Preserve existing service defaults and replace the comparison's marker-wait
+  wrapper with native task ordering.
+
 ## v0.9.0-alpha.1 — 2026-10-14
 
 - Move detailed command, usage and permission notes out of both READMEs into

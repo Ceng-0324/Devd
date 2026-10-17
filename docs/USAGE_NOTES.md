@@ -10,6 +10,8 @@ Getting the stack running is the easy part. Here's what to expect afterward: wha
 
 Commands retain shell-style quoting on Windows. Prefer forward slashes in YAML paths, and quote paths containing spaces, for example `command: "'C:/Program Files/Python/python.exe' app.py"`. Invoke `powershell.exe -NoProfile -File script.ps1` or `cmd.exe /C ...` explicitly when needed. `devd init`, followed by `devd start` in one terminal and `devd status`, `devd top`, or `devd stop` in another, is a Windows quick start without Unix tools.
 
+**Tasks finish; services stay up.** `kind: task` lets a dependent wait for exit code 0 with `completed-successfully`. Tasks do not retry unless you explicitly select `on-failure`; restarting a consumer reuses the current successful result, while `restart TASK` runs the task again. Repeated migrations can repeat side effects, so choose retry policies deliberately. See [one-shot tasks](COMMANDS.md#one-shot-tasks) for timeout, reload, and shutdown behavior.
+
 **Extend health checks with your own command.** When a connection or HTTP status cannot tell you whether a service is ready, use `type: script`. An executable or script in any language can act as the probe; exit code `0` means healthy. For example, given your application's `scripts/check_ready.py`:
 
 ```yaml

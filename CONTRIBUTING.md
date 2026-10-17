@@ -5,6 +5,9 @@ between observation and control clearer, not widen it by accident.
 
 ## Getting started
 
+Development happens on `dev`. Branch from `dev` and target it with development
+pull requests; `main` is the release branch.
+
 Use Rust 1.95 or newer, Python 3.11 or newer, and Git. From the repository
 root, run the checks that cover the code you changed:
 
@@ -21,6 +24,16 @@ python3 scripts/generate-third-party-notices.py --check
 `tests/README.md` explains platform fixtures and release checks. CI runs the
 Rust suite and native smoke scenarios on Linux, macOS, and Windows. Do not
 replace a native platform result with cross-compilation.
+
+## Trying devd in a project
+
+Use the [field testing guide](docs/FIELD_TESTING.md)
+([简体中文](docs/FIELD_TESTING.zh-CN.md)) and
+[Field feedback template](.github/ISSUE_TEMPLATE/field-feedback.yml).
+Record the real job, setup friction, assistance, outcome, and whether you used
+it again. A failed or abandoned trial is useful; anonymous projects are fine.
+Maintainer trials and independent feedback use the same record with their
+relationship stated. Tests and prepared examples remain engineering evidence.
 
 ## Changes and reviews
 
@@ -57,8 +70,13 @@ public documentation. Release packaging verifies this boundary.
 
 ## Maintenance scope
 
-devd is an alpha project. Issues and pull requests are the public planning
-record; an accepted issue is not a promise of a release date, support response,
-or compatibility commitment. Keep proposals concrete enough to reproduce and
+v1.0.0 begins the stable public contract; development continues on `dev`.
+Compatibility expectations are defined in [the stability contract](docs/COMPATIBILITY.md).
+Releases follow [SemVer and the version policy](RELEASING.md#version-policy):
+public breaks require MAJOR, compatible features or deprecations MINOR, and
+compatible fixes PATCH. Choose the version for the whole release; a commit does
+not automatically trigger a bump.
+Issues and pull requests remain the public planning record; an accepted issue
+is not a promise of a release date or support response. Keep proposals concrete enough to reproduce and
 review. For security-sensitive reports, follow `SECURITY.md` instead of opening
 a public issue.

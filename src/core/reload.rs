@@ -256,6 +256,7 @@ fn normalized(config: &DevdConfig) -> Result<serde_json::Value> {
         if let Some(path) = &mut service.env_file {
             *path = clean_path(&cwd.join(&*path), false);
         }
+        service.task_timeout = service.effective_task_timeout();
         match &mut service.healthcheck {
             Some(HealthCheck::Socket { path, .. }) => {
                 *path = clean_path(&cwd.join(&*path), false);
@@ -306,6 +307,23 @@ mod tests {
 
     fn config(services: &str) -> DevdConfig {
         ConfigLoader::from_str(&format!("version: '1'\nservices:\n{services}"), "devd.yml").unwrap()
+    }
+
+    #[test]
+    fn test_task_reload_normalizes_defaults_and_tracks_timeout_and_kind() {
+        let base = config("  build: {command: build, kind: task}\n");
+        let explicit = config(
+            "  build: {command: build, kind: task, task-timeout: 300s, restart: {policy: never}}\n",
+        );
+        assert_eq!(normalized(&base).unwrap(), normalized(&explicit).unwrap());
+        let changed = config("  build: {command: build, kind: task, task-timeout: 2s}\n");
+        let plan = preview(&base, &changed, &snapshot(&base), None).unwrap();
+        assert_eq!(plan.services["build"].changed_fields, ["task-timeout"]);
+        let service = config("  build: {command: build, restart: {policy: never}}\n");
+        let plan = preview(&base, &service, &snapshot(&base), None).unwrap();
+        assert!(plan.services["build"]
+            .changed_fields
+            .contains(&"kind".into()));
     }
 
     fn snapshot(config: &DevdConfig) -> RuntimeSnapshot {

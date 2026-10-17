@@ -10,6 +10,8 @@
 
 Windows 命令也使用 shell 风格引号。YAML 路径优先写 `/`，有空格的程序路径需要加引号，例如 `command: "'C:/Program Files/Python/python.exe' app.py"`。需要脚本解释器时显式调用 `powershell.exe -NoProfile -File script.ps1` 或 `cmd.exe /C ...`。Windows 快速体验只需 `devd init`，然后一个终端运行 `devd start`，另一个终端执行 `devd status`、`devd top` 或 `devd stop`。
 
+**任务要等做完，服务要等就绪。** `kind: task` 配合 `completed-successfully`，让下游等任务成功退出。任务默认不重试，只有显式选择 `on-failure` 才会重试；重启消费者复用当前成功结果，`restart TASK` 才会再跑一遍。迁移可能产生重复副作用，别把重试当成免费的撤销重做。超时、reload 和停栈行为见[一次性任务](COMMANDS.zh-CN.md#一次性任务)。
+
 **健康检查可以用自己的命令扩展。** 端口能连、HTTP 返回正常，还不足以证明业务就绪时，用 `type: script` 执行自定义检查。任意语言的脚本或可执行程序都可以，退出码 `0` 表示健康。假设应用已提供 `scripts/check_ready.py`：
 
 ```yaml

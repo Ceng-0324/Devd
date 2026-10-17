@@ -1,10 +1,16 @@
 # devd - 架构设计文档
 
+## 稳定接口与验收
+
+1.x 的公开边界见 docs/COMPATIBILITY.md 及中文版：CLI、YAML、Agent/MCP 与导出证据各自版本化，内部 Rust API、进程间 wire protocol 与状态布局不作稳定接入接口。旧发布二进制生成的固定报告独立于当前 writer 验证读取兼容；stable-smoke 串联任务门控、覆盖、受限控制、重载与离线对比。CI 和发布归档共用这些场景，后者明确使用解压二进制。工程验收与固定版本对照不代替实际使用反馈；作者真实项目实测和独立试用按 [统一要求](docs/FIELD_TESTING.zh-CN.md) 分别记录。
+
 ## 控制与实例接口
 
 ### Agent 与 MCP 适配
 
-`cli::agent` 提供 schema 1 JSON-lines stdio adapter；`cli::mcp` 使用官方 rmcp SDK 提供本地 MCP stdio。两者共用 `cli::control_session` 的实例附着、逐项授权与控制用例。启动时读取活 Identity，并核对所选 config/profile/规范化 state 与实例摘要，固定整个会话的 instance/run。授权仅从启动参数 `--allow` 获取，默认空；四类控制在任何 I/O 前验证 grant 与请求 target。在线操作包装成 `Request::Scoped`，supervisor 在分派前验证 instance/run，拒绝嵌套 scope；原有 CLI 请求保留兼容。adapter 不另建控制器，继续调用现有 restart/stop/reload/wait/诊断用例。离线 clean 复用 CLI 的 typed execute，core 在状态锁内、完成回执前再次比较 expected_run。status/restart 复用导出状态白名单，wait 复用严格就绪解码器，export 直接返回结构不写文件。stdin 使用独立线程与有界 channel，避免不可取消的标准输入占据 Tokio blocking pool；JSON-lines 串行分派、16 KiB 行／4096 字节内部请求／8 MiB 回复／5 秒输出超时。EOF 排空输入，信号只取消 adapter；已受理控制不回滚。机器回复的 ok 表示报告可用，具体成功由 outcome 决定，id 不保证控制去重。describe 身份标注为会话建立时观测，不冒充持续在线状态。该授权约束 adapter，不构成同用户进程沙箱、多用户 RBAC。
+`cli::agent` 提供 schema 1 JSON-lines stdio adapter；`cli::mcp` 使用官方 rmcp SDK 提供本地 MCP stdio。两者共用 `cli::control_session` 的实例附着、逐项授权与控制用例。启动时读取活 Identity，并核对所选 config/profile/规范化 state 与实例摘要，固定整个会话的 instance/run。授权仅从启动参数 `--allow` 获取，默认空；四类控制在任何 I/O 前验证 grant 与请求 target。可选 `--restart-budget SERVICE=COUNT` 只限制本次 adapter 会话内已授权的 restart，`--deduplicate` 单独开启控制 operation_key 去重；二者默认关闭，不能由请求开启或扩大。在线操作包装成 `Request::Scoped`，supervisor 在分派前验证 instance/run，拒绝嵌套 scope；原有 CLI 请求保留兼容。adapter 不另建控制器，继续调用现有 restart/stop/reload/wait/诊断用例。离线 clean 复用 CLI 的 typed execute，core 在状态锁内、完成回执前再次比较 expected_run。status/restart 复用导出状态白名单，wait 复用严格就绪解码器，export 直接返回结构不写文件。stdin 使用独立线程与有界 channel，避免不可取消的标准输入占据 Tokio blocking pool；JSON-lines 串行分派、16 KiB 行／4096 字节内部请求／8 MiB 回复／5 秒输出超时。EOF 排空输入，信号只取消 adapter；已受理控制不回滚。机器回复的 ok 表示报告可用，具体成功由 outcome 决定；启用去重时同 key 同摘要复用完成结果，同 key 冲突拒绝，执行中、完成和 unknown 状态可见，终态保留 10 分钟，最多 128 条且不跨重连。describe 身份标注为会话建立时观测，不冒充持续在线状态。该授权约束 adapter，不构成同用户进程沙箱、多用户 RBAC。
+
+`control_session::policy` 独占会话预算、去重状态及控制受理锁。worker 持有 permit 与结果登记责任，回复 future 被取消不会提前放行其他控制；明确未受理的 typed 拒绝释放额度与键，可能受理后失败保留 unknown。活动条目不淘汰，终态限时保留，单结果 256 KiB、合计 8 MiB，超限只存 unknown；预算耗尽不阻止已授权 stop。缓存查询先检查 grant／target，再核验在线身份；endpoint 消失后持状态锁核对索引及最终快照，不再次调用控制用例。该锁只约束本 adapter，不替代 supervisor 的并发和计划重验。
 
 MCP 固定协商 2025-06-18／2025-11-25，在线提供 14 个工具；离线 `--report` 先于项目解析，只用 diagnose 的有界读取与验证器加载启动者指定文件，开放一个历史诊断工具。MCP transport 在 SDK 调度前限 8 个请求，控制处理器限 1；请求 ID 映射为单调内部 ID，取消后等待处理器结束再释放名额，避免迟到回复命中新复用 ID。初始化／普通工具 30 秒期限，wait 最长一小时；输出锁、写入和 flush 共限 5 秒。不相关通知在 transport 丢弃。EOF／信号取消 adapter，已经受理的控制不回滚；MCP 错误与报告 outcome 分开表达。固定版本 Inspector 验收复用真实 supervisor，见 tests/README.md。
 
@@ -87,6 +93,14 @@ flowchart LR
 
 默认状态目录为 `<config-dir>/.devd/<config-name>/`，可用 `--state-dir` 覆盖。服务 cwd 相对配置目录；环境文件相对服务 cwd。stop 的响应表示请求已接受，前台 supervisor 负责完成反向依赖关闭。手动 restart 通过 manager channel 停止旧 actor 并重建，保留计数/日志代次、重新检查依赖；仅当下游显式开启 `restart-on-dep-recovery` 时，目标恢复会触发后续联动。命令成功只表示指定目标的新进程已启动。
 
+### 一次性任务完成门控
+
+配置以 `kind: service|task` 区分生命周期，任务仅允许 `completed-successfully` 入边；任务的未声明重试策略解析为 never，其他服务保留 on-failure 默认。字段使用同一 serde 定义，contextual defaults 在严格解码前处理，profile 在有效字段合并后应用这些默认值。task-timeout 默认五分钟，校验为正值且能放入运行期计时器。
+
+actor 复用进程所有权、日志排空、依赖等待及累计重试预算。任务成功先等待受管进程树清理，再发布无 PID 的 Succeeded；超时记录独立事件，经正常关闭后按失败处理。成功发布与手动重跑接受遵循同一 snapshot → control 锁序，受理重跑立即作废旧完成状态。consumer 的门控观察决定当前尝试能否继续，不追溯撤销已通过的门控；依赖恢复联动仍须由长驻消费者显式开启。
+
+ServiceSnapshot 的 kind 默认 service 以读取旧状态；ready 在任务上要求 Succeeded、退出码 0、进程代次和无 PID，wait 与 reload 共用该判定。reload 清理并替换受影响 actor/快照后再启动新任务，无关成功结果保留；受影响任务沿用重载期间暂停自动恢复的边界。全任务栈 actor 完成后自然退出，历史 PID 与磁盘成功记录不能放行新 run。
+
 ### Profiles 与配置快照
 
 单文件 `profiles` 配合全局 `--profile` 选择有效配置。`config/profile.rs` 独占文档解析、别名归一化及覆盖合并；运行时 `DevdConfig` 只包含所选结果。所有定义检查 schema，选中结果再执行依赖和就绪校验。`env`、`restart` 按字段合并，其余字段整体替换；可选字段支持 null 清除。CLI 在默认或显式运行目录下追加 profile 子目录：Unix 将大写字节转义为 `~hh`，Windows 使用前述名称编码，保证大小写不敏感文件系统上的不同 profile 也有不同端点。控制命令只校验名称和计算路径，不读取 YAML；服务目录、端口与应用文件不在隔离范围内。
@@ -116,6 +130,27 @@ flowchart LR
 `core::events::query` 定义事件类型筛选、运行/序号游标和带 schema 版本的批次；`cli::events` 负责文本/JSON 输出及控制协议订阅。首批历史与 live receiver 在发布锁内一起取得，后续批次即使无筛选匹配也更新水位。内存保留 1024 条、单事件最多 16 KiB；订阅缓冲 256 条，落后显式报告缺口并断开。日志与事件共享 16 个长连接名额，控制命令保留独立接入空间。在线查询不重新解析 YAML。
 
 `storage` 统一提供带锁、安全文件访问、有界记录读取、尾部修复与轮转的 JSONL 底层，日志与事件各自持有独立目录、schema 和订阅。`core::events::storage` 仅在 `start --persist-events` 时开启，在阻塞线程中追加运行上下文、事件、缺口与排空结束标记；默认单文件 10 MiB、3 份归档。启动打开失败阻止服务启动；运行写入失败只停用本次事件 writer，通过 watch 发布 `failed`，stderr 限时异步报告，不停止服务。writer 排空结束前持有状态锁租约。`events --stored` 使用共享读锁，在单记录 64 KiB、结果最多 1000 条与 128 个缺口的边界内扫描；明确报告不完整运行、保留窗口缺失和未完成尾记录，拒绝完整损坏记录及不支持的 schema。事件和应用日志的写盘失败策略分别由 server 管理。
+
+### 诊断覆盖与盲区
+
+`cli::coverage` 的纯转换模型共用于静态 CLI 和在线 `Request::Coverage`，输出 schema 1。静态路径在单个 blocking worker 中有界读取普通配置、选择 profile、校验与解析 cwd，不检查应用资源。在线仅取 supervisor 的有效配置 watch、运行状态、事件窗口及记录器状态；不重读磁盘 YAML，不扫描旧文件推测记录开关。记录器通过独立状态 watch 报告 disabled/recording/failed，事故采集器发布 dropped/skipped 统计，storage 提供只读原子淘汰计数；均不参与控制或改变现有失败策略。静态 recording 保持 unknown；在线不可用直接失败，不作静态回退。
+
+模型区分声明和配置的监测选项，不声称采样成功；已完成 task 的状态可见，监测边界仍限进程代次。内存淘汰、事件截断、事故采集遗漏与制品淘汰分别说明来源及后果，磁盘未扫描的证据保持未知。容量常量复用实际存储定义，不解释为时间窗口。跨来源结果明确非原子；最多 256 服务、512 条 requires/paths，并标明省略。输入 1 MiB、报告 2 MiB，协议按该上限限制帧，采集 30 秒、可取消 stdout 5 秒；核对在线配置/profile 与 schema。Agent/MCP 工具目录保持原有范围。
+
+### 离线证据对比
+
+`cli::compare` 只接受两条启动者指定的报告路径，分别调用
+`cli::export::diagnose::load_json` 的有界读取、schema 校验、事件身份/顺序
+校验和解释重算，再在纯 JSON 值上比较。它不读取配置、状态或嵌入资源，不
+连接 supervisor，也不把比较结果接入 Agent/MCP 控制面。配置、profile、
+instance、平台与观察范围各自保留 `comparable`/`different`/`unknown` 状态；
+平台在既有 schema 未记录时明确未知。资源选择器、保存的关系边、历史状态、
+解释和 gap 分开生成变化，缺少双方字段只产生 unknown。请求/观察路径以
+SHA-256 标识；触发事件只比较数据哈希并保留观察时间，不输出 payload。观察
+时间区间保留为证据，不声称正文、根因、复发或恢复效果。
+日志附件仅比较数量和来源归属，不进入事故窗口。比较最多 2048 项、输出
+16 MiB，沿用每个输入 16 MiB、30 秒读取和 5 秒输出边界，文本字段经过终端
+控制字符转义；不扩展 MCP/Agent 工具目录。
 
 ### 确定性解释
 

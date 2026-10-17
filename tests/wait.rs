@@ -1,4 +1,8 @@
 use serde_json::{json, Value};
+#[path = "wait/coverage.rs"]
+mod coverage;
+#[path = "wait/tasks.rs"]
+mod tasks;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -145,7 +149,11 @@ impl Project {
     }
 
     fn start(&mut self) {
-        self.supervisor = Some(self.spawn(&["start"]));
+        self.start_with(&["start"]);
+    }
+
+    fn start_with(&mut self, args: &[&str]) {
+        self.supervisor = Some(self.spawn(args));
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             assert!(

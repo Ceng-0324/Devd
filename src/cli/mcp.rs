@@ -11,7 +11,6 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
-use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 #[derive(clap::Args)]
@@ -22,6 +21,16 @@ pub(super) struct Args {
     /// Explicit controls; omitted means read-only. Grants cannot come from tools.
     #[arg(long, value_enum, value_delimiter = ',', conflicts_with = "report")]
     allow: Vec<Grant>,
+    /// Limit accepted restarts per service for this adapter session (repeat SERVICE=COUNT).
+    #[arg(
+        long = "restart-budget",
+        value_name = "SERVICE=COUNT",
+        conflicts_with = "report"
+    )]
+    restart_budget: Vec<String>,
+    /// Deduplicate control requests for 10 minutes within this adapter session.
+    #[arg(long, conflicts_with = "report")]
+    deduplicate: bool,
     /// Load only this historical report; never attach to a running instance.
     #[arg(long)]
     pub(super) report: Option<PathBuf>,
@@ -33,7 +42,6 @@ enum Source {
 }
 struct Adapter {
     source: Source,
-    controls: Semaphore,
     admissions: transport::Admissions,
     shutdown: CancellationToken,
 }
@@ -43,7 +51,7 @@ impl ServerHandler for Adapter {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2025_11_25)
             .with_server_info(Implementation::new("devd", env!("CARGO_PKG_VERSION")))
-            .with_instructions("Local devd session. Live tools are bound to one instance and run; report tools contain historical evidence only. Controls require launcher grants and an explicit target from devd_identity. Reload/clean require fresh preview plans. Cancellation does not roll back accepted actions; inspect status/events before retrying. Report availability is not proof that its outcome succeeded. No shell or automatic recovery is provided.")
+        .with_instructions("Local devd session. Live tools are bound to one instance and run; report tools contain historical evidence only. Controls require launcher grants and an explicit target from devd_identity. Optional restart budgets and operation-key deduplication are independently launcher-authorized and session-scoped. When deduplication is enabled, every control requires operation_key; reuse the same key after a lost reply and never retry an unknown outcome with a new key. Reload/clean require fresh preview plans. Cancellation does not roll back accepted actions. Report availability is not proof that its outcome succeeded. No shell or automatic recovery is provided.")
     }
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
         Cow::Owned(vec![
@@ -87,17 +95,6 @@ impl ServerHandler for Adapter {
                 }
                 Source::Live(session) => {
                     let operation = tools::operation(&request.name, args)?;
-                    let _permit = if operation.control().is_some() {
-                        match self.controls.try_acquire() {
-                            Ok(permit) => Some(permit),
-                            Err(_) => return Ok(tools::failure(
-                                "busy",
-                                "another control is in progress; inspect status before retrying",
-                            )),
-                        }
-                    } else {
-                        None
-                    };
                     let result = session.execute(operation).await;
                     Ok(match result {
                         Ok(value) => tools::result(value),
@@ -134,7 +131,8 @@ pub(super) async fn run(
     let mut signals = crate::platform::shutdown::Shutdown::new(false)?;
     let session = tokio::select! {
         _ = signals.recv() => return Ok(()),
-        result = control_session::attach(socket, config, state, profile, args.allow) => result?,
+        result = control_session::attach(socket, config, state, profile, args.allow,
+            control_session::parse_policy(&args.restart_budget, args.deduplicate)?) => result?,
     };
     serve(Source::Live(Box::new(session)), signals).await
 }
@@ -154,7 +152,6 @@ async fn serve(source: Source, mut signals: crate::platform::shutdown::Shutdown)
     let transport = transport::Stdio::new(shutdown.clone())?;
     let adapter = Adapter {
         source,
-        controls: Semaphore::new(1),
         admissions: transport.admissions.clone(),
         shutdown: shutdown.clone(),
     };

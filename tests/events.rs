@@ -513,6 +513,22 @@ fn test_cli_event_disk_failure_disables_recording_but_services_keep_running() {
     wait(|| (events(&project, &[]).persistence == Some(PersistenceState::Failed)).then_some(()));
     let pid = project.running().services["worker"].pid.unwrap();
     assert!(kill(Pid::from_raw(pid as i32), None).is_ok());
+    let coverage: serde_json::Value = serde_json::from_str(&success(
+        project.invoke(&["coverage", "--online", "--json"]),
+    ))
+    .unwrap();
+    assert_eq!(coverage["evidence"]["events"]["state"], "failed");
+    assert_eq!(
+        coverage["evidence"]["events"]["retention"],
+        serde_json::json!({"max_file_bytes":1048576,"archives":1})
+    );
+    assert_eq!(coverage["evidence"]["logs"]["state"], "disabled");
+    assert_eq!(coverage["evidence"]["incidents"]["state"], "disabled");
+    assert!(coverage["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|f| f["code"] == "events-failed"));
     let batch = events(&project, &[]);
     assert!(batch
         .entries

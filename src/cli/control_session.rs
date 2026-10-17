@@ -4,14 +4,19 @@ use super::{
     protocol::{self, Request, Response},
 };
 use crate::core::{events::query::EventQuery, owned_paths, readiness::Outcome};
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
     time::Duration,
 };
+use tokio::sync::Semaphore;
+
+mod policy;
+pub(super) use policy::{parse_policy, AdmissionState, Policy};
 const MAX_LINE: usize = 16 * 1024;
 const MAX_OUTPUT: usize = 8 * 1024 * 1024;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, clap::ValueEnum)]
@@ -23,14 +28,14 @@ pub(super) enum Grant {
     Clean,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Target {
     pub instance_id: String,
     pub run_id: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 #[serde(tag = "method", rename_all = "kebab-case", deny_unknown_fields)]
 pub(super) enum Operation {
     Describe {},
@@ -62,18 +67,26 @@ pub(super) enum Operation {
     Restart {
         target: Target,
         service: String,
+        #[serde(default)]
+        operation_key: Option<String>,
     },
     Stop {
         target: Target,
+        #[serde(default)]
+        operation_key: Option<String>,
     },
     ReloadApply {
         target: Target,
         candidate: Option<PathBuf>,
         plan_id: String,
+        #[serde(default)]
+        operation_key: Option<String>,
     },
     CleanApply {
         target: Target,
         plan_id: String,
+        #[serde(default)]
+        operation_key: Option<String>,
     },
 }
 
@@ -81,7 +94,7 @@ impl Operation {
     pub(super) fn control(&self) -> Option<(Grant, &Target)> {
         match self {
             Self::Restart { target, .. } => Some((Grant::Restart, target)),
-            Self::Stop { target } => Some((Grant::Stop, target)),
+            Self::Stop { target, .. } => Some((Grant::Stop, target)),
             Self::ReloadApply { target, .. } => Some((Grant::Reload, target)),
             Self::CleanApply { target, .. } => Some((Grant::Clean, target)),
             _ => None,
@@ -89,10 +102,12 @@ impl Operation {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Clone)]
 pub(super) struct Failure {
     pub code: String,
     pub message: String,
+    #[serde(skip)]
+    rejected: bool,
 }
 
 impl Failure {
@@ -100,25 +115,36 @@ impl Failure {
         Self {
             code: code.into(),
             message: message.into(),
+            rejected: true,
         }
     }
     pub(super) fn operation(error: anyhow::Error) -> Self {
-        Self::new(
+        let rejected = error.is::<protocol::ControlRejected>();
+        let mut failure = Self::new(
             "operation-failed",
-            format!(
-                "{error:#}; accepted controls may continue: inspect status/events before retrying"
-            ),
-        )
+            format!("{error:#}; inspect status/events before retrying"),
+        );
+        failure.rejected = rejected;
+        failure
     }
     pub(super) fn internal(error: serde_json::Error) -> Self {
-        Self::new("invalid-response", error.to_string())
+        Self::uncertain("invalid-response", error.to_string())
+    }
+    fn uncertain(code: impl Into<String>, message: impl Into<String>) -> Self {
+        let mut failure = Self::new(code, message);
+        failure.rejected = false;
+        failure
     }
 }
 
+#[derive(Clone)]
 pub(super) struct Session {
     pub(super) identity: Identity,
     pub(super) socket: PathBuf,
     pub(super) allow: Vec<Grant>,
+    pub(super) policy: Policy,
+    pub(super) admission: Arc<Mutex<AdmissionState>>,
+    pub(super) controls: Arc<Semaphore>,
 }
 
 impl Session {
@@ -151,6 +177,38 @@ impl Session {
                 ));
             }
         }
+        if let Some(key) = operation.operation_key() {
+            if !self.policy.deduplicate {
+                return Err(Failure::new(
+                    "invalid-request",
+                    "operation_key requires the launcher option --deduplicate",
+                ));
+            }
+            if key.is_empty() || key.len() > 128 || key.chars().any(char::is_control) {
+                return Err(Failure::new(
+                    "invalid-request",
+                    "operation_key must be 1-128 bytes without control characters",
+                ));
+            }
+        } else if self.policy.deduplicate && operation.control().is_some() {
+            return Err(Failure::new(
+                "operation-key-required",
+                "this session requires operation_key for every control request",
+            ));
+        }
+        match operation {
+            Operation::Restart { service, .. } if service.trim().is_empty() => {
+                return Err(Failure::new(
+                    "invalid-request",
+                    "restart service cannot be empty",
+                ));
+            }
+            Operation::ReloadApply { plan_id, .. } | Operation::CleanApply { plan_id, .. } => {
+                super::reload::plan_id(plan_id)
+                    .map_err(|message| Failure::new("invalid-request", message))?;
+            }
+            _ => {}
+        }
         Ok(())
     }
 
@@ -170,13 +228,21 @@ impl Session {
             .await
             .map_err(Failure::operation)?
         {
-            Response::ScopeError { code, message } => Err(Failure { code, message }),
+            Response::ScopeError { code, message } => Err(Failure::new(code, message)),
             response => Ok(response),
         }
     }
 
     pub(super) async fn execute(&self, operation: Operation) -> Result<Value, Failure> {
         self.authorize(&operation)?;
+        let Some((_, _)) = operation.control() else {
+            return self.execute_inner(operation).await;
+        };
+        self.execute_control(operation).await
+    }
+
+    async fn execute_inner(&self, operation: Operation) -> Result<Value, Failure> {
+        let control = operation.control().map(|(grant, _)| grant);
         let response = match operation {
             Operation::Describe {} => {
                 return Ok(json!({
@@ -186,7 +252,11 @@ impl Session {
                     "methods": ["describe", "identity", "status", "events", "explain", "wait", "export", "incidents", "reload-preview", "clean-preview", "restart", "stop", "reload-apply", "clean-apply"],
                     "max_request_bytes": MAX_LINE, "max_response_bytes": MAX_OUTPUT,
                     "scope": "one-instance-and-run", "transport": "json-lines",
-                    "request_ids": "correlation-only; controls are not automatically deduplicated",
+                    "request_ids": "correlation-only",
+                    "restart_budgets": self.policy.restart_budgets,
+                    "control_policy": self.policy_report(),
+                    "control_deduplication": if self.policy.deduplicate { "enabled" } else { "disabled" },
+                    "operation_retention": if self.policy.deduplicate { Some("active-until-finished; terminal-10-minutes-or-session-end; maximum-128; capacity-full-rejects-new-keys; no-cross-session-guarantee") } else { None },
                     "disconnect": "accepted controls may continue; inspect status/events before retrying"
                 }))
             }
@@ -238,8 +308,29 @@ impl Session {
                 return self.clean(Some(plan_id)).await;
             }
         };
+        if let Some(grant) = control {
+            if !matches!(
+                (grant, &response),
+                (Grant::Restart, Response::Restarted(_))
+                    | (Grant::Stop, Response::Stopping)
+                    | (Grant::Reload, Response::Reloaded(_))
+            ) {
+                // The request was sent: an unexpected reply cannot prove that
+                // the supervisor refused it before effects.
+                return Err(Failure::uncertain(
+                    "invalid-response",
+                    "unexpected supervisor control response",
+                ));
+            }
+        }
         match response {
-            Response::Identity(identity) => encode(identity),
+            Response::Identity(identity) => {
+                let mut value = encode(identity)?;
+                if self.policy.deduplicate || !self.policy.restart_budgets.is_empty() {
+                    value["control_policy"] = self.policy_report();
+                }
+                Ok(value)
+            }
             Response::Status(snapshot) => {
                 let services: BTreeMap<_, _> = snapshot
                     .services
@@ -266,7 +357,7 @@ impl Session {
     async fn candidate(&self, path: Option<PathBuf>) -> Result<PathBuf, Failure> {
         super::absolute_config(path.as_deref().unwrap_or(&self.identity.config))
             .await
-            .map_err(Failure::operation)
+            .map_err(|error| Failure::new("operation-failed", format!("{error:#}")))
     }
 
     async fn clean(&self, plan: Option<String>) -> Result<Value, Failure> {
@@ -350,6 +441,18 @@ impl Session {
     }
 }
 
+impl Operation {
+    pub(super) fn operation_key(&self) -> Option<&str> {
+        match self {
+            Self::Restart { operation_key, .. }
+            | Self::Stop { operation_key, .. }
+            | Self::ReloadApply { operation_key, .. }
+            | Self::CleanApply { operation_key, .. } => operation_key.as_deref(),
+            _ => None,
+        }
+    }
+}
+
 fn encode(value: impl serde::Serialize) -> Result<Value, Failure> {
     serde_json::to_value(value).map_err(Failure::internal)
 }
@@ -360,6 +463,7 @@ pub(super) async fn attach(
     state: &Path,
     profile: Option<&str>,
     allow: Vec<Grant>,
+    policy: Policy,
 ) -> Result<Session> {
     let Response::Identity(identity) = protocol::request(socket, Request::Identity).await? else {
         bail!("supervisor does not support Agent identity attachment");
@@ -378,5 +482,8 @@ pub(super) async fn attach(
         identity: *identity,
         socket: socket.into(),
         allow,
+        admission: Arc::new(Mutex::new(AdmissionState::new(&policy))),
+        policy,
+        controls: Arc::new(Semaphore::new(1)),
     })
 }

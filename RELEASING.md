@@ -4,8 +4,43 @@ The release workflow is manual and uploads run-scoped artifacts. It does not
 create a tag, GitHub Release, or crates.io publication. Publishing is a separate
 action after the source revision, checks, and artifacts have been reviewed.
 
+## Version policy
+
+devd follows [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html).
+Classify the release against the public interfaces in the bilingual
+[compatibility contract](docs/COMPATIBILITY.md), using the highest-impact change
+since the previous release:
+
+| Change | Next stable version after `1.2.3` |
+| --- | --- |
+| Incompatible change to a documented public interface or removal of a deprecated interface | `2.0.0` (MAJOR; reset MINOR and PATCH) |
+| Backward-compatible functionality or public-interface deprecation | `1.3.0` (MINOR; reset PATCH) |
+| Backward-compatible bug fix | `1.2.4` (PATCH) |
+
+Before `1.0.0`, interfaces were experimental; `1.0.0` starts the stable public
+contract. Internal refactoring, tests and documentation corrections do not by
+themselves require a version bump. Conventional Commit types describe commits;
+choose one version for the combined release, not one bump per commit.
+
+Use `X.Y.Z-alpha.N`, `X.Y.Z-beta.N` or `X.Y.Z-rc.N` when publishing a prerelease,
+and mark it as a prerelease on GitHub. Increment the numeric suffix within each
+stage; a prerelease sorts below its corresponding stable version. Unpublished
+candidate builds may use the intended stable version but must identify their
+full source SHA and must not be described as a published release.
+
+`Cargo.toml` is the version source; keep the root package entry in `Cargo.lock`,
+CLI version, changelog, release notes, archive `VERSION` and tag `vX.Y.Z` (with
+any prerelease suffix) consistent. Build metadata such as `+sha` does not change
+SemVer precedence; record provenance in `REVISION` instead. Never replace an
+existing release tag or its published contents: publish a new version for fixes.
+YAML, evidence schemas and MCP protocol versions are separate compatibility
+dimensions; changing their numbers does not exempt a public break from MAJOR.
+
+## Release steps
+
 1. Confirm the Cargo version, changelog, and both READMEs describe the intended
-   release. Alpha versions must be marked as prereleases on GitHub.
+   release and follow the version policy above. All prereleases must be marked
+   as prereleases on GitHub.
 2. Run `cargo fmt --all -- --check`,
    `cargo clippy --locked --all-targets -- -D warnings`,
    `cargo test --locked --all-targets`,
@@ -45,29 +80,40 @@ action after the source revision, checks, and artifacts have been reviewed.
    Run `python scripts/recovery-smoke.py` to cover baseline drift, original
    incident evidence, shared-resource protection, replay/run guards, new-run
    readiness and transfer to an empty recipient directory. Record fixed-version
-   comparison and independent feedback separately, as described in VALIDATION.md;
-   synthetic engineering success is not user-value evidence.
-4. Trigger **Release artifacts** from main with the full source commit SHA in
+   comparison separately from field trials, as described in VALIDATION.md;
+   synthetic engineering success is not user-value evidence. Use the shared
+   [field testing contract](docs/FIELD_TESTING.md) for maintainer trials in real
+   projects and independent developer trials, labeled separately. Record failed
+   or abandoned attempts too; no fixed participant count, duration, or requirement
+   to try every feature is a release gate.
+   v1.0 additionally requires `python scripts/stable-smoke.py` for integrated
+   task/coverage/comparison/Agent behavior, frozen v0.9 report compatibility,
+   and `python scripts/mcp-smoke.py` for official-client opt-in/retry behavior.
+   Review `docs/COMPATIBILITY.md` and its Chinese version for stable interfaces,
+   exit meanings and upgrade boundaries. Record independent feedback as unverified
+   when absent. Rerun the fixed Process Compose v1.122.0 comparison for native task
+   gates; keep unsuccessful/unknown observations in its output.
+4. Trigger **Release artifacts** from `dev` for a candidate (or `main` for a release) with the full source commit SHA in
    its required `revision` input. The workflow verifies the checkout and tests
    the archived release binary on each target platform.
    The packaging entry point is `python scripts/package-release.py <target>`;
    it requires committed tracked sources and an already-built native release
    binary, checks its version against Cargo.toml, writes archives/checksums under
-   `target/release-artifacts/`, then verifies the archive and runs the stack, incident and reviewed-recovery
-   smokes using its extracted binary. Python 3.11 or newer is required.
-   It never publishes them. The eleven-file allowlist excludes local-only design
+   `target/release-artifacts/`, then verifies the archive and runs the stack, incident, reviewed-recovery, v1 workflow and MCP
+   smokes using its extracted binary. Python 3.11+ and Node 22.19+ with npm are required.
+   It never publishes them. The thirteen-file allowlist excludes local-only design
    and agent documents.
 5. Download the Linux x86_64 and macOS arm64 `.tar.gz` artifacts and Windows
    x86_64 MSVC `.zip`. Verify each archive with `shasum -a 256 -c <file>.sha256`
    (or compare PowerShell `Get-FileHash -Algorithm SHA256` against its checksum).
-   Inspect the contents: binary (`devd.exe` on Windows), license, both READMEs, bilingual command guides and usage notes under `docs/`,
+   Inspect the contents: binary (`devd.exe` on Windows), license, both READMEs, bilingual command guides, usage notes and compatibility contracts under `docs/`,
    `THIRD_PARTY_LICENSES.md`, `VERSION`, and `REVISION`; confirm the latter two match the intended release.
    Local macOS testing does not replace validation of the other artifacts.
    Automate these checks for downloaded archives with:
 
    ```bash
    python3 scripts/verify-release.py <archive> [<archive> ...] \
-     --version 0.9.0-alpha.1 --revision <full-40-character-SHA>
+     --version 1.0.0 --revision <full-40-character-SHA>
    ```
 
    Keep each checksum beside its archive. Add `--smoke` for a single native

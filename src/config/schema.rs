@@ -16,8 +16,17 @@ pub struct DevdConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[serde(remote = "Self", deny_unknown_fields)]
 pub struct ServiceConfig {
+    #[serde(default)]
+    pub kind: ServiceKind,
+    #[serde(
+        default,
+        rename = "task-timeout",
+        alias = "task_timeout",
+        with = "optional_duration"
+    )]
+    pub task_timeout: Option<Duration>,
     pub command: String,
     /// TCP addresses this service intends to bind; used by `devd doctor`.
     #[serde(default)]
@@ -54,6 +63,73 @@ pub struct ServiceConfig {
     pub restart: RestartPolicy,
     #[serde(default)]
     pub limits: Option<ResourceLimits>,
+}
+
+// Remote derive keeps one field definition while contextual defaults are applied
+// before strict decoding. This also covers direct JSON/YAML deserialization.
+impl<'de> Deserialize<'de> for ServiceConfig {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let mut value = serde_yaml::Value::deserialize(deserializer)?;
+        if let Some(fields) = value.as_mapping_mut() {
+            if fields
+                .get(serde_yaml::Value::from("kind"))
+                .and_then(|v| v.as_str())
+                == Some("task")
+            {
+                let restart = fields
+                    .entry(serde_yaml::Value::from("restart"))
+                    .or_insert_with(|| serde_yaml::Value::Mapping(Default::default()));
+                if let Some(restart) = restart.as_mapping_mut() {
+                    restart
+                        .entry(serde_yaml::Value::from("policy"))
+                        .or_insert_with(|| serde_yaml::Value::from("never"));
+                }
+            }
+        }
+        ServiceConfig::deserialize(value).map_err(serde::de::Error::custom)
+    }
+}
+
+impl Serialize for ServiceConfig {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        ServiceConfig::serialize(self, serializer)
+    }
+}
+
+impl ServiceConfig {
+    pub fn effective_task_timeout(&self) -> Option<Duration> {
+        (self.kind == ServiceKind::Task)
+            .then(|| self.task_timeout.unwrap_or(Duration::from_secs(300)))
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum ServiceKind {
+    #[default]
+    Service,
+    Task,
+}
+
+mod optional_duration {
+    use super::*;
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Duration>, D::Error> {
+        let value = Option::<serde_yaml::Value>::deserialize(deserializer)?;
+        value
+            .map(|v| deserialize_duration(v).map_err(serde::de::Error::custom))
+            .transpose()
+    }
+    pub fn serialize<S: serde::Serializer>(
+        value: &Option<Duration>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match value {
+            Some(value) => serialize_duration(value, serializer),
+            None => serializer.serialize_none(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -179,6 +255,7 @@ pub enum DependencyCondition {
     TcpReady,
     HttpReady,
     ScriptReady,
+    CompletedSuccessfully,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

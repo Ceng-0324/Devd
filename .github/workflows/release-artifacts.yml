@@ -58,7 +58,10 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Verify archive provenance and native recovery/incident smokes
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Verify archive provenance and native workflow/client smokes
         env:
           DEVD_RELEASE_TARGET: ${{ matrix.target }}
         run: python scripts/package-release.py "$DEVD_RELEASE_TARGET"

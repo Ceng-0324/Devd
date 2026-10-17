@@ -1,0 +1,730 @@
+{
+  "schema_version": 3,
+  "identity": null,
+  "source": "stored",
+  "incident": {
+    "recorded": {
+      "schema_version": 1,
+      "source": "live-recorder-recorded-evidence",
+      "selected_instance_id": "9ae46946ba5f238f2860d68cecd5db65085197e111abdc3cb62c6cfbf1668e6e",
+      "selected_run": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+      "atomic": false,
+      "complete": false,
+      "diagnostics": [],
+      "entries": [
+        {
+          "id": "79ce0922-12c8-48af-9346-8f7c3c5b6f5b",
+          "artifact_schema_version": 2,
+          "identity": {
+            "schema_version": 1,
+            "instance_id": "9ae46946ba5f238f2860d68cecd5db65085197e111abdc3cb62c6cfbf1668e6e",
+            "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+            "supervisor_pid": 78507,
+            "started_at": "2026-10-15T12:49:52.101828Z",
+            "config": "/private/tmp/devd-compat-wkcpouk5/devd.yml",
+            "state_dir": "/private/tmp/devd-compat-wkcpouk5/.devd/devd.yml",
+            "profile": null,
+            "project_root": "/private/tmp/devd-compat-wkcpouk5",
+            "git": null
+          },
+          "service": "worker",
+          "generation": 1,
+          "trigger": "exited",
+          "observed_at": "2026-10-15T12:49:52.210028Z",
+          "collection_status": "ended-early",
+          "complete": false,
+          "diagnostics": [
+            "follow-up-window-ended-early"
+          ]
+        }
+      ],
+      "incident": {
+        "id": "79ce0922-12c8-48af-9346-8f7c3c5b6f5b",
+        "artifact_schema_version": 2,
+        "collection_status": "ended-early",
+        "complete": false,
+        "diagnostics": [
+          "follow-up-window-ended-early"
+        ],
+        "beginning": {
+          "capture": {
+            "schema_version": 2,
+            "id": "79ce0922-12c8-48af-9346-8f7c3c5b6f5b",
+            "identity": {
+              "schema_version": 1,
+              "instance_id": "9ae46946ba5f238f2860d68cecd5db65085197e111abdc3cb62c6cfbf1668e6e",
+              "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+              "supervisor_pid": 78507,
+              "started_at": "2026-10-15T12:49:52.101828Z",
+              "config": "/private/tmp/devd-compat-wkcpouk5/devd.yml",
+              "state_dir": "/private/tmp/devd-compat-wkcpouk5/.devd/devd.yml",
+              "profile": null,
+              "project_root": "/private/tmp/devd-compat-wkcpouk5",
+              "git": null
+            },
+            "trigger": {
+              "schema_version": 1,
+              "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+              "sequence": 6,
+              "timestamp": "2026-10-15T12:49:52.209974Z",
+              "elapsed": {
+                "secs": 0,
+                "nanos": 122175375
+              },
+              "service": "worker",
+              "generation": 1,
+              "cause": null,
+              "truncated": false,
+              "data": {
+                "type": "exited",
+                "code": 7,
+                "signal": null
+              }
+            },
+            "observed_at": "2026-10-15T12:49:52.210028Z",
+            "observed_generation": 1,
+            "state": {
+              "status": "restarting",
+              "pid": null,
+              "started_at": "2026-10-15T12:49:52.115465Z",
+              "restart_count": 0,
+              "consecutive_failures": 0,
+              "last_exit_code": 7,
+              "last_exit_signal": null,
+              "resources": null,
+              "event_generation": 1
+            },
+            "prior": [
+              {
+                "schema_version": 1,
+                "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+                "sequence": 0,
+                "timestamp": "2026-10-15T12:49:52.113513Z",
+                "elapsed": {
+                  "secs": 0,
+                  "nanos": 25713792
+                },
+                "service": null,
+                "generation": null,
+                "cause": null,
+                "truncated": false,
+                "data": {
+                  "type": "supervisor-started"
+                }
+              },
+              {
+                "schema_version": 1,
+                "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+                "sequence": 1,
+                "timestamp": "2026-10-15T12:49:52.114976Z",
+                "elapsed": {
+                  "secs": 0,
+                  "nanos": 27177209
+                },
+                "service": "worker",
+                "generation": 1,
+                "cause": null,
+                "truncated": false,
+                "data": {
+                  "type": "generation-pending"
+                }
+              },
+              {
+                "schema_version": 1,
+                "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+                "sequence": 2,
+                "timestamp": "2026-10-15T12:49:52.114981Z",
+                "elapsed": {
+                  "secs": 0,
+                  "nanos": 27182167
+                },
+                "service": "worker",
+                "generation": 1,
+                "cause": 1,
+                "truncated": false,
+                "data": {
+                  "type": "starting"
+                }
+              },
+              {
+                "schema_version": 1,
+                "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+                "sequence": 3,
+                "timestamp": "2026-10-15T12:49:52.114982Z",
+                "elapsed": {
+                  "secs": 0,
+                  "nanos": 27183084
+                },
+                "service": "worker",
+                "generation": 1,
+                "cause": 1,
+                "truncated": false,
+                "data": {
+                  "type": "state-changed",
+                  "from": "pending",
+                  "to": "starting"
+                }
+              },
+              {
+                "schema_version": 1,
+                "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+                "sequence": 4,
+                "timestamp": "2026-10-15T12:49:52.115477Z",
+                "elapsed": {
+                  "secs": 0,
+                  "nanos": 27678167
+                },
+                "service": "worker",
+                "generation": 1,
+                "cause": 1,
+                "truncated": false,
+                "data": {
+                  "type": "started",
+                  "pid": 78518
+                }
+              },
+              {
+                "schema_version": 1,
+                "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+                "sequence": 5,
+                "timestamp": "2026-10-15T12:49:52.115483Z",
+                "elapsed": {
+                  "secs": 0,
+                  "nanos": 27683709
+                },
+                "service": "worker",
+                "generation": 1,
+                "cause": 1,
+                "truncated": false,
+                "data": {
+                  "type": "state-changed",
+                  "from": "starting",
+                  "to": "running"
+                }
+              }
+            ],
+            "prior_omitted": 0,
+            "statistics": {
+              "admitted": 1,
+              "merged": 0,
+              "dropped_triggers": 0,
+              "skipped_events": 0
+            }
+          },
+          "configuration": {
+            "observed_at": "2026-10-15T12:49:52.210028Z",
+            "source": "effective-runtime-config-observed-after-trigger",
+            "atomic": false,
+            "trigger_time_equivalence": "not-guaranteed",
+            "services": [
+              {
+                "name": "worker",
+                "dependencies": [],
+                "omitted_dependencies": 0,
+                "healthcheck_configured": false,
+                "monitor_requires": false,
+                "restart": {
+                  "policy": "always",
+                  "backoff": "fixed",
+                  "initial_delay": {
+                    "secs": 1,
+                    "nanos": 0
+                  },
+                  "max_delay": {
+                    "secs": 60,
+                    "nanos": 0
+                  },
+                  "max_attempts": 3
+                },
+                "restart_on_dep_recovery": false,
+                "limits": null,
+                "requires_count": 0,
+                "paths_count": 0
+              }
+            ],
+            "omitted_services": 0
+          },
+          "retention_evicted_this_recorder": 0
+        },
+        "resources": {
+          "id": "79ce0922-12c8-48af-9346-8f7c3c5b6f5b",
+          "source": "fresh-post-trigger-metadata-and-link-inspection",
+          "observed_from": "2026-10-15T12:49:52.214355Z",
+          "observed_to": "2026-10-15T12:49:52.214385Z",
+          "atomic": false,
+          "trigger_time_equivalence": "not-guaranteed",
+          "relationships": {
+            "config_observed_at": "2026-10-15T12:49:52.210028Z",
+            "observed_from": "2026-10-15T12:49:52.214371Z",
+            "observed_to": "2026-10-15T12:49:52.214371Z",
+            "source": "effective-config-and-post-trigger-declaration-observations",
+            "atomic": false,
+            "trigger_time_equivalence": "not-guaranteed",
+            "services": [
+              "worker"
+            ],
+            "dependencies": [],
+            "omitted_services": 0,
+            "omitted_dependencies": 0,
+            "impacts": [],
+            "unavailable_impacts": 0,
+            "omitted_impacts": 0,
+            "inspections_performed": 0,
+            "interrupted": false
+          },
+          "observations": [],
+          "omitted": 0,
+          "interrupted": false,
+          "unavailable": 0
+        },
+        "end": {
+          "id": "79ce0922-12c8-48af-9346-8f7c3c5b6f5b",
+          "reason": "generation-replaced",
+          "observed_at": "2026-10-15T12:49:53.212211Z",
+          "following": [
+            {
+              "schema_version": 1,
+              "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+              "sequence": 7,
+              "timestamp": "2026-10-15T12:49:52.209986Z",
+              "elapsed": {
+                "secs": 0,
+                "nanos": 122187875
+              },
+              "service": "worker",
+              "generation": 1,
+              "cause": 6,
+              "truncated": false,
+              "data": {
+                "type": "restart-triggered",
+                "reason": {
+                  "type": "process-exit"
+                },
+                "policy": {
+                  "policy": "always",
+                  "backoff": "fixed",
+                  "initial_delay": {
+                    "secs": 1,
+                    "nanos": 0
+                  },
+                  "max_delay": {
+                    "secs": 60,
+                    "nanos": 0
+                  },
+                  "max_attempts": 3
+                }
+              }
+            },
+            {
+              "schema_version": 1,
+              "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+              "sequence": 8,
+              "timestamp": "2026-10-15T12:49:52.210016Z",
+              "elapsed": {
+                "secs": 0,
+                "nanos": 122217792
+              },
+              "service": "worker",
+              "generation": 1,
+              "cause": 7,
+              "truncated": false,
+              "data": {
+                "type": "restart-decision",
+                "outcome": "scheduled",
+                "policy": {
+                  "policy": "always",
+                  "backoff": "fixed",
+                  "initial_delay": {
+                    "secs": 1,
+                    "nanos": 0
+                  },
+                  "max_delay": {
+                    "secs": 60,
+                    "nanos": 0
+                  },
+                  "max_attempts": 3
+                },
+                "restart_count": 0,
+                "delay": {
+                  "secs": 1,
+                  "nanos": 0
+                }
+              }
+            },
+            {
+              "schema_version": 1,
+              "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+              "sequence": 9,
+              "timestamp": "2026-10-15T12:49:52.210018Z",
+              "elapsed": {
+                "secs": 0,
+                "nanos": 122219375
+              },
+              "service": "worker",
+              "generation": 1,
+              "cause": 8,
+              "truncated": false,
+              "data": {
+                "type": "state-changed",
+                "from": "running",
+                "to": "restarting"
+              }
+            },
+            {
+              "schema_version": 1,
+              "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+              "sequence": 10,
+              "timestamp": "2026-10-15T12:49:53.211742Z",
+              "elapsed": {
+                "secs": 1,
+                "nanos": 123950375
+              },
+              "service": "worker",
+              "generation": 10,
+              "cause": 8,
+              "truncated": false,
+              "data": {
+                "type": "generation-pending"
+              }
+            }
+          ],
+          "following_omitted": 0,
+          "merged_triggers": 0,
+          "skipped_events": 0,
+          "statistics": {
+            "admitted": 1,
+            "merged": 0,
+            "dropped_triggers": 0,
+            "skipped_events": 0
+          }
+        },
+        "declared_impact": "recorded-declared-relationships",
+        "current_state": "not-inspected-historical-evidence-only"
+      }
+    },
+    "log_attribution": "not-requested",
+    "limitations": [
+      "No application logs, full YAML, command/environment/dotenv contents or unreviewed error text.",
+      "Paths and identifiers may be sensitive. No general-purpose redaction is promised.",
+      "Prior/following events are historical context; temporal adjacency does not establish causation.",
+      "Observed state/configuration may be newer than the trigger; PID values never authorize control.",
+      "A missing end record or unfinished JSONL record is incomplete capture, never a successful completion."
+    ]
+  },
+  "captured_from": "2026-10-15T12:49:53.287794Z",
+  "captured_to": "2026-10-15T12:49:53.288411Z",
+  "stable_during_capture": false,
+  "event_watermark_after": 11,
+  "omitted_fields": [
+    "state.*.last_error",
+    "state.*.resource_restart_reason",
+    "events.entries[].data.reload-finished.failure"
+  ],
+  "state": {},
+  "events": {
+    "schema_version": 1,
+    "source": "stored",
+    "persistence": null,
+    "context": {
+      "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+      "state_path": "/private/tmp/devd-compat-wkcpouk5/.devd/devd.yml/services.json",
+      "profile": null
+    },
+    "first_available": 0,
+    "cursor": {
+      "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+      "next_sequence": 11
+    },
+    "gaps": [
+      {
+        "reason": "incomplete-run",
+        "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7"
+      }
+    ],
+    "omitted_gaps": 0,
+    "entries": [
+      {
+        "schema_version": 1,
+        "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+        "sequence": 0,
+        "timestamp": "2026-10-15T12:49:52.113513Z",
+        "elapsed": {
+          "secs": 0,
+          "nanos": 25713792
+        },
+        "service": null,
+        "generation": null,
+        "cause": null,
+        "truncated": false,
+        "data": {
+          "type": "supervisor-started"
+        }
+      },
+      {
+        "schema_version": 1,
+        "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+        "sequence": 1,
+        "timestamp": "2026-10-15T12:49:52.114976Z",
+        "elapsed": {
+          "secs": 0,
+          "nanos": 27177209
+        },
+        "service": "worker",
+        "generation": 1,
+        "cause": null,
+        "truncated": false,
+        "data": {
+          "type": "generation-pending"
+        }
+      },
+      {
+        "schema_version": 1,
+        "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+        "sequence": 2,
+        "timestamp": "2026-10-15T12:49:52.114981Z",
+        "elapsed": {
+          "secs": 0,
+          "nanos": 27182167
+        },
+        "service": "worker",
+        "generation": 1,
+        "cause": 1,
+        "truncated": false,
+        "data": {
+          "type": "starting"
+        }
+      },
+      {
+        "schema_version": 1,
+        "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+        "sequence": 3,
+        "timestamp": "2026-10-15T12:49:52.114982Z",
+        "elapsed": {
+          "secs": 0,
+          "nanos": 27183084
+        },
+        "service": "worker",
+        "generation": 1,
+        "cause": 1,
+        "truncated": false,
+        "data": {
+          "type": "state-changed",
+          "from": "pending",
+          "to": "starting"
+        }
+      },
+      {
+        "schema_version": 1,
+        "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+        "sequence": 4,
+        "timestamp": "2026-10-15T12:49:52.115477Z",
+        "elapsed": {
+          "secs": 0,
+          "nanos": 27678167
+        },
+        "service": "worker",
+        "generation": 1,
+        "cause": 1,
+        "truncated": false,
+        "data": {
+          "type": "started",
+          "pid": 78518
+        }
+      },
+      {
+        "schema_version": 1,
+        "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+        "sequence": 5,
+        "timestamp": "2026-10-15T12:49:52.115483Z",
+        "elapsed": {
+          "secs": 0,
+          "nanos": 27683709
+        },
+        "service": "worker",
+        "generation": 1,
+        "cause": 1,
+        "truncated": false,
+        "data": {
+          "type": "state-changed",
+          "from": "starting",
+          "to": "running"
+        }
+      },
+      {
+        "schema_version": 1,
+        "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+        "sequence": 6,
+        "timestamp": "2026-10-15T12:49:52.209974Z",
+        "elapsed": {
+          "secs": 0,
+          "nanos": 122175375
+        },
+        "service": "worker",
+        "generation": 1,
+        "cause": null,
+        "truncated": false,
+        "data": {
+          "type": "exited",
+          "code": 7,
+          "signal": null
+        }
+      },
+      {
+        "schema_version": 1,
+        "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+        "sequence": 7,
+        "timestamp": "2026-10-15T12:49:52.209986Z",
+        "elapsed": {
+          "secs": 0,
+          "nanos": 122187875
+        },
+        "service": "worker",
+        "generation": 1,
+        "cause": 6,
+        "truncated": false,
+        "data": {
+          "type": "restart-triggered",
+          "reason": {
+            "type": "process-exit"
+          },
+          "policy": {
+            "policy": "always",
+            "backoff": "fixed",
+            "initial_delay": {
+              "secs": 1,
+              "nanos": 0
+            },
+            "max_delay": {
+              "secs": 60,
+              "nanos": 0
+            },
+            "max_attempts": 3
+          }
+        }
+      },
+      {
+        "schema_version": 1,
+        "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+        "sequence": 8,
+        "timestamp": "2026-10-15T12:49:52.210016Z",
+        "elapsed": {
+          "secs": 0,
+          "nanos": 122217792
+        },
+        "service": "worker",
+        "generation": 1,
+        "cause": 7,
+        "truncated": false,
+        "data": {
+          "type": "restart-decision",
+          "outcome": "scheduled",
+          "policy": {
+            "policy": "always",
+            "backoff": "fixed",
+            "initial_delay": {
+              "secs": 1,
+              "nanos": 0
+            },
+            "max_delay": {
+              "secs": 60,
+              "nanos": 0
+            },
+            "max_attempts": 3
+          },
+          "restart_count": 0,
+          "delay": {
+            "secs": 1,
+            "nanos": 0
+          }
+        }
+      },
+      {
+        "schema_version": 1,
+        "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+        "sequence": 9,
+        "timestamp": "2026-10-15T12:49:52.210018Z",
+        "elapsed": {
+          "secs": 0,
+          "nanos": 122219375
+        },
+        "service": "worker",
+        "generation": 1,
+        "cause": 8,
+        "truncated": false,
+        "data": {
+          "type": "state-changed",
+          "from": "running",
+          "to": "restarting"
+        }
+      },
+      {
+        "schema_version": 1,
+        "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+        "sequence": 10,
+        "timestamp": "2026-10-15T12:49:53.211742Z",
+        "elapsed": {
+          "secs": 1,
+          "nanos": 123950375
+        },
+        "service": "worker",
+        "generation": 10,
+        "cause": 8,
+        "truncated": false,
+        "data": {
+          "type": "generation-pending"
+        }
+      }
+    ]
+  },
+  "explanations": {
+    "worker": {
+      "schema_version": 1,
+      "source": "stored",
+      "persistence": null,
+      "context": {
+        "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+        "state_path": "/private/tmp/devd-compat-wkcpouk5/.devd/devd.yml/services.json",
+        "profile": null
+      },
+      "service": "worker",
+      "status": null,
+      "generation": 1,
+      "conclusion": "restarting",
+      "summary": "worker 正在按记录的原因重启",
+      "details": [
+        "触发重启：进程异常退出",
+        "事件历史存在缺口，以上结论只覆盖保留下来的证据",
+        "历史事故窗口中的记录；不代表当前健康，不推断未记录的资源影响或根因"
+      ],
+      "evidence": [
+        {
+          "sequence": 7,
+          "event_type": "restart-triggered",
+          "generation": 1,
+          "cause": 6,
+          "timestamp": "2026-10-15T12:49:52.209986Z",
+          "detail": "触发重启：进程异常退出"
+        },
+        {
+          "sequence": 6,
+          "event_type": "exited",
+          "generation": 1,
+          "cause": null,
+          "timestamp": "2026-10-15T12:49:52.209974Z",
+          "detail": "进程退出，code=Some(7), signal=None"
+        }
+      ],
+      "complete": false,
+      "gaps": [
+        {
+          "reason": "incomplete-run",
+          "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7"
+        }
+      ],
+      "omitted_gaps": 0,
+      "next_steps": [
+        "等待新代次就绪；需要停止时使用 devd stop"
+      ]
+    }
+  }
+}

@@ -1,0 +1,209 @@
+{
+  "schema_version": 1,
+  "identity": {
+    "schema_version": 1,
+    "instance_id": "9ae46946ba5f238f2860d68cecd5db65085197e111abdc3cb62c6cfbf1668e6e",
+    "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+    "supervisor_pid": 78507,
+    "started_at": "2026-10-15T12:49:52.101828Z",
+    "config": "/private/tmp/devd-compat-wkcpouk5/devd.yml",
+    "state_dir": "/private/tmp/devd-compat-wkcpouk5/.devd/devd.yml",
+    "profile": null,
+    "project_root": "/private/tmp/devd-compat-wkcpouk5",
+    "git": null
+  },
+  "source": "live",
+  "captured_from": "2026-10-15T12:49:52.161466Z",
+  "captured_to": "2026-10-15T12:49:52.161566Z",
+  "stable_during_capture": true,
+  "event_watermark_after": 6,
+  "omitted_fields": [
+    "state.*.last_error",
+    "state.*.resource_restart_reason",
+    "events.entries[].data.reload-finished.failure"
+  ],
+  "state": {
+    "worker": {
+      "status": "running",
+      "pid": 78518,
+      "started_at": "2026-10-15T12:49:52.115465Z",
+      "restart_count": 0,
+      "consecutive_failures": 0,
+      "last_exit_code": null,
+      "last_exit_signal": null,
+      "resources": null,
+      "event_generation": 1
+    }
+  },
+  "events": {
+    "schema_version": 1,
+    "source": "live",
+    "persistence": "recording",
+    "context": {
+      "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+      "state_path": "/private/tmp/devd-compat-wkcpouk5/.devd/devd.yml/services.json",
+      "profile": null
+    },
+    "first_available": 0,
+    "cursor": {
+      "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+      "next_sequence": 6
+    },
+    "gaps": [],
+    "omitted_gaps": 0,
+    "entries": [
+      {
+        "schema_version": 1,
+        "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+        "sequence": 0,
+        "timestamp": "2026-10-15T12:49:52.113513Z",
+        "elapsed": {
+          "secs": 0,
+          "nanos": 25713792
+        },
+        "service": null,
+        "generation": null,
+        "cause": null,
+        "truncated": false,
+        "data": {
+          "type": "supervisor-started"
+        }
+      },
+      {
+        "schema_version": 1,
+        "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+        "sequence": 1,
+        "timestamp": "2026-10-15T12:49:52.114976Z",
+        "elapsed": {
+          "secs": 0,
+          "nanos": 27177209
+        },
+        "service": "worker",
+        "generation": 1,
+        "cause": null,
+        "truncated": false,
+        "data": {
+          "type": "generation-pending"
+        }
+      },
+      {
+        "schema_version": 1,
+        "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+        "sequence": 2,
+        "timestamp": "2026-10-15T12:49:52.114981Z",
+        "elapsed": {
+          "secs": 0,
+          "nanos": 27182167
+        },
+        "service": "worker",
+        "generation": 1,
+        "cause": 1,
+        "truncated": false,
+        "data": {
+          "type": "starting"
+        }
+      },
+      {
+        "schema_version": 1,
+        "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+        "sequence": 3,
+        "timestamp": "2026-10-15T12:49:52.114982Z",
+        "elapsed": {
+          "secs": 0,
+          "nanos": 27183084
+        },
+        "service": "worker",
+        "generation": 1,
+        "cause": 1,
+        "truncated": false,
+        "data": {
+          "type": "state-changed",
+          "from": "pending",
+          "to": "starting"
+        }
+      },
+      {
+        "schema_version": 1,
+        "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+        "sequence": 4,
+        "timestamp": "2026-10-15T12:49:52.115477Z",
+        "elapsed": {
+          "secs": 0,
+          "nanos": 27678167
+        },
+        "service": "worker",
+        "generation": 1,
+        "cause": 1,
+        "truncated": false,
+        "data": {
+          "type": "started",
+          "pid": 78518
+        }
+      },
+      {
+        "schema_version": 1,
+        "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+        "sequence": 5,
+        "timestamp": "2026-10-15T12:49:52.115483Z",
+        "elapsed": {
+          "secs": 0,
+          "nanos": 27683709
+        },
+        "service": "worker",
+        "generation": 1,
+        "cause": 1,
+        "truncated": false,
+        "data": {
+          "type": "state-changed",
+          "from": "starting",
+          "to": "running"
+        }
+      }
+    ]
+  },
+  "explanations": {
+    "worker": {
+      "schema_version": 1,
+      "source": "live",
+      "persistence": "recording",
+      "context": {
+        "run_id": "992283f5-f913-45ba-a41f-d39cb46adcf7",
+        "state_path": "/private/tmp/devd-compat-wkcpouk5/.devd/devd.yml/services.json",
+        "profile": null
+      },
+      "service": "worker",
+      "status": "running",
+      "generation": 1,
+      "conclusion": "running",
+      "summary": "worker 正在运行，尚未报告健康结论",
+      "details": [
+        "最近的服务事件：状态从 Starting 变为 Running"
+      ],
+      "evidence": [
+        {
+          "sequence": 5,
+          "event_type": "state-changed",
+          "generation": 1,
+          "cause": 1,
+          "timestamp": "2026-10-15T12:49:52.115483Z",
+          "detail": "状态从 Starting 变为 Running"
+        },
+        {
+          "sequence": 1,
+          "event_type": "generation-pending",
+          "generation": 1,
+          "cause": null,
+          "timestamp": "2026-10-15T12:49:52.114976Z",
+          "detail": "等待启动新进程代次"
+        }
+      ],
+      "complete": true,
+      "gaps": [],
+      "omitted_gaps": 0,
+      "next_steps": [
+        "当前没有可定位故障原因的事件证据；可在下次启动时显式开启 --persist-events 后重现",
+        "继续用 devd events 观察后续生命周期"
+      ]
+    }
+  }
+}

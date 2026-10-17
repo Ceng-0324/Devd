@@ -1,0 +1,2 @@
+# Published compatibility fixtures preserve the release's exact bytes and hashes.
+tests/fixtures/compat/**/*.json -text

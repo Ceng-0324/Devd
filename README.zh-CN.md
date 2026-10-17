@@ -16,11 +16,12 @@
 
 ## 它能做什么
 
-v0.9 增加了可移交报告诊断、stdio MCP、显式资源基线和经过预览的恢复配方。
+v1.0.0 提供原生任务完成门控、诊断盲区、离线报告对比，以及分别显式开启的 Agent 操作限制。
+公共接口按 SemVer 管理，升级边界见[兼容与升级](docs/COMPATIBILITY.zh-CN.md)。
 [验收说明](VALIDATION.md) 记录可复现检查与尚缺的用户价值证据；参与开发与安全报告分别见
 [贡献指南](CONTRIBUTING.md) 和 [安全政策](SECURITY.md)。
 
-devd 是用 Rust 编写的本地开发服务管理器。**v0.9.0-alpha.1 已作为预发布版本发布，支持 Linux、macOS 和 Windows。** [下载二进制及 SHA-256 校验文件](https://github.com/Ceng-0324/Devd/releases/tag/v0.9.0-alpha.1)，提供 Linux x86_64、macOS arm64 和 Windows x86_64 MSVC 归档。
+devd 是用 Rust 编写的本地开发服务管理器。**v1.0.0 已发布，支持 Linux、macOS 和 Windows。** [下载二进制及 SHA-256 校验文件](https://github.com/Ceng-0324/Devd/releases/tag/v1.0.0)，提供 Linux x86_64、macOS arm64 和 Windows x86_64 MSVC 归档。
 
 当初那场事故，现在有了一条能查下去的线：声明服务需要哪些文件和软链接，看清解析在哪一环断了、哪些声明服务在下游。重现问题前显式开启事故记录，supervisor 停止后仍能查看和导出证据。后来把目标补回来，也不会改写当时留下的记录。
 
@@ -172,7 +173,8 @@ devd recover --recipe recipe.yml --apply --plan PLAN_ID
 | --- | --- |
 | 多个 worktree 一起开发 | [实例发现](docs/COMMANDS.zh-CN.md#实例身份与发现)、[端口与路径](docs/COMMANDS.zh-CN.md#显式配置实例端口与路径) |
 | 环境启动、切换与配置调整 | [等待就绪](docs/COMMANDS.zh-CN.md#等待就绪)、[profiles](docs/COMMANDS.zh-CN.md#多环境配置)、[重载](docs/COMMANDS.zh-CN.md#配置变更预览与应用) |
-| 看故障、保存和移交证据 | [报告导出](docs/COMMANDS.zh-CN.md#导出诊断证据)、[事故记录](docs/COMMANDS.zh-CN.md#留下有界的事故证据)、[离线诊断](docs/COMMANDS.zh-CN.md#换台机器继续诊断) |
+| 构建或迁移完成后再启动下游 | [一次性任务](docs/COMMANDS.zh-CN.md#一次性任务)、[可运行示例](examples/tasks/README.md) |
+| 看故障、保存和移交证据 | [覆盖与盲区](docs/COMMANDS.zh-CN.md#看清诊断能覆盖什么)、[报告导出](docs/COMMANDS.zh-CN.md#导出诊断证据)、[事故记录](docs/COMMANDS.zh-CN.md#留下有界的事故证据)、[离线诊断](docs/COMMANDS.zh-CN.md#换台机器继续诊断)、[离线对比](docs/COMMANDS.zh-CN.md#离线对比两份移交报告) |
 | 对比资源变化、恢复与清理 | [基线](docs/COMMANDS.zh-CN.md#检查环境漂移)、[恢复配方](docs/COMMANDS.zh-CN.md#执行审阅过的恢复配方)、[清理](docs/COMMANDS.zh-CN.md#清理可丢弃的实例数据) |
 | 让工具接入当前现场 | [MCP](docs/COMMANDS.zh-CN.md#接入-mcp-客户端)、[Agent JSON 接口](docs/COMMANDS.zh-CN.md#给-agent-的实例接口) |
 
@@ -181,6 +183,8 @@ devd recover --recipe recipe.yml --apply --plan PLAN_ID
 ## 开发与验证
 
 想试一个完整项目，可以从 [API + 网页 + worker 示例](examples/local-stack/README.md) 开始，里面有可重复执行的故障恢复脚本。
+
+准备拿自己的项目试？[真实项目试用指南](https://github.com/Ceng-0324/Devd/blob/dev/docs/FIELD_TESTING.zh-CN.md)说明如何在自己的项目里试用，试完只留一份记录，没跑顺的地方也算结果。
 
 参与开发见[贡献指南](CONTRIBUTING.md)，专项检查见[测试与手动验证](tests/README.md)。发布流程见[发布清单](RELEASING.md)，漏洞报告见[安全政策](SECURITY.md)。
 

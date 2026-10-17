@@ -14,15 +14,15 @@ use std::{
     io::{self, Write},
     path::Path,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex,
     },
     time::Instant,
 };
 use tokio::sync::{mpsc, OwnedSemaphorePermit};
 
-pub(super) const MAX_BYTES: usize = 2 * 1024 * 1024;
-const KEEP: usize = 20;
+pub(in crate::cli) const MAX_BYTES: usize = 2 * 1024 * 1024;
+pub(in crate::cli) const KEEP: usize = 20;
 
 pub(super) enum Work {
     Begin {
@@ -38,7 +38,7 @@ pub(super) enum Work {
 pub(crate) struct Storage {
     directory: Arc<Dir>,
     retained: VecDeque<String>,
-    evicted: u64,
+    evicted: Arc<AtomicU64>,
     _lock: Arc<files::FileLock>,
     gate: Arc<Mutex<()>>,
     // Never release the supervisor lease while blocking I/O still owns writes.
@@ -54,6 +54,10 @@ struct Artifact {
 }
 
 impl Storage {
+    pub(in crate::cli) fn eviction_counter(&self) -> Arc<AtomicU64> {
+        self.evicted.clone()
+    }
+
     pub(in crate::cli) fn reader(&self) -> super::query::Reader {
         super::query::Reader::live(
             self.directory.clone(),
@@ -110,7 +114,7 @@ impl Storage {
         let mut storage = Self {
             directory,
             retained: retained.into_iter().map(|(_, name)| name).collect(),
-            evicted: 0,
+            evicted: Arc::new(AtomicU64::new(0)),
             _lock: Arc::new(lock),
             gate: Arc::new(Mutex::new(())),
             _lease: lease,
@@ -132,7 +136,7 @@ impl Storage {
             drop(read_file(&self.directory, name)?);
             self.directory.remove_file(name)?;
             self.retained.remove(index);
-            self.evicted += 1;
+            self.evicted.fetch_add(1, Ordering::Relaxed);
         }
         Ok(())
     }
@@ -179,7 +183,7 @@ impl Storage {
                         capture: &capture,
                         configuration,
                         limitations: evidence::LIMITATIONS,
-                        retention_evicted_this_recorder: self.evicted,
+                        retention_evicted_this_recorder: self.evicted.load(Ordering::Relaxed),
                     })?;
                     // Beginning is durable before any fresh path inspection.
                     let resources = evidence::resources(
@@ -386,7 +390,7 @@ mod tests {
         }
         storage.prune(KEEP, &active).unwrap();
         assert_eq!(storage.retained.len(), 20);
-        assert_eq!(storage.evicted, 2);
+        assert_eq!(storage.evicted.load(Ordering::Relaxed), 2);
         assert!(storage.directory.symlink_metadata(&name).is_ok());
         drop(active);
         let target = root.path().join("incidents").join(&name);

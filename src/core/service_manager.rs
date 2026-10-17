@@ -46,11 +46,14 @@ pub enum ServiceState {
     Restarting,
     Stopping,
     Stopped,
+    Succeeded,
     Failed,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ServiceSnapshot {
+    #[serde(default)]
+    pub kind: crate::config::ServiceKind,
     pub status: ServiceState,
     pub pid: Option<u32>,
     pub started_at: Option<DateTime<Utc>>,
@@ -76,6 +79,7 @@ pub struct ServiceSnapshot {
 impl Default for ServiceSnapshot {
     fn default() -> Self {
         Self {
+            kind: Default::default(),
             status: ServiceState::Pending,
             pid: None,
             started_at: None,
@@ -89,6 +93,26 @@ impl Default for ServiceSnapshot {
             event_generation: None,
             resource_restart_evidence: None,
             resource_restart_event: None,
+        }
+    }
+}
+
+impl ServiceSnapshot {
+    /// Tasks become ready only after successful completion and process cleanup.
+    pub fn ready(&self, requires_healthy: bool) -> bool {
+        if self.kind == crate::config::ServiceKind::Task {
+            self.status == ServiceState::Succeeded
+                && self.pid.is_none()
+                && self.last_exit_code == Some(0)
+                && self.event_generation.is_some()
+        } else {
+            self.pid.is_some()
+                && self.status
+                    == if requires_healthy {
+                        ServiceState::Healthy
+                    } else {
+                        ServiceState::Running
+                    }
         }
     }
 }
@@ -190,7 +214,31 @@ pub struct ServiceManager {
 
 struct RestartRequest {
     service: String,
-    reply: oneshot::Sender<Result<ServiceSnapshot, String>>,
+    reply: oneshot::Sender<Result<ServiceSnapshot, ControlError>>,
+}
+
+/// A definite refusal is distinct from a failure after possible acceptance.
+#[derive(Debug, Error)]
+#[error("{message}")]
+pub struct ControlError {
+    pub accepted: bool,
+    pub message: String,
+}
+
+impl ControlError {
+    fn rejected(message: impl Into<String>) -> Self {
+        Self {
+            accepted: false,
+            message: message.into(),
+        }
+    }
+
+    fn uncertain(message: impl Into<String>) -> Self {
+        Self {
+            accepted: true,
+            message: message.into(),
+        }
+    }
 }
 
 enum ManagerCommand {
@@ -203,15 +251,15 @@ enum ManagerCommand {
 pub struct ServiceController(mpsc::Sender<ManagerCommand>);
 
 impl ServiceController {
-    pub async fn restart(&self, service: String) -> Result<ServiceSnapshot, String> {
+    pub async fn restart(&self, service: String) -> Result<ServiceSnapshot, ControlError> {
         let (reply, response) = oneshot::channel();
         self.0
             .send(ManagerCommand::Restart(RestartRequest { service, reply }))
             .await
-            .map_err(|_| "supervisor is stopping".to_string())?;
+            .map_err(|_| ControlError::rejected("supervisor is stopping"))?;
         response
             .await
-            .map_err(|_| "supervisor stopped before restart completed".to_string())?
+            .map_err(|_| ControlError::uncertain("supervisor stopped before restart completed"))?
     }
 
     /// Apply only a freshly verified configuration/runtime plan identity.
@@ -219,7 +267,7 @@ impl ServiceController {
         &self,
         candidate: DevdConfig,
         plan_id: String,
-    ) -> Result<ReloadReport, String> {
+    ) -> Result<ReloadReport, ControlError> {
         let (reply, response) = oneshot::channel();
         self.0
             .send(ManagerCommand::Reload(ReloadRequest {
@@ -228,10 +276,10 @@ impl ServiceController {
                 reply,
             }))
             .await
-            .map_err(|_| "supervisor is stopping".to_string())?;
+            .map_err(|_| ControlError::rejected("supervisor is stopping"))?;
         response
             .await
-            .map_err(|_| "supervisor stopped before reload completed".to_string())?
+            .map_err(|_| ControlError::uncertain("supervisor stopped before reload completed"))?
     }
 }
 
@@ -274,7 +322,15 @@ impl ServiceManager {
             services: config
                 .services
                 .keys()
-                .map(|name| (name.clone(), ServiceSnapshot::default()))
+                .map(|name| {
+                    (
+                        name.clone(),
+                        ServiceSnapshot {
+                            kind: config.services[name].kind,
+                            ..Default::default()
+                        },
+                    )
+                })
                 .collect(),
         };
         let (snapshots, _) = watch::channel(initial);
@@ -394,9 +450,11 @@ impl ServiceManager {
             let id = self.spawn_actor(name, receiver, &store, &mut tasks, None);
             names.insert(id, name.clone());
         }
-        let mut restarting: BTreeMap<String, oneshot::Sender<Result<ServiceSnapshot, String>>> =
-            BTreeMap::new();
-        let mut starting: BTreeMap<String, oneshot::Sender<Result<ServiceSnapshot, String>>> =
+        let mut restarting: BTreeMap<
+            String,
+            oneshot::Sender<Result<ServiceSnapshot, ControlError>>,
+        > = BTreeMap::new();
+        let mut starting: BTreeMap<String, oneshot::Sender<Result<ServiceSnapshot, ControlError>>> =
             BTreeMap::new();
         let mut reloading: Option<ReloadExecution> = None;
         let mut error = None;
@@ -426,7 +484,7 @@ impl ServiceManager {
                 Some(command) = self.commands.recv() => { match command {
                 ManagerCommand::Reload(request) => {
                     if reloading.is_some() || !restarting.is_empty() || !starting.is_empty() {
-                        let _ = request.reply.send(Err("configuration reload or manual restart is already in progress".into()));
+                        let _ = request.reply.send(Err(ControlError::rejected("configuration reload or manual restart is already in progress")));
                     } else {
                         match ReloadExecution::begin(&self, request, &controls) {
                             Ok(execution) => {
@@ -435,7 +493,7 @@ impl ServiceManager {
                                     .map(|(name, value)| (name.clone(), *value)).collect());
                                 reloading = Some(execution);
                             },
-                            Err((reply, message)) => { let _ = reply.send(Err(message)); },
+                            Err((reply, message)) => { let _ = reply.send(Err(ControlError::rejected(message))); },
                         }
                     }
                 },
@@ -449,7 +507,7 @@ impl ServiceManager {
                         Some(format!("service '{name}' is already restarting"))
                     } else { None };
                     if let Some(error) = rejection {
-                        let _ = request.reply.send(Err(error));
+                        let _ = request.reply.send(Err(ControlError::rejected(error)));
                     } else {
                         self.readiness.send_modify(|state| { state.restarting.insert(name.clone()); });
                         let cause = self.events.record(
@@ -458,7 +516,15 @@ impl ServiceManager {
                             None,
                             EventData::ManualRestartRequested,
                         );
-                        controls[&name].send_replace(Control::Restarting(cause));
+                        // Invalidate task success and accept control under the same
+                        // snapshot lock used by task completion and dependency gates.
+                        self.snapshots.send_modify(|snapshot| {
+                            controls[&name].send_replace(Control::Restarting(cause));
+                            let state = snapshot.services.get_mut(&name).unwrap();
+                            if state.kind == crate::config::ServiceKind::Task {
+                                state.status = ServiceState::Restarting;
+                            }
+                        });
                         restarting.insert(name, request.reply);
                     }
                 },
@@ -466,12 +532,12 @@ impl ServiceManager {
                 _ = updates.changed() => {
                     let snapshot = updates.borrow_and_update().clone();
                     let completed: Vec<_> = starting.keys().filter(|name| {
-                        matches!(snapshot.services[*name].status, ServiceState::Running | ServiceState::Healthy | ServiceState::Unhealthy | ServiceState::Stopped | ServiceState::Failed)
+                        matches!(snapshot.services[*name].status, ServiceState::Running | ServiceState::Healthy | ServiceState::Unhealthy | ServiceState::Stopped | ServiceState::Succeeded | ServiceState::Failed)
                     }).cloned().collect();
                     for name in completed {
                         let state = snapshot.services[&name].clone();
-                        let result = if state.pid.is_some() { Ok(state) } else {
-                            Err(state.last_error.unwrap_or_else(|| format!("service '{name}' exited before restart completed")))
+                        let result = if state.pid.is_some() || state.ready(false) { Ok(state) } else {
+                            Err(ControlError::uncertain(state.last_error.unwrap_or_else(|| format!("service '{name}' exited before restart completed"))))
                         };
                         let _ = starting.remove(&name).unwrap().send(result);
                         self.readiness.send_modify(|state| { state.restarting.remove(&name); });
@@ -630,7 +696,7 @@ impl ServiceManager {
                 .last_error
                 .clone()
                 .unwrap_or_else(|| "supervisor stopped before restart completed".into());
-            let _ = reply.send(Err(message));
+            let _ = reply.send(Err(ControlError::uncertain(message)));
         }
         event_guard.finished = true;
         self.events.record(
@@ -754,6 +820,9 @@ pub(crate) fn prepare_config(
             format!("services.{name}.restart.initial-delay"),
             service.restart.initial_delay,
         )?;
+        if let Some(timeout) = service.effective_task_timeout() {
+            validate_duration(format!("services.{name}.task-timeout"), timeout)?;
+        }
         let checker = service
             .healthcheck
             .as_ref()

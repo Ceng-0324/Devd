@@ -472,7 +472,7 @@ fn render(frame: &mut ratatui::Frame, app: &mut App) {
     );
     let table_rows = app.snapshot.services.iter().map(|(name, state)| {
         let status_color = match state.status {
-            ServiceState::Healthy | ServiceState::Running => Color::Green,
+            ServiceState::Healthy | ServiceState::Running | ServiceState::Succeeded => Color::Green,
             ServiceState::Failed | ServiceState::Unhealthy => Color::Red,
             ServiceState::Stopped => Color::DarkGray,
             _ => Color::Yellow,

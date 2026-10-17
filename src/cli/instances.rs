@@ -129,6 +129,54 @@ pub(super) fn instance_id(config: &Path, state: &Path, profile: Option<&str>) ->
     ))
 }
 
+/// A cached response is historical evidence. When its endpoint is gone, hold
+/// the instance lock and verify the registration and final snapshot together;
+/// a replacement run must never inherit the former adapter's cached controls.
+pub(super) async fn verify_stopped_attachment(expected: Identity) -> Result<bool> {
+    tokio::task::spawn_blocking(move || -> Result<bool> {
+        let state = std::fs::canonicalize(&expected.state_dir)?;
+        if state != expected.state_dir {
+            return Ok(false);
+        }
+        let file =
+            crate::platform::files::open_regular(&state.join("services.json.lock"), false, true)?;
+        let _lock = crate::platform::files::FileLock::acquire(file, false)
+            .context("cannot verify cached control while instance is active or busy")?;
+        let index = expected.project_root.join(".devd").join("instances");
+        regular_directory(index.parent().context("missing index parent")?)?;
+        regular_directory(&index)?;
+        let file = crate::platform::files::open_regular(
+            &index.join(format!("{}.json", expected.instance_id)),
+            false,
+            true,
+        )?;
+        let mut bytes = Vec::new();
+        file.take(MAX_BYTES + 1).read_to_end(&mut bytes)?;
+        if bytes.len() as u64 > MAX_BYTES {
+            bail!("instance registration exceeds limit");
+        }
+        let registered: Identity = serde_json::from_slice(&bytes)?;
+        if registered != expected {
+            return Ok(false);
+        }
+        let mut bytes = Vec::new();
+        crate::platform::files::open_regular(&state.join("services.json"), false, true)?
+            .take(8 * 1024 * 1024 + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() > 8 * 1024 * 1024 {
+            bail!("instance state exceeds verification limit");
+        }
+        let snapshot: crate::core::service_manager::RuntimeSnapshot =
+            serde_json::from_slice(&bytes)?;
+        if snapshot.event_run_id.as_deref() != Some(expected.run_id.as_str()) {
+            return Ok(false);
+        }
+        Ok(true)
+    })
+    .await
+    .context("cached control identity check failed")?
+}
+
 /// Called under the supervisor state lock and before any service is spawned.
 pub(super) async fn register(
     config: PathBuf,

@@ -1,7 +1,9 @@
 mod agent;
 mod baseline;
 mod clean;
+mod compare;
 mod control_session;
+mod coverage;
 mod doctor;
 mod events;
 mod explain;
@@ -136,12 +138,16 @@ enum Command {
     Export(export::Args),
     /// Diagnose a transferred JSON report without a project or supervisor.
     Diagnose(export::diagnose::Args),
+    /// Compare two transferred reports without the original project or supervisor.
+    Compare(compare::Args),
     /// List or inspect bounded recorded incident evidence.
     Incidents(incidents::query::Args),
     /// Explain the latest deterministic cause for one service.
     Explain(explain::Args),
     /// Inspect local service prerequisites without starting or executing them.
     Doctor(doctor::Args),
+    /// Explain declared diagnostic coverage and known evidence gaps without changing the stack.
+    Coverage(coverage::Args),
     /// Trace consumers and potential downstream impact of a declared resource.
     Impact(impact::Args),
     /// Print buffered logs, or query stored logs after shutdown (oldest first).
@@ -219,6 +225,15 @@ impl Cli {
                 bail!("diagnose reads only its report; --config, --profile and --state-dir are not supported");
             }
             return export::diagnose::run(args).await;
+        }
+        if let Command::Compare(args) = self.command {
+            if self.profile.is_some()
+                || self.state_dir.is_some()
+                || self.config != Path::new("devd.yml")
+            {
+                bail!("compare reads only its reports; --config, --profile and --state-dir are not supported");
+            }
+            return compare::run(args).await;
         }
         if let Command::Mcp(args) = &self.command {
             if let Some(report) = &args.report {
@@ -395,6 +410,7 @@ impl Cli {
             Command::Identity { json } => instances::show(&socket, json).await?,
             Command::Instances { .. } => unreachable!("handled before configuration resolution"),
             Command::Diagnose(_) => unreachable!("handled before configuration resolution"),
+            Command::Compare(_) => unreachable!("handled before configuration resolution"),
             Command::Explain(args) => explain::run(args, &socket, &state_dir).await?,
             Command::Reload(args) => reload::run(args, &socket, &config_path).await?,
             Command::Clean(args) => {
@@ -402,6 +418,9 @@ impl Cli {
             }
             Command::Doctor(args) => {
                 doctor::run(args, &config_path, self.profile.as_deref(), &state_dir).await?;
+            }
+            Command::Coverage(args) => {
+                coverage::run(args, &config_path, self.profile.as_deref(), &socket).await?;
             }
             Command::Impact(args) => {
                 impact::run(args, &config_path, self.profile.as_deref(), &state_dir).await?;

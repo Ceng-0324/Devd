@@ -1,0 +1,63 @@
+name: Field feedback
+description: Record a real project trial, including friction, failures, and decisions to stop.
+title: "[Field feedback] "
+labels: ["area:validation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use the shared [field testing guide](https://github.com/Ceng-0324/Devd/blob/dev/docs/FIELD_TESTING.md).
+        A partial or unsuccessful trial is useful. There is no minimum duration, user count, or feature checklist.
+        An anonymous project description is enough. Remove credentials and review paths/logs before sharing.
+        Report vulnerabilities through SECURITY.md instead of a public issue.
+  - type: dropdown
+    id: relationship
+    attributes:
+      label: Relationship to devd
+      options:
+        - Maintainer using a real project
+        - Independent developer using a real project
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Date, versions, and environment
+      description: Include trial date, devd version and full source SHA or release artifact provenance, local changes, OS/architecture, project revision and stack. The project may be anonymous.
+    validations:
+      required: true
+  - type: textarea
+    id: workflow
+    attributes:
+      label: Original workflow and intended work
+      description: What did you actually need to do, and how did you start the project before devd?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps, scope, and assistance
+      description: Describe what you tried, features not tested or not applicable, and any maintainer or Agent help. Record measured time only; otherwise write unknown.
+    validations:
+      required: true
+  - type: textarea
+    id: friction
+    attributes:
+      label: Friction and workarounds
+      description: Include original errors, failed steps, workarounds, or reasons for abandoning setup. Write none if there were no problems.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Outcome and evidence
+      description: State completed, partial, blocked, or abandoned. Link reviewed reports or related issues when available; distinguish real incidents, deliberate fault injection, and no incident.
+    validations:
+      required: true
+  - type: textarea
+    id: follow_up
+    attributes:
+      label: Continued use
+      description: Continue, defer, stop, or undecided, and why? Add later dates and actual tasks if you use it again. Intention alone is not repeated use; link multiple bugs back to this same trial.
+    validations:
+      required: true

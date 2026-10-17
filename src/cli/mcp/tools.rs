@@ -106,8 +106,9 @@ pub(super) fn catalog(offline: bool) -> Vec<Tool> {
         return vec![tool("devd_diagnose", "Diagnose the launcher's report; all evidence is historical, current health is unknown.", json!({}), &[], false)];
     }
     let target = json!({"type":"object","properties":{"instance_id":string,"run_id":string},"required":["instance_id","run_id"],"additionalProperties":false});
+    let operation_key = json!({"type":"string","minLength":1,"maxLength":128});
     vec![
-        tool("devd_identity", "Query the attached live instance and run identity.", json!({}), &[], false),
+        tool("devd_identity", "Query the attached live instance and run identity, including control_policy limits and remaining restarts when the launcher enables a policy.", json!({}), &[], false),
         tool("devd_status", "Query live service states without commands or environment values.", json!({}), &[], false),
         tool("devd_events", "Read retained events with explicit history gaps.", json!({"tail":{"type":"integer","minimum":1,"maximum":1000,"default":100},"service":string}), &[], false),
         tool("devd_explain", "Explain one service using recorded causes, generations and gaps.", json!({"service":string}), &["service"], false),
@@ -115,12 +116,12 @@ pub(super) fn catalog(offline: bool) -> Vec<Tool> {
         tool("devd_export", "Return a diagnostic report; include_logs explicitly adds up to 200 application log entries. Does not write files.", json!({"include_logs":{"type":"boolean","default":false}}), &[], false),
         tool("devd_incidents_list", "List retained incidents of this run with coverage gaps.", json!({}), &[], false),
         tool("devd_incidents_show", "Read an incident's recorded evidence; does not re-inspect its paths.", json!({"id":string}), &["id"], false),
-        tool("devd_restart", "Restart a service. Requires launcher restart grant and matching target; accepted actions may continue after cancellation.", json!({"service":string,"target":target}), &["service","target"], true),
-        tool("devd_stop", "Request ordered stack stop. Requires launcher stop grant and matching target.", json!({"target":target}), &["target"], true),
+        tool("devd_restart", "Restart a service. Requires launcher restart grant, matching target, and operation_key when deduplication is enabled; retry the same key after a lost reply.", json!({"service":string,"target":target,"operation_key":operation_key}), &["service","target"], true),
+        tool("devd_stop", "Request ordered stack stop. Requires launcher stop grant and matching target; operation_key is required when deduplication is enabled.", json!({"target":target,"operation_key":operation_key}), &["target"], true),
         tool("devd_reload_preview", "Preview configuration changes and obtain a plan ID.", json!({"candidate":string}), &[], false),
-        tool("devd_reload_apply", "Apply a fresh reload plan. Requires launcher reload grant and matching target. Failure stops the stack; no rollback.", json!({"candidate":string,"plan_id":string,"target":target}), &["plan_id","target"], true),
+        tool("devd_reload_apply", "Apply a fresh reload plan. Requires launcher reload grant and matching target; operation_key is required when deduplication is enabled. Failure stops the stack; no rollback.", json!({"candidate":string,"plan_id":string,"target":target,"operation_key":operation_key}), &["plan_id","target"], true),
         tool("devd_clean_preview", "Preview authorized disposable directories; removal requires normal stack shutdown.", json!({}), &[], false),
-        tool("devd_clean_apply", "Delete only registered disposable directories after normal shutdown. Requires launcher clean grant, matching target and fresh plan.", json!({"plan_id":string,"target":target}), &["plan_id","target"], true),
+        tool("devd_clean_apply", "Delete only registered disposable directories after normal shutdown. Requires launcher clean grant, matching target and fresh plan; operation_key is required when deduplication is enabled.", json!({"plan_id":string,"target":target,"operation_key":operation_key}), &["plan_id","target"], true),
     ]
 }
 fn tool(

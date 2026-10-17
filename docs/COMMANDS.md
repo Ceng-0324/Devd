@@ -1,16 +1,21 @@
 # Command guide
 
+Compatibility, exit codes and upgrades are covered in [the stability contract](COMPATIBILITY.md).
+
 **English** · [简体中文](COMMANDS.zh-CN.md) · [Back to README](../README.md)
 
 The stack is running. Now what? Find the task you need below; the examples get you started, and the details explain what happens when things go wrong.
 
+- [One-shot tasks](#one-shot-tasks)
 - [File prerequisites and path rules](#file-prerequisites-and-path-rules)
 - [Instance discovery](#instance-discovery)
 - [Wait for readiness](#wait-for-readiness)
+- [See what diagnostics can cover](#see-what-diagnostics-can-cover)
 - [Export diagnostics](#export-diagnostics)
 - [Keep bounded incident evidence](#keep-bounded-incident-evidence)
 - [Find and export a recorded incident](#find-and-export-a-recorded-incident)
 - [Diagnose a report on another machine](#diagnose-a-report-on-another-machine)
+- [Compare two transferred reports](#compare-two-transferred-reports)
 - [Explicit instance ports and paths](#explicit-instance-ports-and-paths)
 - [Detect environment drift](#detect-environment-drift)
 - [Run a reviewed recovery recipe](#run-a-reviewed-recovery-recipe)
@@ -22,6 +27,74 @@ The stack is running. Now what? Find the task you need below; the examples get y
 - [Dependency diagrams](#dependency-diagrams)
 - [Preview and apply configuration changes](#preview-and-apply-configuration-changes)
 - [Command reference](#command-reference)
+
+### One-shot tasks
+
+A build or migration is not ready just because its process started. Declare it
+as a task and let consumers wait for a successful exit:
+
+```yaml
+version: "1"
+services:
+  generate:
+    kind: task
+    command: python3 scripts/generate.py
+    task-timeout: 2m
+  api:
+    command: python3 app.py
+    depends-on:
+      - service: generate
+        condition: completed-successfully
+```
+
+`kind` defaults to `service`. Tasks publish `succeeded` only after exit code 0,
+managed process-tree cleanup, and bounded log draining. They then have no PID.
+Every edge to a task must use `completed-successfully`; that condition is
+rejected for long-running services. Health probes and `always` restart are
+invalid for tasks. Path prerequisites, environment bindings, and read-only
+path/resource observation still work; dependency-recovery and resource-limit
+restarts are not task actions.
+
+Tasks default to `restart.policy: never`, including an omitted policy inside a
+restart block. To retry failures, explicitly set `policy: on-failure`; the
+existing delay/backoff and cumulative `max-attempts` apply. A retry can repeat
+external effects: devd does not roll back a half-finished database migration.
+A failure with no remaining retry stops the whole stack. Stop/cancellation and
+timeout never count as task success, even if termination returns exit code 0.
+
+`task-timeout` (alias `task_timeout`) is positive, defaults to `5m`, and starts
+after the process is spawned. Timeout initiates normal process-tree shutdown;
+cleanup may take additional time. Dependency waiting currently has a fixed
+`30s` deadline; the CLI exposes no override. `wait --timeout` changes only the
+client's deadline. A longer task timeout does not extend its consumers' wait,
+so consumers can time out while a long build is still within its task deadline.
+`task-timeout` is rejected on services. Profiles replace `kind` and
+`task-timeout`; `null` clears the timeout override. Restart fields still merge
+by key, so an explicitly inherited policy remains explicit when a profile
+changes the kind.
+
+Restarting a consumer reuses a completed task in the same supervisor run.
+`restart generate` explicitly reruns the task and invalidates its old success
+when accepted; it returns once the replacement process starts (or a very fast
+task completes), so use `wait generate` for completion. Consumers already
+released are not retroactively stopped; an opted-in long-running consumer can
+use `restart-on-dep-recovery` to restart after the new task generation succeeds.
+New attempts wait for the new result. A fresh supervisor always executes tasks
+again and never trusts a completion file or an old state snapshot.
+
+Reload reruns affected tasks and their downstream consumers, while unrelated
+successful tasks retain their results. A task must finish successfully before
+reload advances its layer. The layer still uses the configured dependency
+waiting deadline; affected tasks do not automatically retry during reload,
+matching the existing failure-stops-the-stack contract. A stack containing only
+tasks exits 0 when every task succeeds; use that `start` exit status in scripts,
+since there may no longer be a live supervisor to answer a subsequent `wait`.
+
+State/export reports include `kind`, and wait evidence includes
+`requires_completed`. Existing reports without these fields remain readable.
+New `succeeded`, `completed-successfully`, and `task-timed-out` enum values require
+a reader that supports tasks; older binaries are not forward-compatible readers.
+For a runnable example, see [examples/tasks](../examples/tasks/README.md).
 
 ### File prerequisites and path rules
 
@@ -100,7 +173,8 @@ devd wait api --profile staging --state-dir ./runtime
 This command is included in v0.7. Omit names to select every service
 in the supervisor's effective configuration; supplied names match exactly and
 duplicates are ignored. Services with a health check need `healthy` and a PID;
-others need `running` and a PID. Use the same `--config`, `--profile`, and
+other long-running services need `running` and a PID. Tasks need `succeeded`
+with exit code 0 and no PID. Use the same `--config`, `--profile`, and
 `--state-dir` as `start`. The YAML can be edited or removed: `wait` reads live
 state without loading it or running extra probes.
 
@@ -123,7 +197,7 @@ waits; excess callers receive `busy`, leaving capacity for control commands.
 `--json` prints one final report on stdout, including unsuccessful waits:
 `schema_version: 1`, `outcome`, `instance_id`, `run_id`, `observed_at`,
 `elapsed_ms`, `services`, `blocking`, and `message`. Each service includes its
-health requirement, observed state, PID, generation, readiness, pending manual
+health/completion requirement, observed state, PID, generation, readiness, pending manual
 restart, and last error. Outcomes are `ready`, `failed`, `timed-out`,
 `cancelled`, `stopping`, `reloaded`, `disconnected`, `unavailable`,
 `invalid-service`, or `busy`. Timeout/cancellation/disconnect preserve the last
@@ -134,6 +208,75 @@ outcome. Argument errors may occur before a report can be produced.
 Final output has a separate five-second write/flush deadline after the readiness
 deadline. Ctrl+C can cancel a stalled output pipe too. An output failure exits
 nonzero and may leave partial text or JSON; it never stops services.
+
+### See what diagnostics can cover
+
+A `requires` entry can keep a broken service from starting. It does not, by
+itself, watch that file after startup. Likewise, keeping events on disk does not
+turn on incident recording. Check those gaps before you need the evidence:
+
+```bash
+devd coverage                         # declarations in the selected disk YAML/profile
+devd coverage --online               # effective config and live recorder observations
+devd coverage --online --json         # the same explanation as schema-1 JSON
+```
+
+The default mode needs no supervisor. It reads at most 1 MiB of configuration,
+applies `--profile`, and explains the declared services, `requires` selectors,
+named paths/scopes, health checks and resource limits. `cwd_resolved` describes
+the effective working directory, including the default, rather than proof of
+an explicit YAML entry. No application path is inspected; missing files,
+programs or dotenv files do not prevent a coverage report for valid YAML.
+It never starts a service/probe, binds a port, creates cleanup-owned paths,
+enables monitoring or grants control. Use `doctor` to inspect prerequisites.
+
+`--online` requires the selected live endpoint and reads its effective config,
+instance/run identity, observed service states and recording status. Edits on
+disk take effect in this report only after successful reload or a new start;
+even removed YAML can still address its original running instance. Recording
+options come from that run's startup flags. Old files left in the state
+directory cannot establish that a recorder is enabled now. No live connection
+means an error, with no static fallback and no stale-health claim.
+
+| Reported evidence | Meaning |
+| --- | --- |
+| `unknown` | Static inspection did not observe the runtime recording choice |
+| `disabled` | This run did not enable that recorder |
+| `recording` | The recorder is enabled and has no observed failure; completeness is not guaranteed |
+| `failed` | This run observed a recorder failure; previously retained evidence may be incomplete |
+| Known gaps | Findings identify memory-window eviction, retained event truncation, missed incident triggers/context, or this recorder's artifact eviction, with their source and consequence |
+
+Events, application logs and incidents have independent states. Event or incident
+writer failure leaves services running; the existing disk-log failure policy
+stops the stack, so a failed log writer may already be unavailable to inspect.
+Incident eviction counts can include artifacts from earlier runs. Event-memory
+eviction says nothing about whether a disk copy survived.
+
+Capacity figures describe rotation, not hours of history: events/logs use the
+run's maximum bytes per file and archive count; incidents keep at most 20
+artifacts of at most 2 MiB each; the event buffer holds 1024 events. This command
+does not scan stored evidence. Disk-writer lag, unfinished artifacts and losses
+outside the observed counters remain unknown; use `events --stored` and
+`incidents ... --stored` after shutdown to inspect retained history.
+
+A configured monitor is not proof of a successful sample. Path monitoring only
+runs during managed process generations, ends when a task completes, and can
+miss changes between polls. It checks declared conditions, not file contents.
+A named path alone enables no monitor, though the same path can separately be
+listed in `requires`. CPU/RSS samples cover the leader PID and may be unavailable.
+Implicit dependencies remain unknown; coverage is neither a health verdict nor
+a reliability score.
+
+Text and JSON share the same findings. JSON marks the source, collection time,
+`atomic: false`, and omitted service/resource counts. Live state and recorder
+observations are not an atomic snapshot. Reports show at most 256 services and
+512 combined requirement/path entries, with a 2 MiB output cap. Collection is
+limited to 30 seconds, output to 5 seconds; Ctrl+C cancels only this query.
+Exit `0` means a report was produced, even with gaps; exit `1` means collection,
+connection, validation, cancellation or output failed (output may be partial).
+Invalid CLI syntax exits `2`. Resource path values, commands, environment bodies
+and application logs are omitted; service/binding names and the config path can
+still be sensitive. This command does not add Agent or MCP tools.
 
 ### Export diagnostics
 
@@ -399,6 +542,43 @@ In terminal B, `cd` to that printed directory, run `devd wait --timeout 30s`, th
 closes after five seconds unless stop/reload/replacement ends it earlier.
 Run `devd stop`, then use the `--stored` commands above. Restoring `target.txt`
 later does not rewrite the saved observation.
+
+### Compare two transferred reports
+
+Two incidents can look similar while their evidence says different things. Keep
+the comparison explicit and offline:
+
+```bash
+devd compare before.json after.json
+devd compare before.json after.json --json
+```
+
+Both files are first passed through the same bounded `diagnose` validator used
+for transferred evidence. The command needs no YAML, state directory, original
+paths or running supervisor, and never follows a path, URL or command embedded
+in either report. It writes no files and has no control or Agent/MCP operation.
+
+The JSON schema is version 1. It reports each side's captured scope and then
+labels configuration/profile/instance/platform/scope as `comparable`,
+`different`, or `unknown`. Resource observations are keyed by their recorded
+selector; requested and observed path identities are hashed, while observation
+intervals and evidence source remain visible. A changed link target or
+declaration is therefore a retained observation, not a claim about file
+contents. Recorded relationship edges, service states, recomputed historical
+explanations, incident-trigger data hashes and evidence gaps are compared
+separately. Trigger payloads are never printed, and a trigger difference is
+not a shared-cause claim. Missing, truncated,
+unsupported or incomparable fields become `unknown`, never a fabricated
+change. Similar symptoms do not become a shared root cause, recurrence or
+recovery-effect conclusion.
+
+Log attachments remain metadata only. Their counts and attribution may differ,
+but log text is never used as incident-window evidence. The output keeps at
+most 2,048 changes and 16 MiB; each input is the existing 16 MiB regular-file
+limit. Collection and output are bounded to 30 and 5 seconds, and Ctrl+C
+cancels the comparison. Exit `0` means a comparison report was produced,
+including unknowns; malformed, unsupported, inconsistent, over-limit or
+unavailable inputs exit `1`, and invalid CLI syntax exits `2`.
 
 ### Diagnose a report on another machine
 
@@ -721,7 +901,11 @@ a read-only configuration looks like this (replace both absolute paths):
 
 Add the supervisor's `--profile` / `--state-dir` selectors when needed. To grant
 controls, append `"--allow", "restart,stop,reload,clean"` to `args`, selecting only
-the required permissions. The session binds to one instance and run. Get both
+the required permissions. Optional `--restart-budget SERVICE=COUNT` entries cap
+accepted restarts for named services in this adapter session. Add
+`--deduplicate` independently when the client can send a stable `operation_key`
+for every control. Neither option grants a control; both are off unless the
+launcher supplies them. The session binds to one instance and run. Get both
 IDs from `devd_identity`; each control takes
 `"target": {"instance_id": "…", "run_id": "…"}`. A replacement supervisor requires
 a new session. Client confirmations and tool annotations do not grant permission.
@@ -734,7 +918,7 @@ a new session. Client confirmations and tool annotations do not grant permission
 | `devd_wait` | Optional `services` (default all), `timeout_ms` (1–3600000, default 30000) |
 | `devd_export` | Optional `include_logs` (default false); returns JSON, never writes a file |
 | `devd_incidents_list`, `devd_incidents_show` | List this run's retained incidents; show requires incident UUID `id` |
-| `devd_restart`, `devd_stop` | Required `target`; restart also requires `service`; corresponding grant required |
+| `devd_restart`, `devd_stop` | Required `target`; restart also requires `service`; corresponding grant required. With deduplication, controls also require `operation_key` (1–128 bytes) |
 | `devd_reload_preview`, `devd_reload_apply` | Optional `candidate`; apply also requires `target`, fresh `plan_id`, and `reload` grant |
 | `devd_clean_preview`, `devd_clean_apply` | Same session after normal stop; apply requires `target`, fresh `plan_id`, and `clean` grant |
 
@@ -759,7 +943,13 @@ output returns a correlated error. Initialization and ordinary calls have a
 30-second deadline; wait follows its requested timeout. Output stalls time out
 in five seconds. Cancellation, EOF and Ctrl+C end adapter work without stopping
 the stack. Accepted controls may continue, so inspect status/events before retrying;
-request IDs do not deduplicate actions. This is an adapter capability boundary,
+request IDs do not deduplicate actions. When `--deduplicate` is enabled, retry
+the same control with the same `operation_key`; the server checks the request
+digest, returns conflicts for reused keys with different payloads, and never
+replays an unknown result. Entries are session-local, with up to 128 keys. Active entries do not expire;
+completed/unknown entries remain for 10 minutes. New keys are rejected while
+capacity is full. When a
+restart budget is exhausted, authorized stop remains available. This is an adapter capability boundary,
 not a same-user sandbox. The fixed-version official Inspector check is documented
 in [tests/README.md](../tests/README.md); it does not claim model-driven client acceptance.
 
@@ -771,7 +961,8 @@ stack first, then launch a JSON-lines session with the same instance selectors:
 ```bash
 devd agent --stdio                                   # read-only
 devd agent --stdio --allow restart,stop               # selected controls
-devd agent --stdio --allow restart,stop,reload,clean   # all four controls
+devd agent --stdio --allow restart --restart-budget worker=3
+devd agent --stdio --allow restart,stop --deduplicate
 ```
 
 The launcher grants permissions once. Requests cannot add permissions or change
@@ -779,6 +970,10 @@ config/profile/state selectors. Each session attaches to one **live instance and
 run**; it never silently follows a replacement supervisor. Keep that session open
 after stopping the stack to preview/apply cleanup. A new session needs a live
 supervisor; standalone offline cleanup remains available through `devd clean`.
+`--restart-budget SERVICE=COUNT` counts accepted restarts per named service in
+this adapter session; it only applies after the normal restart grant and
+rejects services outside the declared set. `--deduplicate` is independent and
+makes `operation_key` mandatory on controls. Both policies are described below.
 Ordinary CLI commands keep their existing permissions. These grants constrain
 this adapter, not other programs running as the same OS user. No network daemon,
 multi-user RBAC or automatic start is added.
@@ -819,9 +1014,43 @@ Get the identity from `describe` or `identity`, and put both identifiers in ever
 control request. Permission is checked before I/O; the supervisor checks scope
 again before execution. Offline cleanup checks the run under its state lock.
 
+For a session launched with `--allow restart --deduplicate`:
+
 ```json
-{"schema_version":1,"id":"restart-1","operation":{"method":"restart","service":"api","target":{"instance_id":"<instance_id>","run_id":"<run_id>"}}}
+{"schema_version":1,"id":"restart-1","operation":{"method":"restart","service":"api","operation_key":"restart-api-1","target":{"instance_id":"<instance_id>","run_id":"<run_id>"}}}
 ```
+
+`describe` and live `identity` expose `control_policy` limits and remaining
+restarts when enabled (default `identity` is unchanged). Budgets allow 1–100
+restarts per service, with at most 64 service entries. Validation and definite
+supervisor refusal consume no allowance. A reserved allowance is not refunded
+while its result is uncertain; cancellation or a lost reply cannot buy another
+restart. The policy restricts manual Agent restarts and never initiates recovery.
+
+With deduplication enabled, all four controls require `operation_key` (1–128
+UTF-8 bytes, no control characters). The digest binds method, target and payload;
+transport IDs are excluded. Keep candidate path spelling unchanged on retries.
+Successful dispatch returns `{operation_key, operation_status, result?}` inside
+`data` (or MCP's JSON text block). Status is `accepted` while queued in the
+adapter, `executing` while forwarding/awaiting the use case, `completed` when a
+report exists, or `unknown` when the result cannot be established. These states
+describe the adapter's knowledge, not an atomic supervisor acknowledgement.
+For completed reload/cleanup, inspect `result.outcome`; completed stop only means
+`result.outcome: stopping`, never proof of shutdown. An unknown status may be
+returned with `ok: true`: it is evidence availability, not success.
+
+Each adapter session retains at most 128 operations. Accepted/executing entries
+do not expire. Completed/unknown entries expire 10 minutes after finishing or
+becoming unknown; queries do not extend retention. Capacity rejects new keys,
+without evicting active operations. Results are capped at 256 KiB each and 8 MiB
+total. An oversized result can be returned once but only an unknown tombstone
+is retained, preventing replay without retaining the body. Every cache hit
+rechecks grants and the attached instance/run; stopped-run verification is
+read-only and does not execute cleanup. Definitive refusals release the key.
+After expiry or adapter restart, a key is new again; budgets also reset on a
+new session. There is no durable, cross-session or cross-adapter exactly-once
+guarantee. Reconcile unknown effects using evidence, rather than submitting a
+new key or reconnecting to bypass that uncertainty.
 
 Relative candidate paths use the Agent process's working directory. Ordinary
 diagnostics do not reread YAML. `status` and restart replies use the export state
@@ -842,6 +1071,9 @@ Use a separate session when a long wait must not delay another request.
 Stable rejection codes are `invalid-request`, `unsupported-version`,
 `permission-denied`, `wrong-instance`, `stale-run`, `operation-failed`,
 `invalid-response`, `request-too-large`, `response-too-large`, and `input-failed`.
+Control policies additionally return `operation-key-required`,
+`operation-key-conflict`, `budget-out-of-scope`, `budget-exhausted`,
+`deduplication-capacity`, `busy`, and `outcome-unknown`.
 Messages provide detail but are not a parsing contract. Operation reports retain
 their existing history gaps, stale-plan checks and partial-progress semantics.
 
@@ -920,7 +1152,7 @@ devd reload --apply --plan 'sha256:<64-hex-digits>' --candidate devd.next.yml
 
 Application re-reads and validates the candidate, then recomputes the plan against the live instance. Changed configuration, process generations, or lifecycle states invalidate the ID; preview again. Services must be in stable states. `apply_available: true` describes support, not a guarantee that a later application will succeed. Instance/profile, state-directory, and supervisor logging options stay fixed. The candidate is an in-memory configuration update; neither source YAML nor the default candidate path is rewritten.
 
-Only affected services are stopped, in old reverse dependency order. After they finish, the supervisor commits the candidate baseline and starts new forward layers. Each affected service must start and, when configured, pass its health check; each layer has the existing dependency timeout (30 seconds). Unchanged services retain their processes. No-op configurations restart nothing. Manual restart and a second reload are rejected while application is active. Affected services pause automatic recovery until application completes; unrelated services keep their existing policies. `stop` can interrupt any phase.
+Only affected services are stopped, in old reverse dependency order. After they finish, the supervisor commits the candidate baseline and starts new forward layers. Each affected task must succeed; long-running services must start and, when configured, pass their health check; each layer has the existing dependency timeout (30 seconds). Unchanged services retain their processes. No-op configurations restart nothing. Manual restart and a second reload are rejected while application is active. Affected services pause automatic recovery until application completes; unrelated services keep their existing policies. `stop` can interrupt any phase.
 
 A failure stops the whole stack, including unrelated services. There is no automatic rollback: once committed, the new in-memory baseline remains until the supervisor exits. The execution report lists completed stops, observed starts, ready layers, and `config_committed`; it returns a nonzero exit code on failure or interruption. Lifecycle events record the plan and outcome, with progress available through `events` (and `--stored` when event persistence was enabled). Client disconnect or the 60-second response timeout does not cancel an accepted reload; inspect status/events before retrying.
 
@@ -939,6 +1171,7 @@ Choose exactly one of `--dry-run` or `--apply`. Preview validates YAML, quoting,
 | `devd instances [--json]` | Discover registered instances in the current repository and its worktrees |
 | `devd incidents list/show [UUID] [--stored] [--json]` | Query recorded incidents in the current run or offline |
 | `devd diagnose REPORT.json [--json]` | Diagnose a transferred report without the original project |
+| `devd compare LEFT.json RIGHT.json [--json]` | Compare two transferred historical reports offline |
 | `devd export --incident UUID [--stored] --output FILE [--include-logs]` | Export one recorded incident |
 | `devd export --output FILE [--include-logs]` | Save bounded live diagnostics to a new JSON file |
 | `devd export --stored --run UUID/latest --output FILE [--include-logs]` | Export one retained run after shutdown |
@@ -953,6 +1186,7 @@ Choose exactly one of `--dry-run` or `--apply`. Preview validates YAML, quoting,
 | `devd baseline check FILE [--json]` | Compare current disk resources; changes/unknown return nonzero |
 | `devd recover --recipe FILE --dry-run [--json]` | Preview a normally stopped instance's explicit recovery recipe |
 | `devd recover --recipe FILE --apply --plan ID [--json]` | Execute once with retained results and file postconditions |
+| `devd coverage [--online] [--json]` | Explain declared coverage and known evidence gaps without probing or changing the stack |
 | `devd doctor [--json]` | Check configured service prerequisites without starting them |
 | `devd impact SERVICE --require INDEX/--path NAME [--scope project/worktrees] [--json]` | Show declared resource users and potential downstream impact |
 | `devd logs [service] [--tail N] [--level info|warn|error] [--since DURATION] [--grep TEXT] [--follow \| --stored]` | Query live memory or offline disk logs; follow live output |

@@ -1321,6 +1321,7 @@ async fn test_orchestration_manual_restart_rechecks_dependencies_and_shutdown_wi
     assert!(bounded(controller.restart("child".into()))
         .await
         .unwrap_err()
+        .to_string()
         .contains("already restarting"));
     run.shutdown().await.unwrap();
     assert!(bounded(restart).await.unwrap().is_err());

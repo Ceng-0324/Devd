@@ -33,6 +33,8 @@ pub(crate) enum Outcome {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct Evidence {
     pub requires_healthy: bool,
+    #[serde(default)]
+    pub requires_completed: bool,
     pub status: Option<ServiceState>,
     pub pid: Option<u32>,
     pub generation: Option<u64>,
@@ -59,19 +61,14 @@ pub(crate) fn observe(
         .map(|(name, &requires_healthy)| {
             let state = snapshot.services.get(name);
             let restart_pending = control.restarting.contains(name);
-            let ready = !restart_pending
-                && state.is_some_and(|state| {
-                    state.pid.is_some()
-                        && if requires_healthy {
-                            state.status == ServiceState::Healthy
-                        } else {
-                            state.status == ServiceState::Running
-                        }
-                });
+            let ready =
+                !restart_pending && state.is_some_and(|state| state.ready(requires_healthy));
             (
                 name.clone(),
                 Evidence {
                     requires_healthy,
+                    requires_completed: state
+                        .is_some_and(|s| s.kind == crate::config::ServiceKind::Task),
                     status: state.map(|s| s.status),
                     pid: state.and_then(|s| s.pid),
                     generation: state.and_then(|s| s.event_generation),
@@ -129,6 +126,36 @@ mod tests {
                 },
             )]),
         }
+    }
+
+    #[test]
+    fn test_task_readiness_requires_completed_current_attempt_without_pid() {
+        let selected = BTreeMap::from([("api".into(), false)]);
+        let mut state = snapshot(ServiceState::Running, Some(42));
+        state.services.get_mut("api").unwrap().kind = crate::config::ServiceKind::Task;
+        assert_eq!(
+            observe(&selected, &state, &ControlState::default(), 0).outcome,
+            Outcome::Waiting
+        );
+        let task = state.services.get_mut("api").unwrap();
+        task.status = ServiceState::Succeeded;
+        task.pid = None;
+        task.last_exit_code = Some(0);
+        assert_eq!(
+            observe(&selected, &state, &ControlState::default(), 0).outcome,
+            Outcome::Ready
+        );
+        let mut control = ControlState::default();
+        control.restarting.insert("api".into());
+        assert_eq!(
+            observe(&selected, &state, &control, 0).outcome,
+            Outcome::Waiting
+        );
+        state.services.get_mut("api").unwrap().event_generation = None;
+        assert_eq!(
+            observe(&selected, &state, &ControlState::default(), 0).outcome,
+            Outcome::Waiting
+        );
     }
 
     #[test]

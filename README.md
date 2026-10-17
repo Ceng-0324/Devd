@@ -18,7 +18,7 @@ Broken file dependencies still need fixing. devd takes care of the services you 
 
 ## What it does
 
-devd is a local development service manager written in Rust. **v0.9.0-alpha.1 is available as a prerelease for Linux, macOS, and Windows.** [Download binaries and SHA-256 checksums](https://github.com/Ceng-0324/Devd/releases/tag/v0.9.0-alpha.1) for Linux x86_64, macOS arm64, or Windows x86_64 MSVC.
+devd is a local development service manager written in Rust. **v1.0.0 is available for Linux, macOS, and Windows.** [Download binaries and SHA-256 checksums](https://github.com/Ceng-0324/Devd/releases/tag/v1.0.0) for Linux x86_64, macOS arm64, or Windows x86_64 MSVC.
 
 The accident that started this project now has a diagnostic path: declare the files and links a service needs, inspect their resolution chains, and see which declared services sit downstream. Opt into incident recording before reproducing a failure, then inspect or export the saved evidence even after the supervisor stops. devd preserves what it observed; repairing the target later does not rewrite that history.
 
@@ -26,8 +26,10 @@ For parallel development, find instances across worktrees, wait for real readine
 
 Profiles, configuration snapshots, dependency diagrams, filtered logs, optional disk history and a live terminal view support the same workflow. `doctor` checks the environment, `events` shows the timeline, and `explain` connects service failures to recorded evidence.
 
-v0.9 adds transferred-report diagnosis, stdio MCP, selected
-resource baselines and reviewed recovery recipes. See [validation scope](VALIDATION.md)
+v1.0.0 adds native task completion gates, diagnostic coverage, offline report
+comparison and separately enabled Agent limits. Public interfaces follow SemVer;
+see the [compatibility and upgrade contract](docs/COMPATIBILITY.md).
+See [validation scope](VALIDATION.md)
 for reproducible checks and remaining user-value evidence. To contribute or
 report a vulnerability, use [CONTRIBUTING.md](CONTRIBUTING.md) and [SECURITY.md](SECURITY.md).
 
@@ -175,7 +177,8 @@ Use the plan ID returned by that preview. Commands run with your OS permissions,
 | --- | --- |
 | Running several worktrees | [Instance discovery](docs/COMMANDS.md#instance-discovery), [ports and paths](docs/COMMANDS.md#explicit-instance-ports-and-paths) |
 | Starting or changing an environment | [Readiness](docs/COMMANDS.md#wait-for-readiness), [profiles](docs/COMMANDS.md#named-environments), [reload](docs/COMMANDS.md#preview-and-apply-configuration-changes) |
-| Saving and handing off failure evidence | [Exports](docs/COMMANDS.md#export-diagnostics), [incidents](docs/COMMANDS.md#keep-bounded-incident-evidence), [offline diagnosis](docs/COMMANDS.md#diagnose-a-report-on-another-machine) |
+| Finishing a build before starting consumers | [One-shot tasks](docs/COMMANDS.md#one-shot-tasks), [runnable example](examples/tasks/README.md) |
+| Saving and handing off failure evidence | [Coverage and blind spots](docs/COMMANDS.md#see-what-diagnostics-can-cover), [Exports](docs/COMMANDS.md#export-diagnostics), [incidents](docs/COMMANDS.md#keep-bounded-incident-evidence), [offline diagnosis](docs/COMMANDS.md#diagnose-a-report-on-another-machine), [comparison](docs/COMMANDS.md#compare-two-transferred-reports) |
 | Comparing, rebuilding or cleaning resources | [Baselines](docs/COMMANDS.md#detect-environment-drift), [recovery](docs/COMMANDS.md#run-a-reviewed-recovery-recipe), [cleanup](docs/COMMANDS.md#clean-disposable-instance-data) |
 | Connecting another tool | [MCP](docs/COMMANDS.md#connect-an-mcp-client), [Agent JSON interface](docs/COMMANDS.md#a-scoped-interface-for-agents) |
 
@@ -184,6 +187,8 @@ Full options and examples live in the [command guide](docs/COMMANDS.md). Platfor
 ## Development and validation
 
 Try the [API, web and worker example](examples/local-stack/README.md) for a complete stack with repeatable failure-recovery exercises.
+
+Trying it on your own project? The [field guide](https://github.com/Ceng-0324/Devd/blob/dev/docs/FIELD_TESTING.md) explains how to try your existing workflow and keep feedback to one record, including the parts that did not work.
 
 Start with [contributing](CONTRIBUTING.md); specific checks live in [tests and manual validation](tests/README.md). See the [release checklist](RELEASING.md) for publishing and the [security policy](SECURITY.md) for vulnerability reports.
 

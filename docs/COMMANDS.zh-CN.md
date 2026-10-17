@@ -1,16 +1,21 @@
 # 命令指南
 
+兼容范围、退出码与升级方式见[兼容与升级](COMPATIBILITY.zh-CN.md)。
+
 [English](COMMANDS.md) · **简体中文** · [返回 README](../README.zh-CN.md)
 
 服务跑起来了，接下来呢？按手头的事情往下找。每节先给用法，再说明失败、权限和证据的边界，省得出事时还要猜。
 
+- [一次性任务](#一次性任务)
 - [文件前置条件与路径规则](#文件前置条件与路径规则)
 - [实例身份与发现](#实例身份与发现)
 - [等待就绪](#等待就绪)
+- [看清诊断能覆盖什么](#看清诊断能覆盖什么)
 - [导出诊断证据](#导出诊断证据)
 - [留下有界的事故证据](#留下有界的事故证据)
 - [找到事故，并把证据带走](#找到事故并把证据带走)
 - [换台机器继续诊断](#换台机器继续诊断)
+- [离线对比两份移交报告](#离线对比两份移交报告)
 - [显式配置实例端口与路径](#显式配置实例端口与路径)
 - [检查环境漂移](#检查环境漂移)
 - [执行审阅过的恢复配方](#执行审阅过的恢复配方)
@@ -22,6 +27,36 @@
 - [依赖图](#依赖图)
 - [配置变更预览与应用](#配置变更预览与应用)
 - [命令速查](#命令速查)
+
+### 一次性任务
+
+生成代码、构建资源、执行迁移，真正要等的是“做完了”，而不是“进程起来了”：
+
+```yaml
+version: "1"
+services:
+  generate:
+    kind: task
+    command: python3 scripts/generate.py
+    task-timeout: 2m
+  api:
+    command: python3 app.py
+    depends-on:
+      - service: generate
+        condition: completed-successfully
+```
+
+`kind` 默认是 `service`。任务只有退出码为 0、受管进程树清理完成、日志经过有界排空后才进入 `succeeded`，此时没有 PID。所有指向任务的依赖都必须写 `completed-successfully`；长驻服务不能使用这个完成条件。任务禁止健康探测和 `always` 重启，也不支持依赖恢复联动或资源超限重启；文件前置条件、环境映射与只读监测仍然可用。
+
+任务默认 `restart.policy: never`，即使写了 restart 块却没写 policy，也不会自动重试。需要时显式设为 `on-failure`，沿用已有退避和累计 `max-attempts`。但迁移执行一半失败，再试一次可能重复外部副作用，devd 不会替你回滚数据库。失败且没有剩余重试次数时停止全栈；停止、取消和超时都不会算成功，即使程序在被终止时返回了 0。
+
+`task-timeout`（别名 `task_timeout`）须为正值，默认 `5m`，从进程启动后开始计时。超时会触发正常进程树关闭，清理还可能需要额外时间。当前依赖等待固定为 `30s`，CLI 没有调整参数；`wait --timeout` 只改变客户端期限。调大 task-timeout 不会延长下游等待，因此长构建尚未超过自身期限，下游也可能已经等待超时。长驻服务不能设置 task-timeout。profile 整体替换 kind 和 task-timeout，`null` 清除超时覆盖；restart 仍按字段合并，因此基础配置明确写出的 policy 会继续被继承。
+
+重启消费者会复用本次 supervisor 运行内已经成功的任务。`restart generate` 才是明确重跑：受理时立即作废旧成功结果，命令在新进程启动或快速任务完成后返回，需要等完成再用 `wait generate`。已放行的消费者不会因此被追溯停掉；长驻消费者可以显式开启 `restart-on-dep-recovery`，等任务新代次成功后联动重启。新启动尝试必须等新结果。重新启动 supervisor 则会重新执行任务，不采信旧状态或完成标记文件。
+
+reload 只重跑受影响任务及其下游，无关任务保留成功结果。每层要等任务成功才能推进，仍沿用依赖等待期限；重载期间暂停受影响任务的自动重试，失败停止全栈。纯任务栈全部成功后 `start` 退出 0，脚本直接使用这个退出码；之后 supervisor 已经结束，不能再指望在线 `wait` 回答。
+
+状态与导出报告增加 `kind`，wait 证据增加 `requires_completed`；旧报告省略这些字段仍可读取。新增 `succeeded`、`completed-successfully` 和 `task-timed-out` 枚举值需要支持任务的新版本读取，旧二进制不保证向前兼容。可运行示例见 [examples/tasks](../examples/tasks/README.md)。
 
 ### 文件前置条件与路径规则
 
@@ -71,15 +106,45 @@ devd wait api worker --timeout 1m --json
 devd wait api --profile staging --state-dir ./runtime
 ```
 
-不写服务名时选择 supervisor 当前有效配置中的全部服务；指定名称时精确匹配、自动去重。有健康检查的服务必须达到 `healthy` 且持有 PID，其余必须为 `running` 且持有 PID。沿用启动时的 `--config`、`--profile` 和 `--state-dir`。YAML 改坏或删除后仍能等待：命令只读取活状态，不重读配置，也不额外执行探测。
+不写服务名时选择 supervisor 当前有效配置中的全部服务；指定名称时精确匹配、自动去重。有健康检查的服务必须达到 `healthy` 且持有 PID，其他长驻服务必须为 `running` 且持有 PID；任务须成功退出并进入 `succeeded`，此时没有 PID。沿用启动时的 `--config`、`--profile` 和 `--state-dir`。YAML 改坏或删除后仍能等待：命令只读取活状态，不重读配置，也不额外执行探测。
 
 默认期限 `30s` 包含连接建立，可用 `--timeout` 设置 `1ms` 到 `1h`。同一 supervisor 内手动重启或崩溃恢复可以继续等待新代次；手动重启请求一旦被接受，旧代次就不能满足等待。全栈停止、已接受的配置重载（包括等价配置）或控制连接断开会终止本次等待。预览和被拒绝的重载不影响等待，也不会自动重连新的 supervisor。Ctrl+C 只取消等待命令。
 
 退出码 `0` 表示在同一次活观测中，所选服务全部就绪；它不会锁住这些进程，也不保证之后持续健康。其他等待结果退出 `1`，CLI 参数错误退出 `2`。所选服务进入 stopped/failed 会终止等待；pending、starting、unhealthy 和 restarting 可以继续等。已观测到的全栈停止或重载优先于服务就绪。每个 supervisor 最多接受 8 个并发等待，多出的请求返回 `busy`，为控制命令保留连接余量。
 
-`--json` 在 stdout 输出一份最终报告，失败也有报告：`schema_version: 1`、`outcome`、`instance_id`、`run_id`、`observed_at`、`elapsed_ms`、`services`、`blocking` 和 `message`。每个服务包含健康要求、观测状态、PID、代次、是否就绪、是否有手动重启待完成，以及最近错误。结果为 `ready`、`failed`、`timed-out`、`cancelled`、`stopping`、`reloaded`、`disconnected`、`unavailable`、`invalid-service` 或 `busy`。超时、取消或断连时保留最后收到的证据，可能已经过时；未收到报告时身份和观测字段为 null。`waiting` 仅用于内部流式进度，不是 CLI 最终结果。参数错误可能在生成报告前退出。
+`--json` 在 stdout 输出一份最终报告，失败也有报告：`schema_version: 1`、`outcome`、`instance_id`、`run_id`、`observed_at`、`elapsed_ms`、`services`、`blocking` 和 `message`。每个服务包含健康/任务完成要求、观测状态、PID、代次、是否就绪、是否有手动重启待完成，以及最近错误。结果为 `ready`、`failed`、`timed-out`、`cancelled`、`stopping`、`reloaded`、`disconnected`、`unavailable`、`invalid-service` 或 `busy`。超时、取消或断连时保留最后收到的证据，可能已经过时；未收到报告时身份和观测字段为 null。`waiting` 仅用于内部流式进度，不是 CLI 最终结果。参数错误可能在生成报告前退出。
 
 最终输出在就绪等待结束后另有 5 秒的写入和 flush 期限；管道阻塞时仍可用 Ctrl+C 取消。输出失败以非零状态退出，文本或 JSON 可能不完整，服务不会因此停止。
+
+### 看清诊断能覆盖什么
+
+在 `requires` 写上一个文件，只能保证启动前检查它；服务跑起来之后是否还在监测，是另一回事。事件写进磁盘，也不表示事故记录已经开启。别等证据用得上的时候，才发现根本没留：
+
+```bash
+devd coverage                         # 看所选磁盘配置/profile 的声明
+devd coverage --online               # 看当前运行的有效配置与记录器观测
+devd coverage --online --json         # 同一份说明，输出 schema-1 JSON
+```
+
+默认模式不需要 supervisor，最多读取 1 MiB 配置，应用 `--profile` 后列出服务、`requires` 索引、命名路径及归属、健康探测和资源阈值。`cwd_resolved` 表示已有有效工作目录，包含默认目录，不表示 YAML 一定显式写了 `cwd`。它不检查应用资源是否存在，不读资源正文，不运行服务或探针、不尝试绑定端口、不创建可清理目录，也不会开启监测或授予控制权。所以，只要 YAML 合法，程序、dotenv 或依赖文件缺失仍能给出覆盖说明；检查实际前置条件请用 `doctor`。
+
+`--online` 必须连接所选的活实例，读取 supervisor 当前使用的配置、instance/run 身份、观测到的服务状态与记录器状态。磁盘上尚未应用的编辑不会混进来；重载成功或重新启动后才更新，删除 YAML 后也能按原路径连接尚在运行的实例。记录选项来自本次启动参数，旧目录里有文件不算开启证据。连不上就报错，不会退回静态结果或把旧状态说成当前健康。
+
+| 证据状态 | 含义 |
+| --- | --- |
+| `unknown` | 静态检查没有观测本次运行的记录选项 |
+| `disabled` | 本次运行未开启该记录器 |
+| `recording` | 已开启且尚未观测到失败，不保证证据完整 |
+| `failed` | 本次已观测到写入失败，保留的证据可能不完整 |
+| 已知缺口 | findings 分别说明内存窗口淘汰、事件截断、事故触发或上下文遗漏，以及本记录器的事故制品淘汰，并标注来源和后果 |
+
+事件、应用日志与事故记录独立判断。事件或事故写入失败时服务继续运行；磁盘日志仍沿用失败后停栈的策略，因此查询时可能已经无法连接。事故淘汰计数可能包含先前运行的制品；内存事件被淘汰，也不代表磁盘上的副本一定丢了。
+
+容量不是时间承诺：事件和日志显示本次启动的单文件大小及归档份数，事故最多保留 20 份、每份最多 2 MiB，内存事件容量为 1024 条。这个命令不扫描磁盘证据，writer 延迟、未完成制品、计数器之外的历史缺失仍可能未知；停栈后用 `events --stored`、`incidents ... --stored` 查看实际留存。
+
+配置开启监测，也不证明已经取得有效采样。路径监测只在受管进程代次执行期间工作，任务完成后结束；轮询可能遗漏瞬时变化，也不检测文件正文。`paths` 映射本身不开监测，同一路径可以另外声明到 `requires`。CPU/RSS 仅覆盖主 PID，样本可能不可用。未声明的隐式依赖仍是未知，报告不提供健康裁定或可靠性评分。
+
+文本与 JSON 共用 findings。JSON 给出来源、采集时间、`atomic: false` 和省略数量；在线状态与各记录器观测并非原子快照。最多展示 256 个服务及合计 512 条 requires/paths，输出上限 2 MiB，采集限 30 秒，输出限 5 秒；Ctrl+C 只取消本次查询。退出 `0` 表示成功生成报告，即使报告含缺口；采集、连接、校验、取消或输出失败退出 `1`（输出可能不完整），参数错误退出 `2`。不输出资源路径值、命令、环境正文或应用日志，但服务名、绑定名与配置路径仍可能敏感。本模块不新增 Agent/MCP 工具。
 
 ### 导出诊断证据
 
@@ -186,6 +251,21 @@ devd start --record-incidents
 ```
 
 终端 B 进入该目录，先执行 `devd wait --timeout 30s`，再执行 `rm ./target.txt`。监测事件产生后，`devd incidents list` 给出 UUID，`devd incidents show UUID` 展示当时保存的悬空链接链。窗口在 5 秒后结束，停止/重载/换代也可能提前结束。执行 `devd stop` 后即可使用上面的 `--stored` 命令；后来补回 `target.txt`，也不会改写已有事故证据。
+
+### 离线对比两份移交报告
+
+两次事故看起来相似，证据却可能完全不同。把比较也做成显式的离线动作：
+
+```bash
+devd compare before.json after.json
+devd compare before.json after.json --json
+```
+
+两份文件都会先经过 `diagnose` 使用的同一套有界校验器。它不需要 YAML、状态目录、原始路径或运行中的 supervisor，不跟随报告里的路径和 URL，不执行命令，不写文件，也不提供控制或 Agent/MCP 操作。
+
+JSON 输出是 schema 1。它先分别说明两侧的采集范围，再把配置/profile/instance/platform/范围标为 `comparable`、`different` 或 `unknown`。资源按报告里保存的选择器匹配，请求路径和观察到的目标只输出哈希，同时保留观察区间和证据来源；链接目标或声明变化是留存的观察，不是文件正文变化证明。关系边、服务状态、重新计算的历史解释、事故触发事件数据哈希和证据缺口分别比较。触发事件正文不会输出，触发差异也不代表共同根因。字段缺失、截断、不支持或不可比时返回 `unknown`，不会硬凑成差异；症状相似也不会被说成同一根因、复发或恢复效果。
+
+日志附件只作为元数据。数量和归属可以不同，但日志正文永远不进入事故窗口事实。输出最多保留 2048 项变化、16 MiB；每个输入沿用 16 MiB 普通文件限制。采集和输出分别限 30 秒、5 秒，Ctrl+C 只取消本次比较。退出 `0` 表示已生成报告（即使存在未知），输入损坏、不支持、身份/顺序不一致、超限或不可读取退出 `1`，参数错误退出 `2`。
 
 ### 换台机器继续诊断
 
@@ -343,7 +423,7 @@ devd clean --apply --plan sha256:... --json  # 使用预览返回的 plan_id
 }
 ```
 
-有 profile 或自定义状态目录时，加上与 supervisor 一致的 `--profile` / `--state-dir`。需要控制时，在 `args` 中追加 `"--allow", "restart,stop,reload,clean"`，只保留愿意授予的项。会话固定绑定一个 instance/run；从 `devd_identity` 取得两个 ID，每个控制传入 `"target": {"instance_id": "…", "run_id": "…"}`。supervisor 换代后必须重新建会话，客户端确认和工具描述不能代替服务端授权。
+有 profile 或自定义状态目录时，加上与 supervisor 一致的 `--profile` / `--state-dir`。需要控制时，在 `args` 中追加 `"--allow", "restart,stop,reload,clean"`，只保留愿意授予的项。可独立增加 `--restart-budget SERVICE=COUNT` 限制本次 adapter 会话内各服务可受理的重启次数，也可增加 `--deduplicate` 启用控制请求去重；两者默认关闭，不会增加 grant。会话固定绑定一个 instance/run；从 `devd_identity` 取得两个 ID，每个控制传入 `"target": {"instance_id": "…", "run_id": "…"}`。supervisor 换代后必须重新建会话，客户端确认和工具描述不能代替服务端授权。
 
 | 工具 | 参数与行为 |
 | --- | --- |
@@ -353,7 +433,7 @@ devd clean --apply --plan sha256:... --json  # 使用预览返回的 plan_id
 | `devd_wait` | 可选 `services`（默认全栈）、`timeout_ms`（1–3600000，默认 30000） |
 | `devd_export` | 可选 `include_logs`（默认 false），返回 JSON，不写文件 |
 | `devd_incidents_list`、`devd_incidents_show` | 列出本次运行留存事故；show 必填事故 UUID `id` |
-| `devd_restart`、`devd_stop` | 必填 `target`，restart 还需 `service`；须分别授权 |
+| `devd_restart`、`devd_stop` | 必填 `target`，restart 还需 `service`；须分别授权。启用去重后所有控制还须传 `operation_key`（1–128 字节） |
 | `devd_reload_preview`、`devd_reload_apply` | 可选 `candidate`；apply 还需 `target`、新鲜 `plan_id` 和 `reload` 授权 |
 | `devd_clean_preview`、`devd_clean_apply` | 沿用同一会话，正常停栈后使用；apply 还需 `target`、新鲜 `plan_id` 和 `clean` 授权 |
 
@@ -361,7 +441,7 @@ devd clean --apply --plan sha256:... --json  # 使用预览返回的 plan_id
 
 拿到移交报告时，把客户端参数改为 `["mcp", "--stdio", "--report", "/absolute/path/report.json"]`。此时只开放无参数的 `devd_diagnose`，复用 `devd diagnose` 的验证器，只加载启动者指定的报告，所有证据标为历史。无需原项目或 supervisor，拒绝在线选择参数和控制授权，也不能通过工具参数读取另一条路径。
 
-支持 MCP `2025-06-18` 与 `2025-11-25`。输入每行 16 KiB、输出 8 MiB，内部 supervisor 请求仍限 4096 字节；最多八个未完成请求、一个控制处理器。输入超限、未完成请求 ID 重复或并发超限会关闭 adapter，输出超限返回对应请求的错误。初始化和普通调用限 30 秒，wait 沿用所选期限；输出阻塞限 5 秒。取消、EOF、Ctrl+C 只结束 adapter 工作，不停止服务；已受理控制可能继续，重试前查状态和事件，ID 不负责动作去重。这是接口能力限制，不是同用户沙箱。固定版本官方 Inspector 验证见 [tests/README.md](../tests/README.md)，不冒充模型驱动的客户端对话验收。
+支持 MCP `2025-06-18` 与 `2025-11-25`。输入每行 16 KiB、输出 8 MiB，内部 supervisor 请求仍限 4096 字节；最多八个未完成请求、一个控制处理器。输入超限、未完成请求 ID 重复或并发超限会关闭 adapter，输出超限返回对应请求的错误。初始化和普通调用限 30 秒，wait 沿用所选期限；输出阻塞限 5 秒。取消、EOF、Ctrl+C 只结束 adapter 工作，不停止服务；已受理控制可能继续，重试前查状态和事件，传输 ID 不负责动作去重。启用 `--deduplicate` 后应使用相同 `operation_key` 重试；同键不同请求被拒绝，未知结果不重放。每会话最多保留 128 条：活动条目不过期，完成／unknown 结果保留 10 分钟；容量满时拒绝新键。重启预算耗尽不妨碍已授权 stop。这是接口能力限制，不是同用户沙箱。固定版本官方 Inspector 验证见 [tests/README.md](../tests/README.md)，不冒充模型驱动的客户端对话验收。
 
 ### 给 Agent 的实例接口
 
@@ -370,10 +450,11 @@ devd clean --apply --plan sha256:... --json  # 使用预览返回的 plan_id
 ```bash
 devd agent --stdio                                   # 默认只读
 devd agent --stdio --allow restart,stop               # 只开放指定控制
-devd agent --stdio --allow restart,stop,reload,clean   # 开放四种控制
+devd agent --stdio --allow restart --restart-budget worker=3
+devd agent --stdio --allow restart,stop --deduplicate
 ```
 
-权限由启动者一次确定，请求不能自行增加权限或改变 config/profile/state。每个会话绑定一个**活实例及其本次运行**，supervisor 换代后会拒绝，不能悄悄跟过去。停止全栈后保持这个会话打开，即可预览／执行清理；新会话需要活 supervisor，独立离线清理仍用 `devd clean`。普通 CLI 保持原有权限。这是接口能力限制，不是同用户进程沙箱；不新增远程守护进程、多用户 RBAC 或自动启动。
+权限由启动者一次确定，请求不能自行增加权限或改变 config/profile/state。每个会话绑定一个**活实例及其本次运行**，supervisor 换代后会拒绝，不能悄悄跟过去。停止全栈后保持这个会话打开，即可预览／执行清理；新会话需要活 supervisor，独立离线清理仍用 `devd clean`。`--restart-budget SERVICE=COUNT` 按服务限制本会话可受理的重启次数，只在已有 restart grant 生效，未列出的服务会被拒绝。`--deduplicate` 独立开启后，控制请求必须带 `operation_key`。普通 CLI 保持原有权限。这是接口能力限制，不是同用户进程沙箱；不新增远程守护进程、多用户 RBAC 或自动启动。
 
 stdin 每行一个 UTF-8 JSON 对象，stdout 只输出 JSON 回复；启动或 I/O 失败写 stderr 并非零退出：
 
@@ -381,7 +462,7 @@ stdin 每行一个 UTF-8 JSON 对象，stdout 只输出 JSON 回复；启动或 
 {"schema_version":1,"id":"inspect-1","operation":{"method":"status"}}
 ```
 
-每条回复包含 `schema_version`、`id`、`instance_id`、`run_id`、`ok`。成功返回 `data`，拒绝返回 `error: {code, message}`；非法请求外壳的 `id` 为 null。ID 为 1–128 字节、不含控制字符，**只关联请求，不负责去重**。未知请求字段和方法会拒绝；客户端应接受回复新增字段，并检查 schema 1。`ok: true` 只表示拿到了报告，wait/reload/clean 仍要检查 `data.outcome`；等待超时、部分清理都不能当成功。
+每条回复包含 `schema_version`、`id`、`instance_id`、`run_id`、`ok`。成功返回 `data`，拒绝返回 `error: {code, message}`；非法请求外壳的 `id` 为 null。ID 为 1–128 字节、不含控制字符，默认只关联请求。启用去重时控制请求另带独立的 `operation_key`；同键同摘要返回原操作状态/结果，同键不同摘要拒绝。未知请求字段和方法会拒绝；客户端应接受回复新增字段，并检查 schema 1。`ok: true` 只表示拿到了报告，wait/reload/clean 仍要检查 `data.outcome`；等待超时、部分清理都不能当成功。
 
 | method | operation 内的其他字段 | 权限 |
 | --- | --- | --- |
@@ -402,9 +483,19 @@ stdin 每行一个 UTF-8 JSON 对象，stdout 只输出 JSON 回复；启动或 
 
 从 `describe` 或 `identity` 取得身份，每个控制请求都带两个标识。接口在 I/O 前检查授权，supervisor 在实际操作前再次核对作用域；离线清理在状态锁内核对运行。
 
+下面的控制示例要求会话已用 `--allow restart --deduplicate` 启动：
+
 ```json
-{"schema_version":1,"id":"restart-1","operation":{"method":"restart","service":"api","target":{"instance_id":"<instance_id>","run_id":"<run_id>"}}}
+{"schema_version":1,"id":"restart-1","operation":{"method":"restart","service":"api","operation_key":"restart-api-1","target":{"instance_id":"<instance_id>","run_id":"<run_id>"}}}
 ```
+
+开启策略后，`describe` 和在线 `identity` 的 `control_policy` 会报告限制与剩余额度；默认 identity 格式不变。预算每服务允许 1–100 次，最多声明 64 个服务。校验失败或 supervisor 明确拒绝不扣次数；结果不确定时保留预留额度，取消或丢回复不会返还。它只限制 Agent 手动重启，不会主动触发恢复。
+
+启用去重后，四种控制都要求独立 `operation_key`（1–128 个 UTF-8 字节，无控制字符），摘要绑定方法、目标及请求内容，传输 ID 不参与；重试时 candidate 的路径写法也要相同。`data`（MCP 为文本块内 JSON）变为 `{operation_key, operation_status, result?}`。`accepted` 表示 adapter 已登记待转发，`executing` 表示正在转发／等待用例，`completed` 表示已有报告，`unknown` 表示结果无法确定。这是 adapter 对操作的认知，不冒充 supervisor 的原子受理回执。重载／清理完成仍要查 `result.outcome`，stop 的 `stopping` 也只说明已请求停栈；`ok: true` 搭配 unknown 不等于操作成功。
+
+每个 adapter 会话最多保留 128 条操作，accepted／executing 不过期；completed／unknown 从完成或转为未知时起保留 10 分钟，查询不续期，满额拒绝新键。单条结果最多 256 KiB，合计最多 8 MiB；超限结果首次仍可返回，随后只保留 unknown 记录以阻止重放。缓存命中也重验 grant 与 instance/run，停止后的核验只读证据，不重跑清理。明确拒绝会释放键。过期或 adapter 重启后，同键会被视为新操作，新会话也会重置预算；这里没有跨会话、跨 adapter 或崩溃后 exactly-once 保证。遇到 unknown 应先核对证据，别靠换键或重连蒙混过去。
+
+策略错误码包括 `operation-key-required`、`operation-key-conflict`、`budget-out-of-scope`、`budget-exhausted`、`deduplication-capacity`、`busy` 和 `outcome-unknown`。
 
 相对 candidate 按 Agent 进程工作目录解析，普通诊断不重读 YAML。status 和重启回复复用导出的状态白名单，省略自由文本错误；export 沿用已有隐私边界。事件、解释、等待和错误消息保留原有诊断细节，可能包含本地路径或命令文本，不承诺通用脱敏。应用日志仅在显式 export 请求中附带。
 
@@ -487,7 +578,7 @@ devd reload --apply --plan 'sha256:<64位十六进制摘要>' --candidate devd.n
 
 应用时重新读取、校验候选，并对活实例重新计算计划。配置、进程代次或生命周期状态变化都会使 ID 过期，需要重新预览；实例中的服务也必须处于稳定状态。`apply_available: true` 表示支持应用，不保证稍后执行必然成功。实例/profile、状态目录和 supervisor 日志选项固定。候选只更新内存中的有效配置，不改写源 YAML，也不改变默认候选路径。
 
-先按旧图逆序停止受影响服务，等旧 actor 和进程组清理完成，再切换配置基线、按新图正序分层启动。有健康检查的服务必须通过检查，其余服务必须启动；每层沿用依赖超时（30 秒）。无关服务保留原进程，等价配置不会重启任何服务。执行期间拒绝手动 restart 和第二次 reload；受影响服务暂停自动恢复，成功后恢复新配置中的策略，无关服务继续按原策略运行。全栈 stop 可以抢占任意阶段。
+先按旧图逆序停止受影响服务，等旧 actor 和进程组清理完成，再切换配置基线、按新图正序分层启动。任务须成功完成；有健康检查的长驻服务必须通过检查，其余长驻服务必须启动；每层沿用依赖超时（30 秒）。无关服务保留原进程，等价配置不会重启任何服务。执行期间拒绝手动 restart 和第二次 reload；受影响服务暂停自动恢复，成功后恢复新配置中的策略，无关服务继续按原策略运行。全栈 stop 可以抢占任意阶段。
 
 失败会停止全栈，包括无关服务，不自动回滚。配置一旦切换，新的内存基线保持到 supervisor 退出。执行报告列出已完成停止、观测到的启动、已就绪的层和 `config_committed`；失败或中断返回非零退出码。生命周期事件记录计划、结果及进度，可通过 `events` 查询，启用事件持久化后也可用 `--stored`。客户端断开或等待响应超过 60 秒不会取消已受理的重载，重试前先检查 status/events。
 
@@ -506,6 +597,7 @@ devd reload --apply --plan 'sha256:<64位十六进制摘要>' --candidate devd.n
 | `devd instances [--json]` | 发现当前仓库及其 worktree 中已登记的实例 |
 | `devd incidents list/show [UUID] [--stored] [--json]` | 查询当前运行或离线保留的事故证据 |
 | `devd diagnose REPORT.json [--json]` | 无需原项目，直接诊断移交报告 |
+| `devd compare LEFT.json RIGHT.json [--json]` | 离线比较两份移交历史报告 |
 | `devd export --incident UUID [--stored] --output FILE [--include-logs]` | 导出单事故报告 |
 | `devd export --output FILE [--include-logs]` | 导出有界的活实例诊断报告到新 JSON 文件 |
 | `devd export --stored --run UUID/latest --output FILE [--include-logs]` | 停止后导出指定历史运行 |
@@ -520,6 +612,7 @@ devd reload --apply --plan 'sha256:<64位十六进制摘要>' --candidate devd.n
 | `devd baseline check FILE [--json]` | 按磁盘配置比较资源，变化／未知返回非零 |
 | `devd recover --recipe FILE --dry-run [--json]` | 正常停栈后预览已登记资源的恢复配方 |
 | `devd recover --recipe FILE --apply --plan ID [--json]` | 显式执行当前计划，留存结果并拒绝未知结果重放 |
+| `devd coverage [--online] [--json]` | 只读说明声明覆盖与已知证据缺口，不探测或改变服务 |
 | `devd doctor [--json]` | 检查服务启动前置条件，不启动服务 |
 | `devd impact SERVICE --require INDEX/--path NAME [--scope project/worktrees] [--json]` | 查看声明资源的使用者和潜在下游影响 |
 | `devd logs [service] [--tail N] [--level info|warn|error] [--since DURATION] [--grep TEXT] [--follow \| --stored]` | 查询内存或离线磁盘日志，跟随实时输出 |

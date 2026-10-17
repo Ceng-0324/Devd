@@ -24,6 +24,10 @@ pub(super) struct ScopeFailure {
     pub message: String,
 }
 
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+pub(super) struct ControlRejected(pub String);
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "command", rename_all = "kebab-case", deny_unknown_fields)]
 pub(super) enum Request {
@@ -34,6 +38,7 @@ pub(super) enum Request {
         request: Box<Request>,
     },
     Status,
+    Coverage,
     Identity,
     Wait {
         services: Vec<String>,
@@ -107,7 +112,9 @@ impl Request {
 #[serde(tag = "result", content = "data", rename_all = "kebab-case")]
 pub(super) enum Response {
     ScopeError { code: String, message: String },
+    ControlRejected(String),
     Status(RuntimeSnapshot),
+    Coverage(Box<super::coverage::Report>),
     Identity(Box<super::instances::Identity>),
     Wait(Box<super::wait::Report>),
     ReloadPlan(ReloadPlan),
@@ -160,10 +167,10 @@ pub(super) async fn write<T: Serialize>(
 }
 
 pub(super) async fn request(socket: &Path, message: Request) -> Result<Response> {
-    let maximum = if matches!(message, Request::Identity) {
-        128 * 1024
-    } else {
-        MAX_RESPONSE
+    let maximum = match &message {
+        Request::Identity => 128 * 1024,
+        Request::Coverage => super::coverage::MAX_OUTPUT_BYTES + 1024,
+        _ => MAX_RESPONSE,
     };
     let mut stream = connect(socket).await?;
     write(&mut stream, &message).await?;
@@ -171,6 +178,7 @@ pub(super) async fn request(socket: &Path, message: Request) -> Result<Response>
         .await
         .context("supervisor response timed out; inspect 'devd status' before retrying")??;
     match response {
+        Response::ControlRejected(message) => Err(ControlRejected(message).into()),
         Response::Error(error) => bail!("{error}"),
         other => Ok(other),
     }

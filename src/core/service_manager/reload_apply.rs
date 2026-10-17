@@ -4,7 +4,7 @@ use crate::core::reload::{self, ChangeKind, ReloadOutcome, ReloadPlan, ReloadRep
 pub(super) struct ReloadRequest {
     pub candidate: DevdConfig,
     pub plan_id: String,
-    pub reply: oneshot::Sender<Result<ReloadReport, String>>,
+    pub reply: oneshot::Sender<Result<ReloadReport, ControlError>>,
 }
 
 enum Phase {
@@ -25,13 +25,13 @@ pub(super) struct ReloadExecution {
     prepared: PreparedConfig,
     plan: ReloadPlan,
     report: ReloadReport,
-    reply: oneshot::Sender<Result<ReloadReport, String>>,
+    reply: oneshot::Sender<Result<ReloadReport, ControlError>>,
     cause: u64,
     phase: Phase,
     pub failure: Option<String>,
 }
 
-type Reply = oneshot::Sender<Result<ReloadReport, String>>;
+type Reply = oneshot::Sender<Result<ReloadReport, ControlError>>;
 
 impl ReloadExecution {
     pub fn begin(
@@ -65,6 +65,7 @@ impl ReloadExecution {
                         | ServiceState::Healthy
                         | ServiceState::Unhealthy
                         | ServiceState::Stopped
+                        | ServiceState::Succeeded
                 )
             }) {
                 return Err(
@@ -268,6 +269,7 @@ impl ReloadExecution {
                                 snapshot.services.insert(
                                     name.clone(),
                                     ServiceSnapshot {
+                                        kind: manager.config.services[name].kind,
                                         restart_count,
                                         ..Default::default()
                                     },
@@ -328,12 +330,7 @@ impl ReloadExecution {
                         }
                         let ready = group.iter().all(|name| {
                             let state = &snapshot.services[name];
-                            state.pid.is_some()
-                                && if manager.checkers[name].is_some() {
-                                    state.status == ServiceState::Healthy
-                                } else {
-                                    state.status == ServiceState::Running
-                                }
+                            state.ready(manager.checkers[name].is_some())
                         });
                         if !ready {
                             if Instant::now() >= *deadline {
@@ -350,12 +347,7 @@ impl ReloadExecution {
                         let snapshot = manager.snapshots.borrow();
                         if self.plan.start_layers.iter().flatten().any(|name| {
                             let state = &snapshot.services[name];
-                            state.pid.is_none()
-                                || if manager.checkers[name].is_some() {
-                                    state.status != ServiceState::Healthy
-                                } else {
-                                    state.status != ServiceState::Running
-                                }
+                            !state.ready(manager.checkers[name].is_some())
                         }) {
                             return Err(
                                 "service lost readiness during reload; stopping the whole stack"

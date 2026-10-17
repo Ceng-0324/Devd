@@ -11,15 +11,30 @@ import tempfile
 import time
 
 INSPECTOR = "@modelcontextprotocol/inspector@2.10.1"
+POLICY_CLIENT = "@modelcontextprotocol/client@2.2.0"
 
 
 def exercise(binary):
-    npx = shutil.which("npx")
-    if not npx:
-        raise RuntimeError("Node >=22.19 and npm/npx are required")
+    npm = shutil.which("npm")
+    node = shutil.which("node")
+    if not npm or not node:
+        raise RuntimeError("Node >=22.19 and npm are required")
     with tempfile.TemporaryDirectory(prefix="dmcp-", dir=None if os.name == "nt" else "/tmp") as directory:
         root = Path(directory)
         script = Path(__file__).resolve()
+        # Do not combine a cold npm install and a protocol call under one
+        # deadline. Invoke Node directly once installation has finished, also
+        # avoiding npx.cmd descendants holding captured pipes open on Windows.
+        packages = root / "clients"
+        print(f"Installing pinned MCP clients: {INSPECTOR}, {POLICY_CLIENT}", flush=True)
+        subprocess.run([npm, "install", "--prefix", str(packages), "--no-audit", "--no-fund",
+                        "--ignore-scripts", INSPECTOR, POLICY_CLIENT],
+                       check=True, timeout=300)
+        modules = packages / "node_modules" / "@modelcontextprotocol"
+        inspector_package = modules / "inspector"
+        manifest = json.loads((inspector_package / "package.json").read_text(encoding="utf-8"))
+        inspector_entry = inspector_package / manifest["bin"]["inspector"]
+        policy_package = modules / "client"
         command = " ".join(shlex.quote(s) for s in (Path(sys.executable).as_posix(), script.as_posix(), "--worker", root.as_posix()))
         config = root / "devd.yml"
         config.write_text(json.dumps({"version": "1", "services": {"worker": {"command": command, "restart": {"policy": "always"}}}}), encoding="utf-8")
@@ -29,12 +44,16 @@ def exercise(binary):
             client_config.write_text(json.dumps({"mcpServers": {"devd": {"command": binary, "args": ["mcp", "--stdio", *extra], "cwd": str(root)}}}), encoding="utf-8")
 
         def inspector(method, name=None, args=None, allow_error=False):
-            options = [npx, "-y", INSPECTOR, "--cli", "--config", str(client_config), "--server", "devd", "--method", method, "--format", "json", "--quiet"]
+            options = [node, str(inspector_entry), "--cli", "--config", str(client_config), "--server", "devd", "--method", method, "--format", "json", "--quiet"]
             if method == "tools/list":
                 options.append("--strict")
             if name:
                 options += ["--tool-name", name, "--tool-args-json", json.dumps(args or {})]
-            result = subprocess.run(options, cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=120)
+            print(f"Inspector: {method} {name or ''}", flush=True)
+            try:
+                result = subprocess.run(options, cwd=root, capture_output=True, text=True, encoding="utf-8", timeout=120)
+            except subprocess.TimeoutExpired as error:
+                raise AssertionError(f"Inspector {method} {name} timed out; stdout={error.stdout!r}; stderr={error.stderr!r}") from error
             if result.returncode and not allow_error:
                 raise AssertionError(f"Inspector {method} {name}: {result.stderr}\n{result.stdout}")
             value = json.loads(result.stdout)
@@ -93,6 +112,20 @@ def exercise(binary):
                 configure("--config", str(config), "--allow", "restart")
                 data(inspector("tools/call", "devd_restart", {"target":target,"service":"worker"}))
                 assert data(inspector("tools/call", "devd_status"))["services"]["worker"]["pid"] != before_restart
+                configure("--config", str(config), "--allow", "restart", "--deduplicate")
+                missing_key = payload(inspector("tools/call", "devd_restart", {"target":target,"service":"worker"}, allow_error=True))
+                assert missing_key["isError"]
+                assert json.loads(missing_key["content"][0]["text"])["code"] == "operation-key-required"
+                configure("--config", str(config), "--allow", "restart", "--restart-budget", "other=1")
+                out_of_scope = payload(inspector("tools/call", "devd_restart", {"target":target,"service":"worker"}, allow_error=True))
+                assert out_of_scope["isError"]
+                assert json.loads(out_of_scope["content"][0]["text"])["code"] == "budget-out-of-scope"
+                # Inspector CLI closes after one call. Use the pinned official
+                # client for retries in one adapter, never fake cross-session dedup.
+                subprocess.run([node, str(script.with_name("mcp-policy-smoke.mjs")),
+                                binary, str(root), str(config), str(policy_package)],
+                               cwd=root, check=True, timeout=120)
+                configure("--config", str(config))
                 report = root / "report.json"
                 report.write_text(json.dumps(data(inspector("tools/call", "devd_export"))), encoding="utf-8")
                 cli("stop")

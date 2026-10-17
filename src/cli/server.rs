@@ -52,6 +52,18 @@ pub(super) async fn start(
     } else {
         PersistenceState::Disabled
     });
+    let (log_status, log_persistence) = watch::channel(if storage_options.is_some() {
+        PersistenceState::Recording
+    } else {
+        PersistenceState::Disabled
+    });
+    let (incident_status, incident_persistence) = watch::channel(if record_incidents {
+        PersistenceState::Recording
+    } else {
+        PersistenceState::Disabled
+    });
+    let (incident_statistics, incident_gaps) =
+        watch::channel(super::incidents::Statistics::default());
     let controller = manager.controller();
     let configurations = manager.configurations();
     let readiness = manager.readiness();
@@ -107,6 +119,7 @@ pub(super) async fn start(
     .context("cannot register project instance")?;
     let mut incident_recorder = JoinSet::new();
     let mut incident_reader = None;
+    let mut incident_evictions = None;
     let incident_readers = Arc::new(Semaphore::new(2));
     if record_incidents {
         let directory = identity.state_dir.clone();
@@ -117,12 +130,14 @@ pub(super) async fn start(
                 .context("incident setup task failed")?
                 .context("cannot open incident storage")?;
         incident_reader = Some(storage.reader());
+        incident_evictions = Some(storage.eviction_counter());
         // Subscribe before the manager can emit startup failures.
         let source = super::incidents::Source {
             identity: identity.clone(),
             events: manager.subscribe_events(),
             snapshots: snapshots.clone(),
             configurations: configurations.clone(),
+            statistics: incident_statistics,
         };
         incident_recorder.spawn(super::incidents::run(storage, source));
     }
@@ -168,6 +183,9 @@ pub(super) async fn start(
             result = &mut run => break result,
             _ = signals.recv() => { shutdown.send_replace(true); },
             Some(result) = incident_recorder.join_next() => {
+                if !matches!(&result, Ok(Ok(_))) {
+                    incident_status.send_replace(PersistenceState::Failed);
+                }
                 let message = incident_result(result);
                 if let Some(message) = message { diagnostics.spawn(report_event_failure(message)); }
             },
@@ -179,6 +197,7 @@ pub(super) async fn start(
             },
             Some(result) = disk_writer.join_next() => {
                 if let Err(error) = result.context("disk log writer task failed").and_then(|r| r.context("cannot write persistent logs")) {
+                    log_status.send_replace(PersistenceState::Failed);
                     failure.get_or_insert(error);
                     shutdown.send_replace(true);
                 }
@@ -201,6 +220,10 @@ pub(super) async fn start(
                 let history = history.clone();
                 let event_history = event_history.clone();
                 let event_persistence = event_persistence.clone();
+                let log_persistence = log_persistence.clone();
+                let incident_persistence = incident_persistence.clone();
+                let incident_gaps = incident_gaps.clone();
+                let incident_evictions = incident_evictions.clone();
                 let controller = controller.clone();
                 let shutdown = shutdown.clone();
                 let followers = followers.clone();
@@ -241,6 +264,34 @@ pub(super) async fn start(
                             Response::Error("supervisor run changed; reopen top before controlling this instance".into())
                         },
                         Ok(Request::Status) => Response::Status(snapshots.borrow().clone()),
+                        Ok(Request::Coverage) => {
+                            let window = event_history.snapshot();
+                            let incident_gaps = incident_gaps.borrow();
+                            match super::coverage::collect(
+                                &configurations.borrow(),
+                                &identity.config,
+                                identity.profile.as_deref(),
+                                Some(super::coverage::Runtime {
+                                    instance_id: &identity.instance_id,
+                                    run_id: &identity.run_id,
+                                    event_state: *event_persistence.borrow(),
+                                    log_state: *log_persistence.borrow(),
+                                    incident_state: *incident_persistence.borrow(),
+                                    event_storage: event_options,
+                                    log_storage: storage_options,
+                                    event_first_available: window.first_available,
+                                    event_next_sequence: window.next_sequence,
+                                    truncated_events: window.entries.iter().filter(|e| e.truncated).count(),
+                                    incident_dropped: incident_gaps.dropped_triggers,
+                                    incident_skipped: incident_gaps.skipped_events,
+                                    incident_evicted: incident_evictions.as_ref().map_or(0, |n| n.load(std::sync::atomic::Ordering::Relaxed)),
+                                    snapshot: &snapshots.borrow(),
+                                }),
+                            ) {
+                                Ok(report) => Response::Coverage(Box::new(report)),
+                                Err(error) => Response::Error(error.to_string()),
+                            }
+                        },
                         Ok(Request::Identity) => Response::Identity(Box::new(identity)),
                         Ok(Request::Wait { services, timeout_ms }) => {
                             let permit = waiters.try_acquire_owned().ok();
@@ -268,24 +319,25 @@ pub(super) async fn start(
                         }
                         Ok(Request::ApplyReload { candidate, plan_id }) => {
                             if let Err(error) = super::reload::plan_id(&plan_id) {
-                                return protocol::write(&mut stream, &Response::Error(error)).await;
+                                return protocol::write(&mut stream, &Response::ControlRejected(error)).await;
                             }
                             let Ok(permit) = previews.try_acquire_owned() else {
-                                return protocol::write(&mut stream, &Response::Error("too many configuration reads (maximum 2)".into())).await;
+                                return protocol::write(&mut stream, &Response::ControlRejected("too many configuration reads (maximum 2)".into())).await;
                             };
                             let mut stopping = shutdown.subscribe();
-                            if *stopping.borrow() { Response::Error("supervisor is stopping".into()) }
+                            if *stopping.borrow() { Response::ControlRejected("supervisor is stopping".into()) }
                             else {
                                 let candidate = tokio::select! {
                                     biased;
-                                    _ = stopping.changed() => return protocol::write(&mut stream, &Response::Error("supervisor is stopping".into())).await,
+                                    _ = stopping.changed() => return protocol::write(&mut stream, &Response::ControlRejected("supervisor is stopping".into())).await,
                                     result = super::reload::load_candidate(candidate, profile, permit) => result,
                                 };
                                 match candidate {
-                                    Err(error) => Response::Error(format!("cannot read candidate configuration: {error:#}")),
+                                    Err(error) => Response::ControlRejected(format!("cannot read candidate configuration: {error:#}")),
                                     Ok(config) => match controller.reload(config, plan_id).await {
                                         Ok(report) => Response::Reloaded(report),
-                                        Err(error) => Response::Error(error),
+                                        Err(error) if !error.accepted => Response::ControlRejected(error.message),
+                                        Err(error) => Response::Error(error.message),
                                     },
                                 }
                             }
@@ -402,7 +454,8 @@ pub(super) async fn start(
                         Ok(Request::Restart { service, .. }) => {
                             match tokio::time::timeout(Duration::from_secs(55), controller.restart(service)).await {
                                 Ok(Ok(state)) => Response::Restarted(state),
-                                Ok(Err(error)) => Response::Error(error),
+                                Ok(Err(error)) if !error.accepted => Response::ControlRejected(error.message),
+                                Ok(Err(error)) => Response::Error(error.message),
                                 Err(_) => Response::Error("restart is still pending; inspect 'devd status' before retrying".into()),
                             }
                         }

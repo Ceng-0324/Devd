@@ -28,6 +28,12 @@ pub(super) struct Args {
     /// Explicit controls available for this session; omitted means read-only.
     #[arg(long, value_enum, value_delimiter = ',')]
     allow: Vec<Grant>,
+    /// Limit accepted restarts per service for this adapter session (repeat SERVICE=COUNT).
+    #[arg(long = "restart-budget", value_name = "SERVICE=COUNT")]
+    restart_budget: Vec<String>,
+    /// Deduplicate control requests for 10 minutes within this adapter session.
+    #[arg(long)]
+    deduplicate: bool,
 }
 
 /// Blocking stdin belongs to a dedicated thread, not Tokio's blocking pool:
@@ -101,10 +107,11 @@ pub(super) async fn run(
     state: &Path,
     profile: Option<&str>,
 ) -> Result<()> {
+    let policy = super::control_session::parse_policy(&args.restart_budget, args.deduplicate)?;
     let mut signals = crate::platform::shutdown::Shutdown::new(false)?;
     let session = tokio::select! {
         _ = signals.recv() => return Ok(()),
-        identity = attach(socket, config, state, profile, args.allow) => identity?,
+        identity = attach(socket, config, state, profile, args.allow, policy) => identity?,
     };
     let (sender, receiver) = mpsc::channel(1);
     std::thread::Builder::new()
@@ -146,6 +153,9 @@ mod tests {
             },
             socket: "unused".into(),
             allow: vec![Grant::Restart],
+            policy: Default::default(),
+            admission: Default::default(),
+            controls: std::sync::Arc::new(tokio::sync::Semaphore::new(1)),
         }
     }
 
@@ -159,19 +169,25 @@ mod tests {
         assert!(s
             .authorize(&Operation::Restart {
                 service: "api".into(),
-                target: target()
+                target: target(),
+                operation_key: None,
             })
             .is_ok());
         for operation in [
-            Operation::Stop { target: target() },
+            Operation::Stop {
+                target: target(),
+                operation_key: None,
+            },
             Operation::ReloadApply {
                 target: target(),
                 candidate: None,
                 plan_id: "p".into(),
+                operation_key: None,
             },
             Operation::CleanApply {
                 target: target(),
                 plan_id: "p".into(),
+                operation_key: None,
             },
         ] {
             assert_eq!(

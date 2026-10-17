@@ -147,11 +147,13 @@ async fn test_incident_correlation_generations_reload_privacy_and_slot_ownership
     });
     let config: DevdConfig = serde_yaml::from_str("version: '1'\nservices:\n  api:\n    command: SECRET-COMMAND\n    env: {TOKEN: SECRET-ENV}\n").unwrap();
     let (_, configurations) = watch::channel(Arc::new(config));
+    let (statistics, observed_statistics) = watch::channel(Statistics::default());
     let source = Source {
         identity: identity(root.path(), recorder.run_id()),
         events: recorder.subscribe(),
         snapshots,
         configurations,
+        statistics,
     };
     let run = tokio::spawn(run(storage, source));
     let generation = recorder.record(Some("api"), None, None, EventData::GenerationPending);
@@ -186,6 +188,7 @@ async fn test_incident_correlation_generations_reload_privacy_and_slot_ownership
     );
     drop(recorder);
     let stats = run.await.unwrap().unwrap();
+    assert_eq!(*observed_statistics.borrow(), stats);
     assert_eq!(stats.admitted, 2);
     assert_eq!(stats.merged, 2);
     let records = records(root.path());
@@ -348,11 +351,13 @@ async fn test_incident_saturation_reports_dropped_triggers_and_drains_pending() 
         version: "1".into(),
         services: Default::default(),
     }));
+    let (statistics, observed_statistics) = watch::channel(Statistics::default());
     let source = Source {
         identity: identity(root.path(), recorder.run_id()),
         events: recorder.subscribe(),
         snapshots,
         configurations,
+        statistics,
     };
     for index in 0..10 {
         recorder.record(
@@ -366,6 +371,7 @@ async fn test_incident_saturation_reports_dropped_triggers_and_drains_pending() 
     }
     drop(recorder);
     let stats = run(storage, source).await.unwrap();
+    assert_eq!(*observed_statistics.borrow(), stats);
     assert_eq!(stats.admitted, 4);
     assert_eq!(stats.dropped_triggers, 6);
     assert!(stats.notice().unwrap().contains("6 triggers dropped"));
@@ -395,11 +401,13 @@ async fn test_incident_subscriber_lag_and_shutdown_are_visible() {
         version: "1".into(),
         services: Default::default(),
     }));
+    let (statistics, observed_statistics) = watch::channel(Statistics::default());
     let source = Source {
         identity: identity(root.path(), recorder.run_id()),
         events: recorder.subscribe(),
         snapshots,
         configurations,
+        statistics,
     };
     for _ in 0..300 {
         recorder.record(Some("api"), Some(0), None, EventData::Starting);
@@ -422,6 +430,7 @@ async fn test_incident_subscriber_lag_and_shutdown_are_visible() {
     );
     drop(recorder);
     let stats = run(storage, source).await.unwrap();
+    assert_eq!(*observed_statistics.borrow(), stats);
     assert_eq!(stats.skipped_events, 46);
     let reports = records(root.path());
     assert_eq!(

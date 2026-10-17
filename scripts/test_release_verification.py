@@ -28,6 +28,7 @@ class ReleaseVerificationTests(unittest.TestCase):
             "LICENSE": b"license", "THIRD_PARTY_LICENSES.md": b"third-party", "README.md": b"English", "README.zh-CN.md": b"Chinese",
             "docs/USAGE_NOTES.md": b"English notes", "docs/USAGE_NOTES.zh-CN.md": b"Chinese notes",
             "docs/COMMANDS.md": b"English guide", "docs/COMMANDS.zh-CN.md": b"Chinese guide",
+            "docs/COMPATIBILITY.md": b"English compatibility", "docs/COMPATIBILITY.zh-CN.md": b"Chinese compatibility",
             "VERSION": f"devd {self.version}\n".encode(),
             "REVISION": f"{self.revision}\n".encode(),
         }
@@ -78,10 +79,10 @@ class ReleaseVerificationTests(unittest.TestCase):
                 self.assertNotEqual(executable.parent, archive.parent)
                 commands = [call.args[0] for call in run.call_args_list]
                 self.assertEqual([Path(command[1]).name for command in commands],
-                                 ["smoke.py", "incident-smoke.py", "recovery-smoke.py"])
+                                 ["smoke.py", "incident-smoke.py", "recovery-smoke.py", "stable-smoke.py", "mcp-smoke.py"])
                 for command in commands:
                     self.assertEqual(command[command.index("--binary") + 1], str(executable))
-                run.side_effect = [None, None, subprocess.CalledProcessError(1, "recovery-smoke")]
+                run.side_effect = [None, None, None, None, subprocess.CalledProcessError(1, "mcp-smoke")]
                 with self.assertRaises(subprocess.CalledProcessError):
                     verify_release.verify_archive(archive, self.version, self.revision, smoke=True)
 
@@ -98,6 +99,8 @@ class ReleaseVerificationTests(unittest.TestCase):
                 {"changes": {"docs/USAGE_NOTES.zh-CN.md": b""}},
                 {"changes": {"docs/COMMANDS.md": b""}},
                 {"changes": {"docs/COMMANDS.zh-CN.md": b""}},
+                {"changes": {"docs/COMPATIBILITY.md": b""}},
+                {"changes": {"docs/COMPATIBILITY.zh-CN.md": b""}},
                 {"duplicate": True}, {"symlink": True}, {"fifo": True},
             ]:
                 with self.subTest(windows=windows, options=options), tempfile.TemporaryDirectory() as directory:
@@ -110,7 +113,7 @@ class ReleaseVerificationTests(unittest.TestCase):
         files = subprocess.check_output(
             ["cargo", "package", "--list", "--locked", "--allow-dirty"], cwd=root, text=True
         ).splitlines()
-        self.assertTrue({"Cargo.toml", "README.md", "README.zh-CN.md", "docs/USAGE_NOTES.md", "docs/USAGE_NOTES.zh-CN.md", "docs/COMMANDS.md", "docs/COMMANDS.zh-CN.md", "THIRD_PARTY_LICENSES.md"}.issubset(files))
+        self.assertTrue({"Cargo.toml", "README.md", "README.zh-CN.md", "docs/USAGE_NOTES.md", "docs/USAGE_NOTES.zh-CN.md", "docs/COMMANDS.md", "docs/COMMANDS.zh-CN.md", "docs/COMPATIBILITY.md", "docs/COMPATIBILITY.zh-CN.md", "THIRD_PARTY_LICENSES.md"}.issubset(files))
         self.assertTrue({"TECHNICAL_DESIGN.md", "AGENTS.md", "COMPETITIVE_RESEARCH.md"}.isdisjoint(files))
 
     def test_archives_reject_corrupt_bytes_or_checksum_filename(self):

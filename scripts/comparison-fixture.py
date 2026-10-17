@@ -22,12 +22,6 @@ def main():
         time.sleep(0.1)
         (root / ("producer-complete" if mode == "producer" else "producer-failed")).write_text("ok")
         return 0 if mode == "producer" else 7
-    if mode == "wrapped-consumer":
-        while not (root / "producer-complete").is_file():
-            if (root / "producer-failed").is_file() or time.monotonic() >= deadline:
-                return 7
-            time.sleep(0.02)
-        mode = "consumer"
     if mode == "consumer":
         assert (root / "producer-complete").is_file(), "consumer ran before completion"
         (root / "consumer-complete").write_text("ok")

@@ -1,0 +1,12 @@
+version: "1"
+services:
+  generate:
+    kind: task
+    command: python3 task.py generate
+    task-timeout: 10s
+  consume:
+    kind: task
+    command: python3 task.py consume
+    depends-on:
+      - service: generate
+        condition: completed-successfully

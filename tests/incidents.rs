@@ -393,6 +393,20 @@ fn test_incidents_failure_storm_retention_and_incomplete_killed_capture() {
     thread::sleep(Duration::from_millis(300));
     assert_eq!(artifacts(root.path()).len(), 20);
     success(invoke(root.path(), &["status", "--json"]));
+    let coverage = wait(|| {
+        let report = success(invoke(root.path(), &["coverage", "--online", "--json"]));
+        (report["evidence"]["incidents"]["retention_evicted_this_recorder"]
+            .as_u64()
+            .unwrap()
+            > 0)
+        .then_some(report)
+    });
+    assert_eq!(coverage["evidence"]["incidents"]["state"], "recording");
+    assert!(coverage["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|f| f["code"] == "incident-retention-evicted"));
     stop(root.path(), &mut child);
     let records: Vec<_> = artifacts(root.path())
         .iter()
@@ -443,6 +457,14 @@ fn test_incidents_writer_failure_disables_recording_without_stopping_services() 
             .then_some(())
     });
     assert!(child.0.try_wait().unwrap().is_none());
+    let coverage = success(invoke(root.path(), &["coverage", "--online", "--json"]));
+    assert_eq!(coverage["evidence"]["incidents"]["state"], "failed");
+    assert_eq!(coverage["evidence"]["events"]["state"], "disabled");
+    assert!(coverage["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|f| f["code"] == "incidents-failed"));
     success(invoke(root.path(), &["wait", "worker", "--timeout", "2s"]));
     assert!(read_records(&artifact).iter().all(|r| r["record"] != "end"));
     stop(root.path(), &mut child);

@@ -28,6 +28,8 @@ pub enum ExplainConclusion {
     RestartBudgetExhausted,
     ManuallyStopped,
     Stopped,
+    TaskSucceeded,
+    TaskTimedOut,
     Healthy,
     Running,
     Unknown,
@@ -246,7 +248,21 @@ pub fn explain(
         )
     });
 
-    if let Some(event) = latest_budget {
+    if status == Some(ServiceState::Succeeded) {
+        has_diagnostic_evidence = true;
+        conclusion = ExplainConclusion::TaskSucceeded;
+        summary = format!("{service} 本次任务已成功完成，受管进程已清理");
+    } else if let Some(event) = events
+        .iter()
+        .rev()
+        .find(|e| matches!(e.data, EventData::TaskTimedOut { .. }))
+        .filter(|_| status == Some(ServiceState::Failed) && latest_budget.is_none())
+    {
+        has_diagnostic_evidence = true;
+        conclusion = ExplainConclusion::TaskTimedOut;
+        summary = format!("{service} 的任务执行超时");
+        add_evidence(&mut evidence, &mut seen, event);
+    } else if let Some(event) = latest_budget {
         has_diagnostic_evidence = true;
         conclusion = ExplainConclusion::RestartBudgetExhausted;
         summary = format!("{service} 的自动重启预算已耗尽");
@@ -541,6 +557,7 @@ fn event_detail(event: &LifecycleEvent) -> String {
             "重启决策为 {outcome:?}，累计次数 {restart_count}，退避 {:?}",
             delay
         ),
+        EventData::TaskTimedOut { timeout } => format!("任务执行超过期限 {timeout:?}"),
         EventData::Exited { code, signal } => {
             format!("进程退出，code={code:?}, signal={signal:?}")
         }
@@ -601,6 +618,7 @@ fn process_detail(failure: &ProcessEvidence) -> String {
 
 fn restart_detail(reason: &RestartCause) -> String {
     match reason {
+        RestartCause::TaskTimeout => "任务执行超时".into(),
         RestartCause::ProcessExit => "进程异常退出".into(),
         RestartCause::SpawnFailure => "进程创建失败".into(),
         RestartCause::HealthFailure => "健康检查失败".into(),
@@ -623,6 +641,7 @@ fn condition_name(condition: &crate::config::DependencyCondition) -> &'static st
         crate::config::DependencyCondition::TcpReady => "tcp-ready",
         crate::config::DependencyCondition::HttpReady => "http-ready",
         crate::config::DependencyCondition::ScriptReady => "script-ready",
+        crate::config::DependencyCondition::CompletedSuccessfully => "completed-successfully",
     }
 }
 
@@ -643,6 +662,12 @@ fn next_steps(conclusion: ExplainConclusion) -> Vec<String> {
         }
         ExplainConclusion::Healthy | ExplainConclusion::Running => {
             vec!["继续用 devd events 观察后续生命周期".into()]
+        }
+        ExplainConclusion::TaskSucceeded => {
+            vec!["成功结果仅属于本次运行；显式 restart 会重新执行任务".into()]
+        }
+        ExplainConclusion::TaskTimedOut => {
+            vec!["检查任务输出与 task-timeout；重试可能重复外部副作用".into()]
         }
         ExplainConclusion::Unknown => vec!["先查询 devd status 与 devd events 获取更多事实".into()],
     }

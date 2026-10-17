@@ -500,7 +500,7 @@ dependencies = [
 
 [[package]]
 name = "devd"
-version = "0.9.0-alpha.1"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "axum",
