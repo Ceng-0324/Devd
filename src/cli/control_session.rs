@@ -308,20 +308,20 @@ impl Session {
                 return self.clean(Some(plan_id)).await;
             }
         };
-        if let Some(grant) = control {
-            if !matches!(
+        if let Some(grant) = control
+            && !matches!(
                 (grant, &response),
                 (Grant::Restart, Response::Restarted(_))
                     | (Grant::Stop, Response::Stopping)
                     | (Grant::Reload, Response::Reloaded(_))
-            ) {
-                // The request was sent: an unexpected reply cannot prove that
-                // the supervisor refused it before effects.
-                return Err(Failure::uncertain(
-                    "invalid-response",
-                    "unexpected supervisor control response",
-                ));
-            }
+            )
+        {
+            // The request was sent: an unexpected reply cannot prove that
+            // the supervisor refused it before effects.
+            return Err(Failure::uncertain(
+                "invalid-response",
+                "unexpected supervisor control response",
+            ));
         }
         match response {
             Response::Identity(identity) => {

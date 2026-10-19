@@ -113,10 +113,10 @@ fn prepare(
         versions,
     )?;
     c.check()?;
-    if let Some(id) = &args.plan {
-        if let Some(report) = session.previous(id) {
-            return Ok(PreparedOutput::Previous(report));
-        }
+    if let Some(id) = &args.plan
+        && let Some(report) = session.previous(id)
+    {
+        return Ok(PreparedOutput::Previous(report));
     }
     let time = match &args.plan {
         Some(id) => recovery::plan_time(id)?,

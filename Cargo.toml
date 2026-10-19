@@ -1,7 +1,7 @@
 [package]
 name = "devd"
-version = "1.1.0"
-edition = "2021"
+version = "1.2.0"
+edition = "2024"
 rust-version = "1.95"
 description = "A lightweight local development service supervisor"
 license = "MIT"
@@ -10,6 +10,14 @@ readme = "README.md"
 exclude = ["/TECHNICAL_DESIGN.md", "/AGENTS.md"]
 keywords = ["development", "process", "supervisor", "cli"]
 categories = ["command-line-utilities", "development-tools"]
+
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.{ archive-format }"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
 
 # Keep devd independent from any Cargo workspace declared by a parent directory.
 [workspace]

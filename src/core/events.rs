@@ -447,15 +447,15 @@ impl EventRecorder {
             truncated: false,
             data,
         };
-        if let Some(name) = &mut event.service {
-            if name.len() > 256 {
-                let mut end = 256;
-                while !name.is_char_boundary(end) {
-                    end -= 1;
-                }
-                name.truncate(end);
-                event.truncated = true;
+        if let Some(name) = &mut event.service
+            && name.len() > 256
+        {
+            let mut end = 256;
+            while !name.is_char_boundary(end) {
+                end -= 1;
             }
+            name.truncate(end);
+            event.truncated = true;
         }
         let mut bound = RecordSize(0);
         if serde_json::to_writer(&mut bound, &event).is_err() {

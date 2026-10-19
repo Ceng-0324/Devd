@@ -51,6 +51,15 @@ dimensions; changing their numbers does not exempt a public break from MAJOR.
    third-party notice after dependency changes; review the pinned upstream files
    in `licenses/upstream/` when a published crate omits its license text.
    Verify that local-only documents are absent from `cargo package --list`.
+   For a crates.io release, also run `cargo publish --dry-run --locked` and
+   confirm the package name, owners, README, license, dependency notices and
+   public file list before publishing. After publication, verify the version
+   from an empty Cargo root with:
+
+   ```bash
+   cargo install --registry crates-io --version '=X.Y.Z' --locked \
+     --root <temporary-install-root> devd
+   ```
 3. Push the release commit and require successful Linux/macOS/Windows CI on that
    exact SHA, including the three-service recovery smoke test and native Windows
    job, probe, control, persistence, and supervisor-death tests. Filesystem/reload coverage also requires
@@ -138,9 +147,25 @@ dimensions; changing their numbers does not exempt a public break from MAJOR.
    does not publish it. Any source change requires CI and artifacts for the new
    SHA before publication.
 
+The published crate carries `[package.metadata.binstall]`. Its template resolves
+the Unix `.tar.gz` archives and Windows `.zip` archive from the matching GitHub
+Release tag; the executable is at the archive root. Validate the prebuilt path
+with a pinned cargo-binstall client and `--strategies crate-meta-data`, so a
+source compilation fallback cannot make the check pass accidentally:
+
+```bash
+cargo binstall --strategies crate-meta-data --no-confirm \
+  --root <temporary-install-root> devd@X.Y.Z
+```
+
+Run this after the GitHub Release assets exist and the crates.io version is
+discoverable. Compare the installed binary SHA-256 with the binary extracted
+from the verified release archive, then run `devd --version` and the release
+smoke fixture.
+
 The v0.1 MVP was an internal milestone, not a separately published release.
 Historical revisions are not release candidates for the current version.
 
-The crate name `devd` is not reserved for this repository on crates.io. Do not
-promise `cargo install devd` or publish there without checking ownership and
-the package name. `cargo install --path . --locked` installs this checkout.
+Check the `devd` name on crates.io and confirm maintainer publishing rights
+before the first publication. `cargo install --path . --locked` always installs
+this checkout.

@@ -617,19 +617,19 @@ fn compare_gaps(left: &Value, right: &Value, changes: &mut Vec<Change>) -> Resul
                 evidence: vec!["retained-event-gap-metadata"],
             });
         }
-        if let (Some(a), Some(b)) = (a, b) {
-            if a.payloads != b.payloads {
-                changes.push(Change {
-                    category: "evidence-gap",
-                    key: format!("{key}/payload"),
-                    status: "different",
-                    left: Some(fingerprint(&serde_json::to_string(&a.payloads)?)),
-                    right: Some(fingerprint(&serde_json::to_string(&b.payloads)?)),
-                    observed_left: captured_to(left),
-                    observed_right: captured_to(right),
-                    evidence: vec!["retained-event-gap-metadata"],
-                });
-            }
+        if let (Some(a), Some(b)) = (a, b)
+            && a.payloads != b.payloads
+        {
+            changes.push(Change {
+                category: "evidence-gap",
+                key: format!("{key}/payload"),
+                status: "different",
+                left: Some(fingerprint(&serde_json::to_string(&a.payloads)?)),
+                right: Some(fingerprint(&serde_json::to_string(&b.payloads)?)),
+                observed_left: captured_to(left),
+                observed_right: captured_to(right),
+                evidence: vec!["retained-event-gap-metadata"],
+            });
         }
     }
     let omitted = |report: &Value| {

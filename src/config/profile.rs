@@ -186,13 +186,12 @@ impl ConfigDocument {
             for (key, value) in overrides {
                 // Only env and restart are field-wise overlays. Tagged probes
                 // and dependency lists must replace the entire old value.
-                if matches!(key.as_str(), Some("env" | "restart")) {
-                    if let (Some(Value::Mapping(base)), Value::Mapping(patch)) =
+                if matches!(key.as_str(), Some("env" | "restart"))
+                    && let (Some(Value::Mapping(base)), Value::Mapping(patch)) =
                         (service.get_mut(key), value)
-                    {
-                        base.extend(patch.clone());
-                        continue;
-                    }
+                {
+                    base.extend(patch.clone());
+                    continue;
                 }
                 service.insert(key.clone(), value.clone());
             }
@@ -271,12 +270,12 @@ fn normalize_service(service: &mut Mapping) -> Result<(), serde_yaml::Error> {
 
 fn normalize_aliases(map: &mut Mapping, aliases: &[(&str, &str)]) -> Result<(), serde_yaml::Error> {
     for (alias, canonical) in aliases {
-        if let Some(value) = map.remove(Value::from(*alias)) {
-            if map.insert(Value::from(*canonical), value).is_some() {
-                return Err(serde_yaml::Error::custom(format!(
-                    "duplicate field '{canonical}' (alias '{alias}')"
-                )));
-            }
+        if let Some(value) = map.remove(Value::from(*alias))
+            && map.insert(Value::from(*canonical), value).is_some()
+        {
+            return Err(serde_yaml::Error::custom(format!(
+                "duplicate field '{canonical}' (alias '{alias}')"
+            )));
         }
     }
     Ok(())

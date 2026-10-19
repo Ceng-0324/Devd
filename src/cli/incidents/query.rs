@@ -75,14 +75,13 @@ pub(in crate::cli) fn import(value: &serde_json::Value) -> Result<Evidence> {
     if let Some(version) = value
         .get("artifact_schema_version")
         .and_then(|v| v.as_u64())
+        && !matches!(version, 1 | 2)
     {
-        if !matches!(version, 1 | 2) {
-            let mut evidence = Evidence::empty(id, "unsupported-incident-schema-upgrade-devd");
-            evidence.artifact_schema_version = Some(version);
-            evidence.collection_status = "unsupported-schema".into();
-            evidence.declared_impact = "unknown-unsupported-incident-schema".into();
-            return Ok(evidence);
-        }
+        let mut evidence = Evidence::empty(id, "unsupported-incident-schema-upgrade-devd");
+        evidence.artifact_schema_version = Some(version);
+        evidence.collection_status = "unsupported-schema".into();
+        evidence.declared_impact = "unknown-unsupported-incident-schema".into();
+        return Ok(evidence);
     }
     let mut bytes = Vec::new();
     for (field, record) in [

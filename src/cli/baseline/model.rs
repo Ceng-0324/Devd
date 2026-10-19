@@ -119,10 +119,10 @@ impl Baseline {
             if !seen.insert(&e.selection) {
                 bail!("duplicate baseline selector");
             }
-            if let Selection::Paths { name } = &e.selection {
-                if name.is_empty() || name.len() > 128 {
-                    bail!("invalid path selector");
-                }
+            if let Selection::Paths { name } = &e.selection
+                && (name.is_empty() || name.len() > 128)
+            {
+                bail!("invalid path selector");
             }
             for p in [
                 &e.declaration.cwd,
@@ -174,13 +174,12 @@ impl Baseline {
                 if let Some(p) = &node.target {
                     validate_path(Path::new(p))?;
                 }
-                if let Some(m) = metadata {
-                    if m.identity.as_ref().is_some_and(|s| s.len() > 64)
+                if let Some(m) = metadata
+                    && (m.identity.as_ref().is_some_and(|s| s.len() > 64)
                         || node.kind == NodeKind::Directory
-                            && (m.size.is_some() || m.modified.is_some())
-                    {
-                        bail!("invalid baseline node metadata");
-                    }
+                            && (m.size.is_some() || m.modified.is_some()))
+                {
+                    bail!("invalid baseline node metadata");
                 }
             }
             if serde_json::to_vec(&i.nodes)?.len() > resource_inspection::MAX_CHAIN_BYTES {

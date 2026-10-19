@@ -43,11 +43,26 @@ devd 是用 Rust 编写的本地开发服务管理器。**v1.1.0 已发布，支
 
 ## 先跑起来
 
-需要 Rust 1.95 或更新版本。在仓库根目录安装：
+需要 Rust 1.95 或更新版本。从仓库根目录源码安装：
 
 ```bash
 cargo install --path . --locked
 ```
+
+发布到 crates.io 后，可直接安装已发布的 CLI：
+
+```bash
+cargo install devd --locked
+```
+
+也可以用 [cargo-binstall](https://github.com/cargo-bins/cargo-binstall) 安装预编译版本：
+
+```bash
+cargo binstall devd
+```
+
+binstall 元数据会指向对应 GitHub Release 的归档，并从归档根目录安装二进制。
+需要本地 Rust 编译时使用 `cargo install`；有可用发布归档时使用 `cargo binstall`。
 
 在项目目录运行 `devd init`，可生成一个能直接启动的配置：Unix 使用 `sh`，Windows 使用系统 PowerShell；已有文件不会被覆盖。
 

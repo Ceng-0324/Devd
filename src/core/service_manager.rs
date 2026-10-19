@@ -638,12 +638,11 @@ impl ServiceManager {
                 controls[name].send_replace(Control::Stopping(Some(stop_cause)));
             }
             while names.values().any(|name| layer.contains(name)) {
-                if let Some(result) = tasks.join_next_with_id().await {
-                    if let Some(failure) =
+                if let Some(result) = tasks.join_next_with_id().await
+                    && let Some(failure) =
                         collect_task(result, &mut names, &self.snapshots, &self.events)
-                    {
-                        error.get_or_insert(failure);
-                    }
+                {
+                    error.get_or_insert(failure);
                 }
             }
             let snapshot = self.snapshots.borrow().clone();
