@@ -735,10 +735,10 @@ fn test_two_worktrees_keep_agent_controls_reports_and_cleanup_isolated() {
             .all(|entry| entry["status"] == "live"));
         let deadline = Instant::now() + Duration::from_secs(10);
         let bindings: Value = loop {
-            if let Ok(bytes) = fs::read(project.root.path().join("bindings.json")) {
-                if let Ok(value) = serde_json::from_slice(&bytes) {
-                    break value;
-                }
+            if let Ok(bytes) = fs::read(project.root.path().join("bindings.json"))
+                && let Ok(value) = serde_json::from_slice(&bytes)
+            {
+                break value;
             }
             assert!(Instant::now() < deadline, "binding report missing");
             thread::sleep(Duration::from_millis(10));

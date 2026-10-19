@@ -178,8 +178,8 @@ pub(super) async fn run(storage: Storage, source: Source) -> Result<Statistics> 
                         }
                     }
                     let intentional_exit = stopping || event.service.as_ref().is_some_and(|name| controlled.get(name) == Some(&event.generation));
-                    if eligible(&event.data, intentional_exit) {
-                        if let Some(name) = &event.service {
+                    if eligible(&event.data, intentional_exit)
+                        && let Some(name) = &event.service {
                             if let Some(capture) = pending.iter_mut().find(|p| p.service == *name && p.generation == event.generation) {
                                 capture.merged += 1;
                                 statistics.merged += 1;
@@ -213,7 +213,6 @@ pub(super) async fn run(storage: Storage, source: Source) -> Result<Statistics> 
                                 statistics.dropped_triggers += 1;
                             }
                         }
-                    }
                     prior.push((*event).clone());
                 }
             }

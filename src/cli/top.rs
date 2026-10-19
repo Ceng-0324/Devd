@@ -834,13 +834,11 @@ mod tests {
                 loop {
                     if let Ok(Response::Identity(identity)) =
                         query(&socket, Request::Identity).await
-                    {
-                        if status(&socket, &identity).await.unwrap().services["worker"]
+                        && status(&socket, &identity).await.unwrap().services["worker"]
                             .pid
                             .is_some()
-                        {
-                            break identity;
-                        }
+                    {
+                        break identity;
                     }
                     assert!(
                         servers.try_join_next().is_none(),

@@ -210,12 +210,12 @@ pub(in crate::cli) fn resources(
     let mut fields = vec![];
     // Prioritize the condition actually mentioned by the trigger. The original
     // condition remains in the event even if the new inspection sees recovery.
-    if let EventData::PathConditionChanged { evidence } = &capture.trigger.data {
-        if evidence.requirement_index < service.requires.len() {
-            fields.push(Field::Requires {
-                index: evidence.requirement_index,
-            });
-        }
+    if let EventData::PathConditionChanged { evidence } = &capture.trigger.data
+        && evidence.requirement_index < service.requires.len()
+    {
+        fields.push(Field::Requires {
+            index: evidence.requirement_index,
+        });
     }
     for index in 0..service.requires.len().min(8) {
         let field = Field::Requires { index };

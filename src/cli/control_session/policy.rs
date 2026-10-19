@@ -183,10 +183,10 @@ impl Session {
             let _permit = permit;
             let mut receipt = receipt;
             tokio::task::yield_now().await;
-            if let Some(key) = &key {
-                if let Some(entry) = session.admission.lock().unwrap().operations.get_mut(key) {
-                    entry.state = DedupState::Executing;
-                }
+            if let Some(key) = &key
+                && let Some(entry) = session.admission.lock().unwrap().operations.get_mut(key)
+            {
+                entry.state = DedupState::Executing;
             }
             let result = session.execute_inner(operation).await;
             let mut admission = session.admission.lock().unwrap();
@@ -386,11 +386,11 @@ impl Drop for AcceptedGuard {
         if !self.armed {
             return;
         }
-        if let Some(key) = &self.key {
-            if let Some(entry) = self.admission.lock().unwrap().operations.get_mut(key) {
-                entry.state = DedupState::Unknown;
-                entry.expires = Instant::now() + DEDUP_RETENTION;
-            }
+        if let Some(key) = &self.key
+            && let Some(entry) = self.admission.lock().unwrap().operations.get_mut(key)
+        {
+            entry.state = DedupState::Unknown;
+            entry.expires = Instant::now() + DEDUP_RETENTION;
         }
     }
 }

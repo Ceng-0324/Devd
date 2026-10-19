@@ -42,10 +42,10 @@ fn checker(directory: &Path, script: &str, timeout: Duration) -> HealthChecker {
 async fn pid_file(path: &Path) -> u32 {
     bounded(async {
         loop {
-            if let Ok(text) = tokio::fs::read_to_string(path).await {
-                if let Ok(pid) = text.trim().parse() {
-                    return pid;
-                }
+            if let Ok(text) = tokio::fs::read_to_string(path).await
+                && let Ok(pid) = text.trim().parse()
+            {
+                return pid;
             }
             tokio::time::sleep(Duration::from_millis(5)).await;
         }

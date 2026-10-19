@@ -273,11 +273,11 @@ fn normalized(config: &DevdConfig) -> Result<serde_json::Value> {
             _ => {}
         }
         service.cwd = Some(clean_path(cwd, true));
-        if let Some(limits) = &mut service.limits {
-            if let Some(thresholds) = limits.thresholds() {
-                limits.cpu = thresholds.cpu_percent.map(|v| format!("{v}%"));
-                limits.memory = thresholds.memory_bytes.map(|v| format!("{v}B"));
-            }
+        if let Some(limits) = &mut service.limits
+            && let Some(thresholds) = limits.thresholds()
+        {
+            limits.cpu = thresholds.cpu_percent.map(|v| format!("{v}%"));
+            limits.memory = thresholds.memory_bytes.map(|v| format!("{v}B"));
         }
     }
     Ok(serde_json::to_value(config)?)

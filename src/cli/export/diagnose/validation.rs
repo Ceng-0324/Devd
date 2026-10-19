@@ -291,14 +291,14 @@ fn validate_batch(batch: &mut EventBatch, watermark: u64, control: &Control) -> 
     for event in &mut batch.entries {
         control.check()?;
         validate_event(event, &run, previous)?;
-        if let Some(sequence) = previous {
-            if event.sequence != sequence + 1 {
-                missing.push(EventGap::StoredSequence {
-                    run_id: run.clone(),
-                    from: sequence + 1,
-                    to: event.sequence,
-                });
-            }
+        if let Some(sequence) = previous
+            && event.sequence != sequence + 1
+        {
+            missing.push(EventGap::StoredSequence {
+                run_id: run.clone(),
+                from: sequence + 1,
+                to: event.sequence,
+            });
         }
         previous = Some(event.sequence);
         export::sanitize_event(event);
