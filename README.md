@@ -18,7 +18,7 @@ Broken file dependencies still need fixing. devd takes care of the services you 
 
 ## What it does
 
-devd is a local development service manager written in Rust. **v1.1.0 is available for Linux, macOS, and Windows.** [Download binaries and SHA-256 checksums](https://github.com/Ceng-0324/Devd/releases/tag/v1.1.0) for Linux x86_64, macOS arm64, or Windows x86_64 MSVC.
+devd is a local development service manager written in Rust. **v1.2.0 is available for Linux, macOS, and Windows.** [Download binaries and SHA-256 checksums](https://github.com/Ceng-0324/Devd/releases/tag/v1.2.0) for Linux x86_64, macOS arm64, or Windows x86_64 MSVC.
 
 The accident that started this project now has a diagnostic path: declare the files and links a service needs, inspect their resolution chains, and see which declared services sit downstream. Opt into incident recording before reproducing a failure, then inspect or export the saved evidence even after the supervisor stops. devd preserves what it observed; repairing the target later does not rewrite that history.
 
@@ -26,7 +26,9 @@ For parallel development, find instances across worktrees, wait for real readine
 
 Profiles, configuration snapshots, dependency diagrams, filtered logs, optional disk history and a live terminal view support the same workflow. `doctor` checks the environment, `events` shows the timeline, and `explain` connects service failures to recorded evidence.
 
-v1.1.0 adds bounded Node.js project scanning, reviewed task-to-consumer init,
+v1.2.0 adds registry and `cargo-binstall` installation metadata and moves the
+source to Rust edition 2024 with MSRV 1.95. The service workflow includes
+bounded Node.js project scanning, reviewed task-to-consumer init,
 configurable dependency readiness, native task completion gates, diagnostic
 coverage, offline report comparison and separately enabled Agent limits. Public interfaces follow SemVer;
 see the [compatibility and upgrade contract](docs/COMPATIBILITY.md).
