@@ -20,6 +20,8 @@ jobs:
     name: Install on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
     strategy:
       fail-fast: false
       matrix:
@@ -149,18 +151,14 @@ jobs:
           source.mkdir()
           (source / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
           PY
-          if cargo binstall --verbose --strategies crate-meta-data --no-confirm \
+          cargo binstall --verbose --strategies crate-meta-data --no-confirm \
             --manifest-path "$RUNNER_TEMP/binstall-detection/Cargo.toml" \
             --root "$RUNNER_TEMP/binstall-detection-install" devd \
-            > "$RUNNER_TEMP/binstall-detection.log" 2>&1; then
-            echo "Default archive detection succeeded without binstall metadata"
-            "$RUNNER_TEMP/binstall-detection-install/bin/${{ matrix.executable }}" --version
-            "$RUNNER_TEMP/binstall-detection-install/bin/${{ matrix.executable }}" \
-              check --config tests/fixtures/simple.yml
-          else
-            echo "Default archive detection failed; explicit metadata is required for this layout"
-          fi
-          cat "$RUNNER_TEMP/binstall-detection.log"
+            2>&1 | tee "$RUNNER_TEMP/binstall-detection.log"
+          echo "Default archive detection succeeded without binstall metadata"
+          "$RUNNER_TEMP/binstall-detection-install/bin/${{ matrix.executable }}" --version
+          "$RUNNER_TEMP/binstall-detection-install/bin/${{ matrix.executable }}" \
+            check --config tests/fixtures/simple.yml
       - name: Reject a missing asset without source or quick-install fallback
         env:
           DEVD_RELEASE_VERSION: ${{ inputs.version }}
