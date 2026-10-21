@@ -126,3 +126,53 @@ jobs:
           "$RUNNER_TEMP/binstall-default-install/bin/${{ matrix.executable }}" --version
           "$RUNNER_TEMP/binstall-default-install/bin/${{ matrix.executable }}" \
             check --config tests/fixtures/simple.yml
+      - name: Record archive detection without binstall metadata
+        env:
+          DEVD_RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          mkdir "$RUNNER_TEMP/binstall-detection"
+          python - "$RUNNER_TEMP/binstall-detection/Cargo.toml" <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          pathlib.Path(sys.argv[1]).write_text(
+              '[package]\nname = "devd"\n'
+              f'version = {json.dumps(os.environ["DEVD_RELEASE_VERSION"])}\n'
+              'edition = "2024"\n'
+              'repository = "https://github.com/Ceng-0324/Devd"\n'
+              '[[bin]]\nname = "devd"\npath = "src/main.rs"\n',
+              encoding="utf-8",
+          )
+          source = pathlib.Path(sys.argv[1]).parent / "src"
+          source.mkdir()
+          (source / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
+          PY
+          if cargo binstall --verbose --strategies crate-meta-data --no-confirm \
+            --manifest-path "$RUNNER_TEMP/binstall-detection/Cargo.toml" \
+            --root "$RUNNER_TEMP/binstall-detection-install" devd \
+            > "$RUNNER_TEMP/binstall-detection.log" 2>&1; then
+            echo "Default archive detection succeeded without binstall metadata"
+            "$RUNNER_TEMP/binstall-detection-install/bin/${{ matrix.executable }}" --version
+            "$RUNNER_TEMP/binstall-detection-install/bin/${{ matrix.executable }}" \
+              check --config tests/fixtures/simple.yml
+          else
+            echo "Default archive detection failed; explicit metadata is required for this layout"
+          fi
+          cat "$RUNNER_TEMP/binstall-detection.log"
+      - name: Reject a missing asset without source or quick-install fallback
+        env:
+          DEVD_RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          if cargo binstall --verbose --strategies crate-meta-data --no-confirm \
+            --pkg-url '{ repo }/releases/download/v{ version }/devd-intentionally-missing-{ target }.{ archive-format }' \
+            --root "$RUNNER_TEMP/binstall-missing-install" \
+            "devd@$DEVD_RELEASE_VERSION" \
+            > "$RUNNER_TEMP/binstall-missing.log" 2>&1; then
+            cat "$RUNNER_TEMP/binstall-missing.log"
+            echo "Unexpected success for a missing release asset"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/binstall-missing.log"
+          test ! -e "$RUNNER_TEMP/binstall-missing-install/bin/${{ matrix.executable }}"
