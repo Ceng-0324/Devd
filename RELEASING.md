@@ -163,6 +163,14 @@ discoverable. Compare the installed binary SHA-256 with the binary extracted
 from the verified release archive, then run `devd --version` and the release
 smoke fixture.
 
+For a repeatable post-publication check on all three native platforms, dispatch
+the **Post-release installation** workflow with the published version and its
+full source SHA. It installs the exact crates.io version and the pinned
+cargo-binstall 1.24.0 release, checks both binaries against the shared config
+fixture, and verifies that the binstall executable matches the verified native
+archive. Keep the issue open if any native job or registry availability check
+has not completed successfully.
+
 The v0.1 MVP was an internal milestone, not a separately published release.
 Historical revisions are not release candidates for the current version.
 
