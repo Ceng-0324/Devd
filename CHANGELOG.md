@@ -3,10 +3,10 @@
 Release assets, source revisions and validation evidence are on
 [GitHub Releases](https://github.com/Ceng-0324/Devd/releases).
 
-## v1.2.0 — Unreleased
+## v1.2.0 — 2026-10-21
 
-This release candidate carries the verified installation and toolchain
-updates prepared after v1.1.0.
+This release adds installation metadata and updates the source toolchain
+configuration while preserving the existing service workflow.
 
 - Add crates.io and `cargo-binstall` installation metadata and verification
   guidance for release archives.
