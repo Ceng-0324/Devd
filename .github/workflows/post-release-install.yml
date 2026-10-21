@@ -115,3 +115,14 @@ jobs:
               raise SystemExit("cargo-binstall executable differs from the verified release archive")
           print("cargo-binstall binary matches the verified release archive")
           PY
+      - name: Install with cargo-binstall default strategy selection
+        env:
+          DEVD_RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          cargo binstall --verbose --no-confirm \
+            --root "$RUNNER_TEMP/binstall-default-install" \
+            "devd@$DEVD_RELEASE_VERSION" 2>&1 \
+            | tee "$RUNNER_TEMP/binstall-default-install.log"
+          "$RUNNER_TEMP/binstall-default-install/bin/${{ matrix.executable }}" --version
+          "$RUNNER_TEMP/binstall-default-install/bin/${{ matrix.executable }}" \
+            check --config tests/fixtures/simple.yml
