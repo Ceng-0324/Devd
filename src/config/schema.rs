@@ -82,20 +82,19 @@ pub struct ServiceConfig {
 impl<'de> Deserialize<'de> for ServiceConfig {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let mut value = serde_yaml::Value::deserialize(deserializer)?;
-        if let Some(fields) = value.as_mapping_mut() {
-            if fields
+        if let Some(fields) = value.as_mapping_mut()
+            && fields
                 .get(serde_yaml::Value::from("kind"))
                 .and_then(|v| v.as_str())
                 == Some("task")
-            {
-                let restart = fields
-                    .entry(serde_yaml::Value::from("restart"))
-                    .or_insert_with(|| serde_yaml::Value::Mapping(Default::default()));
-                if let Some(restart) = restart.as_mapping_mut() {
-                    restart
-                        .entry(serde_yaml::Value::from("policy"))
-                        .or_insert_with(|| serde_yaml::Value::from("never"));
-                }
+        {
+            let restart = fields
+                .entry(serde_yaml::Value::from("restart"))
+                .or_insert_with(|| serde_yaml::Value::Mapping(Default::default()));
+            if let Some(restart) = restart.as_mapping_mut() {
+                restart
+                    .entry(serde_yaml::Value::from("policy"))
+                    .or_insert_with(|| serde_yaml::Value::from("never"));
             }
         }
         ServiceConfig::deserialize(value).map_err(serde::de::Error::custom)

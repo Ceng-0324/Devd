@@ -290,10 +290,10 @@ impl HealthChecker {
 }
 
 fn checked_deadline(duration: Duration, field: &'static str) -> Result<Instant, HealthCheckError> {
-    if !duration.is_zero() {
-        if let Some(deadline) = Instant::now().checked_add(duration) {
-            return Ok(deadline);
-        }
+    if !duration.is_zero()
+        && let Some(deadline) = Instant::now().checked_add(duration)
+    {
+        return Ok(deadline);
     }
     Err(HealthCheckError::InvalidDuration { field, duration })
 }

@@ -410,25 +410,23 @@ pub fn explain(
         details.push(event_detail(latest));
         add_evidence(&mut evidence, &mut seen, latest);
         if matches!(&latest.data, EventData::PathConditionChanged { evidence, .. } if evidence.failure.is_none())
-        {
-            if let Some(failure) = events.iter().copied().find(|event| {
+            && let Some(failure) = events.iter().copied().find(|event| {
                 matches!(&event.data, EventData::PathConditionChanged { evidence, .. } if evidence.failure.is_some())
             }) {
                 details.push(event_detail(failure));
                 add_evidence(&mut evidence, &mut seen, failure);
             }
-        }
     }
     if has_path_evidence {
         details.push("路径条件是独立的文件系统观测，不代表应用健康状态，也不能单凭发生顺序断定后续故障原因；监测不会触发重启或修改文件".into());
     }
 
-    if evidence.is_empty() {
-        if let Some(event) = events.last() {
-            details.push(format!("最近的服务事件：{}", event_detail(event)));
-            add_evidence(&mut evidence, &mut seen, event);
-            add_cause(&mut evidence, &mut seen, event, &batch.entries);
-        }
+    if evidence.is_empty()
+        && let Some(event) = events.last()
+    {
+        details.push(format!("最近的服务事件：{}", event_detail(event)));
+        add_evidence(&mut evidence, &mut seen, event);
+        add_cause(&mut evidence, &mut seen, event, &batch.entries);
     }
 
     let mut next_steps = next_steps(conclusion);

@@ -240,15 +240,15 @@ fn render(d: &Diagnosis) -> Result<Vec<u8>> {
             "Incident: {}  {}  complete={}\nDeclared impact: {}",
             e.id, e.collection_status, e.complete, e.declared_impact
         )?;
-        if let Some(r) = &e.resources {
-            if let Some(g) = &r.relationships {
-                let trigger = e
-                    .beginning
-                    .as_ref()
-                    .and_then(|b| b.capture.trigger.service.as_deref())
-                    .unwrap_or("");
-                text.write_all(g.render(trigger, &r.observations).as_bytes())?;
-            }
+        if let Some(r) = &e.resources
+            && let Some(g) = &r.relationships
+        {
+            let trigger = e
+                .beginning
+                .as_ref()
+                .and_then(|b| b.capture.trigger.service.as_deref())
+                .unwrap_or("");
+            text.write_all(g.render(trigger, &r.observations).as_bytes())?;
         }
         writeln!(text, "Recorded incident evidence (paths may be sensitive):")?;
         serde_json::to_writer_pretty(&mut text, e)?;

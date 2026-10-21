@@ -293,10 +293,10 @@ fn read_history(
                     if ended {
                         return Err(invalid("stored gap follows run ending"));
                     }
-                    if let EventGap::SubscriberLag { run_id, .. } = &item {
-                        if run_id != &record.context.run_id {
-                            return Err(invalid("stored gap has a mismatched run"));
-                        }
+                    if let EventGap::SubscriberLag { run_id, .. } = &item
+                        && run_id != &record.context.run_id
+                    {
+                        return Err(invalid("stored gap has a mismatched run"));
                     }
                     push_gap(&mut gaps, &mut omitted_gaps, item);
                 }
@@ -339,16 +339,16 @@ fn read_history(
             "selected run has no retained event records",
         ));
     }
-    if let Some(context) = &context {
-        if !ended {
-            push_gap(
-                &mut gaps,
-                &mut omitted_gaps,
-                EventGap::IncompleteRun {
-                    run_id: context.run_id.clone(),
-                },
-            );
-        }
+    if let Some(context) = &context
+        && !ended
+    {
+        push_gap(
+            &mut gaps,
+            &mut omitted_gaps,
+            EventGap::IncompleteRun {
+                run_id: context.run_id.clone(),
+            },
+        );
     }
     if cursor_run_seen && !cursor_found {
         return Err(invalid("cursor is ahead of the stored run"));

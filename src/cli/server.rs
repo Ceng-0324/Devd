@@ -385,11 +385,10 @@ pub(super) async fn start(
                             if let Err(error) = query.validate() {
                                 return protocol::write(&mut stream, &Response::Error(error)).await;
                             }
-                            if let Some(name) = &query.filter.service {
-                                if !known_service(name) {
+                            if let Some(name) = &query.filter.service
+                                && !known_service(name) {
                                     return protocol::write(&mut stream, &Response::Error(format!("unknown service '{name}'"))).await;
                                 }
-                            }
                             if follow {
                                 let Ok(_permit) = followers.try_acquire_owned() else {
                                     return protocol::write(&mut stream, &Response::Error("too many followers (maximum 16)".into())).await;
@@ -466,31 +465,29 @@ pub(super) async fn start(
         }
     };
     drop(run);
-    if let Some(result) = incident_recorder.join_next().await {
-        if let Some(message) = incident_result(result) {
-            diagnostics.spawn(report_event_failure(message));
-        }
+    if let Some(result) = incident_recorder.join_next().await
+        && let Some(message) = incident_result(result)
+    {
+        diagnostics.spawn(report_event_failure(message));
     }
-    if let Some(result) = event_writer.join_next().await {
-        if let Err(error) = result
+    if let Some(result) = event_writer.join_next().await
+        && let Err(error) = result
             .context("disk event writer task failed")
             .and_then(|r| r.context("cannot write persistent events"))
-        {
-            event_status.send_replace(PersistenceState::Failed);
-            diagnostics.spawn(report_event_failure(format!(
-                "{error:#}; disk event recording incomplete\n"
-            )));
-        }
+    {
+        event_status.send_replace(PersistenceState::Failed);
+        diagnostics.spawn(report_event_failure(format!(
+            "{error:#}; disk event recording incomplete\n"
+        )));
     }
     // Disk persistence is not subject to the terminal writer's one-second
     // timeout: drain all accepted entries and sync before releasing state.
-    if let Some(result) = disk_writer.join_next().await {
-        if let Err(error) = result
+    if let Some(result) = disk_writer.join_next().await
+        && let Err(error) = result
             .context("disk log writer task failed")
             .and_then(|r| r.context("cannot write persistent logs"))
-        {
-            failure.get_or_insert(error);
-        }
+    {
+        failure.get_or_insert(error);
     }
     let _ = tokio::time::timeout(Duration::from_secs(1), async {
         while clients.join_next().await.is_some() {}

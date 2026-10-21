@@ -221,16 +221,16 @@ impl Cli {
             }
             return compare::run(args).await;
         }
-        if let Command::Mcp(args) = &self.command {
-            if let Some(report) = &args.report {
-                if self.profile.is_some()
-                    || self.state_dir.is_some()
-                    || self.config != Path::new("devd.yml")
-                {
-                    bail!("offline MCP reads only its report; --config, --profile and --state-dir are not supported");
-                }
-                return mcp::run_offline(report.clone()).await;
+        if let Command::Mcp(args) = &self.command
+            && let Some(report) = &args.report
+        {
+            if self.profile.is_some()
+                || self.state_dir.is_some()
+                || self.config != Path::new("devd.yml")
+            {
+                bail!("offline MCP reads only its report; --config, --profile and --state-dir are not supported");
             }
+            return mcp::run_offline(report.clone()).await;
         }
         if let Command::Instances { json } = self.command {
             if self.profile.is_some()

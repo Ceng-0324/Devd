@@ -258,12 +258,11 @@ impl StreamCollector {
 
     fn emit(&mut self) {
         let mut bytes = self.bytes.as_slice();
-        if self.truncated {
-            if let Err(error) = std::str::from_utf8(bytes) {
-                if error.error_len().is_none() {
-                    bytes = &bytes[..error.valid_up_to()];
-                }
-            }
+        if self.truncated
+            && let Err(error) = std::str::from_utf8(bytes)
+            && error.error_len().is_none()
+        {
+            bytes = &bytes[..error.valid_up_to()];
         }
         let message = String::from_utf8_lossy(bytes).into_owned();
         self.collector.record(

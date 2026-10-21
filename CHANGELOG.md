@@ -3,6 +3,18 @@
 Release assets, source revisions and validation evidence are on
 [GitHub Releases](https://github.com/Ceng-0324/Devd/releases).
 
+## v1.2.0 — 2026-10-21
+
+This release adds installation metadata and updates the source toolchain
+configuration while preserving the existing service workflow.
+
+- Add crates.io and `cargo-binstall` installation metadata and verification
+  guidance for release archives.
+- Move the package to Rust edition 2024 while retaining Rust 1.95 as the
+  minimum supported toolchain, with a dedicated MSRV CI build and test job.
+- Keep release verification checks aligned with the published archive layout
+  and package metadata.
+
 ## v1.1.0 — 2026-10-17
 
 This release combines the verified v1.0.1 patch fixes with the project

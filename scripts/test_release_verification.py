@@ -2,6 +2,7 @@
 import hashlib
 import importlib.util
 import io
+import json
 from pathlib import Path
 import tarfile
 import subprocess
@@ -115,6 +116,28 @@ class ReleaseVerificationTests(unittest.TestCase):
         ).splitlines()
         self.assertTrue({"Cargo.toml", "README.md", "README.zh-CN.md", "docs/USAGE_NOTES.md", "docs/USAGE_NOTES.zh-CN.md", "docs/COMMANDS.md", "docs/COMMANDS.zh-CN.md", "docs/COMPATIBILITY.md", "docs/COMPATIBILITY.zh-CN.md", "THIRD_PARTY_LICENSES.md"}.issubset(files))
         self.assertTrue({"TECHNICAL_DESIGN.md", "AGENTS.md", "COMPETITIVE_RESEARCH.md"}.isdisjoint(files))
+
+    def test_cargo_metadata_declares_binstall_archive_layout(self):
+        root = Path(__file__).resolve().parents[1]
+        metadata = json.loads(
+            subprocess.check_output(
+                ["cargo", "metadata", "--format-version", "1", "--no-deps"],
+                cwd=root,
+                text=True,
+            )
+        )
+        package = next(package for package in metadata["packages"] if package["name"] == "devd")
+        binstall = package["metadata"]["binstall"]
+        self.assertEqual(
+            binstall["pkg-url"],
+            "{ repo }/releases/download/v{ version }/{ name }-{ target }.{ archive-format }",
+        )
+        self.assertEqual(binstall["bin-dir"], "{ bin }{ binary-ext }")
+        self.assertEqual(binstall["pkg-fmt"], "tgz")
+        self.assertEqual(
+            binstall["overrides"]["x86_64-pc-windows-msvc"]["pkg-fmt"],
+            "zip",
+        )
 
     def test_archives_reject_corrupt_bytes_or_checksum_filename(self):
         for windows in [False, True]:

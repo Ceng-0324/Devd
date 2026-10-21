@@ -386,16 +386,14 @@ impl Graph {
                     gate,
                     if first { "" } else { " [ref]" }
                 ));
-                if first {
-                    if let Some(children) = graph.dependents(&service) {
-                        stack.extend(children.iter().rev().map(|s| {
-                            let condition = graph
-                                .dependencies(s)
-                                .and_then(|edges| edges.iter().find(|e| e.service == service))
-                                .map(|e| e.condition.clone());
-                            (s.clone(), depth + 1, condition)
-                        }));
-                    }
+                if first && let Some(children) = graph.dependents(&service) {
+                    stack.extend(children.iter().rev().map(|s| {
+                        let condition = graph
+                            .dependencies(s)
+                            .and_then(|edges| edges.iter().find(|e| e.service == service))
+                            .map(|e| e.condition.clone());
+                        (s.clone(), depth + 1, condition)
+                    }));
                 }
             }
         }
