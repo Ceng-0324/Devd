@@ -63,7 +63,10 @@ cargo binstall devd
 ```
 
 binstall 元数据会指向对应 GitHub Release 的归档，并从归档根目录安装二进制。
-`cargo install` 从源码构建；`cargo binstall` 安装预编译发布版本。
+预编译目标为 Linux x86_64 GNU、macOS arm64 和 Windows x86_64 MSVC。
+没有匹配归档时，cargo-binstall 的默认策略可能尝试 quick-install 或回退到源码编译。
+加上 `--strategies crate-meta-data` 可要求仅使用本仓库的预编译归档，归档不可用时失败。
+运行下载的二进制不需要 Rust。
 
 在项目目录运行 `devd init`，可生成一个能直接启动的配置：Unix 使用 `sh`，Windows 使用系统 PowerShell；已有文件不会被覆盖。
 
