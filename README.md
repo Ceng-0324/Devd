@@ -55,7 +55,7 @@ You'll need Rust 1.95 or newer. For a source install from the repository root:
 cargo install --path . --locked
 ```
 
-Once `devd` is published on crates.io, install the released CLI with:
+Install the released CLI from crates.io with:
 
 ```bash
 cargo install devd --locked
@@ -68,8 +68,11 @@ cargo binstall devd
 ```
 
 The binstall metadata points to the matching GitHub Release archive and installs
-the binary from the archive root. Use `cargo install` for a local Rust build;
-use `cargo binstall` when a release archive is available.
+the binary from the archive root. Prebuilt targets are Linux x86_64 GNU,
+macOS arm64 and Windows x86_64 MSVC. If no matching archive is available,
+cargo-binstall's default strategies may try quick-install or compile from source.
+Add `--strategies crate-meta-data` to require this repository's prebuilt archive
+and fail when it is unavailable. Running a downloaded binary does not require Rust.
 
 Run `devd init` in a project directory to create a runnable one-service starter configuration (using `sh` on Unix and Windows PowerShell on Windows). Use `--service` and `--command` to set its service name and command; `--config` chooses the output path. The command refuses to replace an existing file.
 

@@ -163,6 +163,21 @@ discoverable. Compare the installed binary SHA-256 with the binary extracted
 from the verified release archive, then run `devd --version` and the release
 smoke fixture.
 
+Also run the documented command with cargo-binstall's normal strategy
+selection into a separate empty install root. Preserve verbose output in the
+workflow log and inspect which strategy it selected; verify the installed
+version and fixture there as well. This checks the ordinary user command while
+the forced `crate-meta-data` run independently proves the prebuilt-only path.
+
+For a repeatable post-publication check on all three native platforms, dispatch
+the **Post-release installation** workflow with the published version and its
+full source SHA. It installs the exact crates.io version and the pinned
+cargo-binstall 1.24.0 release, checks both binaries against the shared config
+fixture, verifies that the forced-strategy binstall executable matches the
+verified native archive, and runs the ordinary cargo-binstall command in a
+separate root with verbose strategy output. Keep the issue open if any native
+job or registry availability check has not completed successfully.
+
 The v0.1 MVP was an internal milestone, not a separately published release.
 Historical revisions are not release candidates for the current version.
 

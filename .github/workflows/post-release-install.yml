@@ -1,0 +1,176 @@
+name: Post-release installation
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Published crate version, without the v prefix
+        required: true
+        type: string
+      revision:
+        description: Full 40-character source SHA embedded in the release archives
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  install:
+    name: Install on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: devd-x86_64-unknown-linux-gnu.tar.gz
+            executable: devd
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            archive: devd-aarch64-apple-darwin.tar.gz
+            executable: devd
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: devd-x86_64-pc-windows-msvc.zip
+            executable: devd.exe
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate release inputs
+        env:
+          DEVD_RELEASE_VERSION: ${{ inputs.version }}
+          DEVD_RELEASE_REVISION: ${{ inputs.revision }}
+        run: |
+          [[ "$DEVD_RELEASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$DEVD_RELEASE_REVISION" =~ ^[0-9a-f]{40}$ ]]
+      - name: Download matching GitHub Release archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEVD_RELEASE_VERSION: ${{ inputs.version }}
+          DEVD_RELEASE_ARCHIVE: ${{ matrix.archive }}
+          DEVD_RELEASE_REVISION: ${{ inputs.revision }}
+        run: |
+          gh release download "v$DEVD_RELEASE_VERSION" \
+            --repo "$GITHUB_REPOSITORY" \
+            --pattern "$DEVD_RELEASE_ARCHIVE" \
+            --pattern "$DEVD_RELEASE_ARCHIVE.sha256" \
+            --dir "$RUNNER_TEMP/release"
+          python scripts/verify-release.py \
+            "$RUNNER_TEMP/release/$DEVD_RELEASE_ARCHIVE" \
+            --version "$DEVD_RELEASE_VERSION" \
+            --revision "$DEVD_RELEASE_REVISION"
+      - name: Install exact version from crates.io
+        env:
+          DEVD_RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          cargo install --registry crates-io \
+            --version "=$DEVD_RELEASE_VERSION" --locked \
+            --root "$RUNNER_TEMP/registry-install" devd
+          "$RUNNER_TEMP/registry-install/bin/${{ matrix.executable }}" --version
+          "$RUNNER_TEMP/registry-install/bin/${{ matrix.executable }}" \
+            check --config tests/fixtures/simple.yml
+      - name: Install exact prebuilt version with cargo-binstall 1.24.0
+        env:
+          DEVD_RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          cargo install --locked --version '=1.24.0' cargo-binstall
+          cargo binstall --strategies crate-meta-data --no-confirm \
+            --root "$RUNNER_TEMP/binstall-install" \
+            "devd@$DEVD_RELEASE_VERSION"
+          "$RUNNER_TEMP/binstall-install/bin/${{ matrix.executable }}" --version
+          "$RUNNER_TEMP/binstall-install/bin/${{ matrix.executable }}" \
+            check --config tests/fixtures/simple.yml
+      - name: Verify binstall binary matches the release archive
+        env:
+          DEVD_RELEASE_ARCHIVE: ${{ matrix.archive }}
+          DEVD_RELEASE_EXECUTABLE: ${{ matrix.executable }}
+        run: |
+          python - "$RUNNER_TEMP/release/$DEVD_RELEASE_ARCHIVE" \
+            "$RUNNER_TEMP/binstall-install/bin/$DEVD_RELEASE_EXECUTABLE" <<'PY'
+          import hashlib
+          import sys
+          import tarfile
+          import zipfile
+
+          archive, installed = sys.argv[1:]
+          executable = "devd.exe" if archive.endswith(".zip") else "devd"
+          if archive.endswith(".zip"):
+              with zipfile.ZipFile(archive) as source:
+                  expected = source.read(executable)
+          else:
+              with tarfile.open(archive, "r:gz") as source:
+                  expected = source.extractfile(executable).read()
+          with open(installed, "rb") as source:
+              actual = source.read()
+          if hashlib.sha256(actual).digest() != hashlib.sha256(expected).digest():
+              raise SystemExit("cargo-binstall executable differs from the verified release archive")
+          print("cargo-binstall binary matches the verified release archive")
+          PY
+      - name: Install with cargo-binstall default strategy selection
+        env:
+          DEVD_RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          cargo binstall --verbose --no-confirm \
+            --root "$RUNNER_TEMP/binstall-default-install" \
+            "devd@$DEVD_RELEASE_VERSION" 2>&1 \
+            | tee "$RUNNER_TEMP/binstall-default-install.log"
+          "$RUNNER_TEMP/binstall-default-install/bin/${{ matrix.executable }}" --version
+          "$RUNNER_TEMP/binstall-default-install/bin/${{ matrix.executable }}" \
+            check --config tests/fixtures/simple.yml
+      - name: Record archive detection without binstall metadata
+        env:
+          DEVD_RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          mkdir "$RUNNER_TEMP/binstall-detection"
+          python - "$RUNNER_TEMP/binstall-detection/Cargo.toml" <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          pathlib.Path(sys.argv[1]).write_text(
+              '[package]\nname = "devd"\n'
+              f'version = {json.dumps(os.environ["DEVD_RELEASE_VERSION"])}\n'
+              'edition = "2024"\n'
+              'repository = "https://github.com/Ceng-0324/Devd"\n'
+              '[[bin]]\nname = "devd"\npath = "src/main.rs"\n',
+              encoding="utf-8",
+          )
+          source = pathlib.Path(sys.argv[1]).parent / "src"
+          source.mkdir()
+          (source / "main.rs").write_text("fn main() {}\n", encoding="utf-8")
+          PY
+          cargo binstall --verbose --strategies crate-meta-data --no-confirm \
+            --manifest-path "$RUNNER_TEMP/binstall-detection/Cargo.toml" \
+            --root "$RUNNER_TEMP/binstall-detection-install" devd \
+            2>&1 | tee "$RUNNER_TEMP/binstall-detection.log"
+          echo "Default archive detection succeeded without binstall metadata"
+          "$RUNNER_TEMP/binstall-detection-install/bin/${{ matrix.executable }}" --version
+          "$RUNNER_TEMP/binstall-detection-install/bin/${{ matrix.executable }}" \
+            check --config tests/fixtures/simple.yml
+      - name: Reject a missing asset without source or quick-install fallback
+        env:
+          DEVD_RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          if cargo binstall --verbose --strategies crate-meta-data --no-confirm \
+            --pkg-url '{ repo }/releases/download/v{ version }/devd-intentionally-missing-{ target }.{ archive-format }' \
+            --root "$RUNNER_TEMP/binstall-missing-install" \
+            "devd@$DEVD_RELEASE_VERSION" \
+            > "$RUNNER_TEMP/binstall-missing.log" 2>&1; then
+            cat "$RUNNER_TEMP/binstall-missing.log"
+            echo "Unexpected success for a missing release asset"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/binstall-missing.log"
+          test ! -e "$RUNNER_TEMP/binstall-missing-install/bin/${{ matrix.executable }}"
